@@ -13,7 +13,10 @@ command = "npm install"
 [[actions]]
 name = "Run"
 icon = "run"
-command = "npm run dev"
+command = '''
+npm run dev
+o
+'''
 
 [[actions]]
 name = "Test"
