@@ -1,0 +1,274 @@
+import { create } from 'zustand';
+import { saveProject, saveUndoAction, loadUndoHistory } from '../lib/db';
+import { createEmptyProject } from '../types/project';
+
+/**
+ * ChoirMaster Zustand Store
+ * 
+ * Central state management with:
+ * - Project state
+ * - Undo/redo with persistence
+ * - Autosave (debounced 2s)
+ * - Transport controls
+ */
+
+const useStore = create((set, get) => ({
+  // === PROJECT STATE ===
+  project: null,
+  currentProjectId: null,
+  
+  // === PLAYBACK STATE ===
+  isPlaying: false,
+  isRecording: false,
+  currentTimeMs: 0,
+  selectedTrackId: null,
+  
+  // === UNDO/REDO STATE ===
+  undoStack: [],
+  redoStack: [],
+  undoIndex: 0,
+  
+  // === AUTOSAVE STATE ===
+  isDirty: false,
+  isSaving: false,
+  lastSaved: null,
+  autosaveTimeout: null,
+  
+  // === ACTIONS ===
+  
+  /**
+   * Initialize a new project
+   */
+  initProject: (name) => {
+    const project = createEmptyProject(name);
+    set({
+      project,
+      currentProjectId: project.projectId,
+      undoStack: [],
+      redoStack: [],
+      undoIndex: 0,
+      isDirty: true,
+    });
+    get().triggerAutosave();
+  },
+  
+  /**
+   * Load existing project
+   */
+  loadProject: async (projectData) => {
+    // Load undo history
+    const undoStack = await loadUndoHistory(projectData.projectId);
+    
+    set({
+      project: projectData,
+      currentProjectId: projectData.projectId,
+      undoStack,
+      redoStack: [],
+      undoIndex: undoStack.length,
+      isDirty: false,
+      lastSaved: projectData.lastModified,
+    });
+  },
+  
+  /**
+   * Update project (triggers autosave and undo)
+   */
+  updateProject: (updater, actionDescription = 'Update') => {
+    const { project, undoStack, undoIndex } = get();
+    
+    // Save current state to undo
+    const undoAction = {
+      description: actionDescription,
+      state: JSON.parse(JSON.stringify(project)),
+    };
+    
+    // Update project
+    const newProject = typeof updater === 'function' ? updater(project) : updater;
+    
+    // Add to undo stack (circular buffer, max 100)
+    const newUndoStack = [...undoStack.slice(0, undoIndex), undoAction].slice(-100);
+    
+    set({
+      project: newProject,
+      undoStack: newUndoStack,
+      redoStack: [], // Clear redo on new action
+      undoIndex: newUndoStack.length,
+      isDirty: true,
+    });
+    
+    get().triggerAutosave();
+  },
+  
+  /**
+   * Undo last action
+   */
+  undo: () => {
+    const { undoStack, undoIndex, project, redoStack } = get();
+    
+    if (undoIndex === 0) return; // Nothing to undo
+    
+    const newIndex = undoIndex - 1;
+    const previousState = undoStack[newIndex].state;
+    
+    // Save current state to redo
+    const redoAction = {
+      description: 'Redo',
+      state: JSON.parse(JSON.stringify(project)),
+    };
+    
+    set({
+      project: previousState,
+      undoIndex: newIndex,
+      redoStack: [redoAction, ...redoStack].slice(0, 100),
+      isDirty: true,
+    });
+    
+    get().triggerAutosave();
+  },
+  
+  /**
+   * Redo last undone action
+   */
+  redo: () => {
+    const { redoStack, project, undoStack, undoIndex } = get();
+    
+    if (redoStack.length === 0) return; // Nothing to redo
+    
+    const [redoAction, ...newRedoStack] = redoStack;
+    
+    // Save current state to undo
+    const undoAction = {
+      description: 'Undo',
+      state: JSON.parse(JSON.stringify(project)),
+    };
+    
+    const newUndoStack = [...undoStack.slice(0, undoIndex), undoAction].slice(-100);
+    
+    set({
+      project: redoAction.state,
+      undoStack: newUndoStack,
+      redoStack: newRedoStack,
+      undoIndex: newUndoStack.length,
+      isDirty: true,
+    });
+    
+    get().triggerAutosave();
+  },
+  
+  /**
+   * Trigger autosave (debounced 2s)
+   */
+  triggerAutosave: () => {
+    const { autosaveTimeout } = get();
+    
+    // Clear existing timeout
+    if (autosaveTimeout) {
+      clearTimeout(autosaveTimeout);
+    }
+    
+    // Set new timeout
+    const timeout = setTimeout(() => {
+      get().performAutosave();
+    }, 2000);
+    
+    set({ autosaveTimeout: timeout });
+  },
+  
+  /**
+   * Perform actual save to IndexedDB
+   */
+  performAutosave: async () => {
+    const { project, isDirty, undoStack } = get();
+    
+    if (!isDirty || !project) return;
+    
+    set({ isSaving: true });
+    
+    try {
+      // Save project
+      await saveProject(project);
+      
+      // Save undo history (last 100 actions)
+      for (let i = 0; i < undoStack.length; i++) {
+        await saveUndoAction(project.projectId, undoStack[i], i);
+      }
+      
+      set({
+        isDirty: false,
+        isSaving: false,
+        lastSaved: Date.now(),
+      });
+    } catch (error) {
+      console.error('Autosave failed:', error);
+      set({ isSaving: false });
+    }
+  },
+  
+  /**
+   * Force immediate save (e.g., before export)
+   */
+  forceSave: async () => {
+    const { autosaveTimeout } = get();
+    if (autosaveTimeout) {
+      clearTimeout(autosaveTimeout);
+    }
+    await get().performAutosave();
+  },
+  
+  /**
+   * Transport controls
+   */
+  play: () => set({ isPlaying: true }),
+  pause: () => set({ isPlaying: false }),
+  stop: () => set({ isPlaying: false, currentTimeMs: 0 }),
+  setCurrentTime: (timeMs) => set({ currentTimeMs: timeMs }),
+  
+  /**
+   * Recording controls
+   */
+  startRecording: () => set({ isRecording: true }),
+  stopRecording: () => set({ isRecording: false }),
+  
+  /**
+   * Update a clip on a track
+   */
+  updateClip: (trackId, clipId, updates, action = 'update') => {
+    const { project, updateProject } = get();
+    
+    updateProject((proj) => ({
+      ...proj,
+      tracks: proj.tracks.map(track => {
+        if (track.id !== trackId) return track;
+        
+        if (action === 'add') {
+          // Add new clip
+          return {
+            ...track,
+            clips: [...track.clips, updates],
+          };
+        } else if (action === 'delete') {
+          // Delete clip
+          return {
+            ...track,
+            clips: track.clips.filter(c => c.id !== clipId),
+          };
+        } else {
+          // Update existing clip
+          return {
+            ...track,
+            clips: track.clips.map(clip =>
+              clip.id === clipId ? { ...clip, ...updates } : clip
+            ),
+          };
+        }
+      }),
+    }), action === 'add' ? 'Add clip' : action === 'delete' ? 'Delete clip' : 'Update clip');
+  },
+  
+  /**
+   * Track selection
+   */
+  selectTrack: (trackId) => set({ selectedTrackId: trackId }),
+}));
+
+export default useStore;

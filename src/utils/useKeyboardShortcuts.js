@@ -1,0 +1,75 @@
+import { useEffect } from 'react';
+
+/**
+ * Keyboard shortcuts hook
+ * Handles global keyboard shortcuts for the editor
+ */
+function useKeyboardShortcuts({
+  onPlayPause,
+  onStop,
+  onRecord,
+  onUndo,
+  onRedo,
+  onToggleLoop,
+  onDeleteTrack,
+}) {
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Ignore if typing in an input field
+      if (
+        e.target.tagName === 'INPUT' ||
+        e.target.tagName === 'TEXTAREA' ||
+        e.target.isContentEditable
+      ) {
+        return;
+      }
+
+      // Space - Play/Pause
+      if (e.code === 'Space') {
+        e.preventDefault();
+        onPlayPause?.();
+      }
+
+      // R - Record
+      if (e.code === 'KeyR' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        onRecord?.();
+      }
+
+      // L - Toggle Loop
+      if (e.code === 'KeyL' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        onToggleLoop?.();
+      }
+
+      // Ctrl/Cmd + Z - Undo
+      if (e.code === 'KeyZ' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+        e.preventDefault();
+        onUndo?.();
+      }
+
+      // Ctrl/Cmd + Y or Ctrl/Cmd + Shift + Z - Redo
+      if (
+        (e.code === 'KeyY' && (e.ctrlKey || e.metaKey)) ||
+        (e.code === 'KeyZ' && (e.ctrlKey || e.metaKey) && e.shiftKey)
+      ) {
+        e.preventDefault();
+        onRedo?.();
+      }
+
+      // Delete - Delete selected track
+      if (e.code === 'Delete' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        onDeleteTrack?.();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [onPlayPause, onStop, onRecord, onUndo, onRedo, onToggleLoop, onDeleteTrack]);
+}
+
+export default useKeyboardShortcuts;
