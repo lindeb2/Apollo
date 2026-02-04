@@ -22,6 +22,7 @@ const useStore = create((set, get) => ({
   isRecording: false,
   currentTimeMs: 0,
   selectedTrackId: null,
+  selectedTrackByProjectId: {},
   
   // === UNDO/REDO STATE ===
   undoStack: [],
@@ -44,6 +45,7 @@ const useStore = create((set, get) => ({
     set({
       project,
       currentProjectId: project.projectId,
+      selectedTrackId: null,
       undoStack: [],
       redoStack: [],
       undoIndex: 0,
@@ -58,10 +60,22 @@ const useStore = create((set, get) => ({
   loadProject: async (projectData) => {
     // Load undo history
     const undoStack = await loadUndoHistory(projectData.projectId);
+    const { selectedTrackByProjectId } = get();
+    const rememberedTrackId = selectedTrackByProjectId[projectData.projectId];
+    let initialSelectedTrackId = null;
+    if (projectData.tracks && projectData.tracks.length > 0) {
+      const hasRemembered = rememberedTrackId && projectData.tracks.some(t => t.id === rememberedTrackId);
+      initialSelectedTrackId = hasRemembered ? rememberedTrackId : projectData.tracks[0].id;
+    }
     
     set({
       project: projectData,
       currentProjectId: projectData.projectId,
+      selectedTrackId: initialSelectedTrackId,
+      selectedTrackByProjectId: {
+        ...selectedTrackByProjectId,
+        [projectData.projectId]: initialSelectedTrackId,
+      },
       undoStack,
       redoStack: [],
       undoIndex: undoStack.length,
@@ -74,7 +88,7 @@ const useStore = create((set, get) => ({
    * Update project (triggers autosave and undo)
    */
   updateProject: (updater, actionDescription = 'Update') => {
-    const { project, undoStack, undoIndex } = get();
+    const { project, undoStack, undoIndex, selectedTrackId, currentProjectId, selectedTrackByProjectId } = get();
     
     // Save current state to undo
     const undoAction = {
@@ -88,8 +102,23 @@ const useStore = create((set, get) => ({
     // Add to undo stack (circular buffer, max 100)
     const newUndoStack = [...undoStack.slice(0, undoIndex), undoAction].slice(-100);
     
+    let nextSelectedTrackId = selectedTrackId;
+    if (newProject?.tracks?.length) {
+      if (!nextSelectedTrackId || !newProject.tracks.some(t => t.id === nextSelectedTrackId)) {
+        nextSelectedTrackId = newProject.tracks[0].id;
+      }
+    } else {
+      nextSelectedTrackId = null;
+    }
+
+    const nextSelectedTrackByProjectId = currentProjectId
+      ? { ...selectedTrackByProjectId, [currentProjectId]: nextSelectedTrackId }
+      : selectedTrackByProjectId;
+
     set({
       project: newProject,
+      selectedTrackId: nextSelectedTrackId,
+      selectedTrackByProjectId: nextSelectedTrackByProjectId,
       undoStack: newUndoStack,
       redoStack: [], // Clear redo on new action
       undoIndex: newUndoStack.length,
@@ -268,7 +297,16 @@ const useStore = create((set, get) => ({
   /**
    * Track selection
    */
-  selectTrack: (trackId) => set({ selectedTrackId: trackId }),
+  selectTrack: (trackId) => set((state) => {
+    const nextSelectedTrackByProjectId = state.currentProjectId
+      ? { ...state.selectedTrackByProjectId, [state.currentProjectId]: trackId }
+      : state.selectedTrackByProjectId;
+
+    return {
+      selectedTrackId: trackId,
+      selectedTrackByProjectId: nextSelectedTrackByProjectId,
+    };
+  }),
 }));
 
 export default useStore;

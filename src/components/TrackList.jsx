@@ -166,7 +166,7 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
                         }
                       }}
                       onClick={(e) => e.stopPropagation()}
-                      className="flex-1 bg-gray-900 border border-blue-500 rounded px-1 py-0.5 text-sm focus:outline-none min-w-0"
+                      className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-sm leading-tight focus:outline-none min-w-0"
                     />
                   ) : (
                     <span
@@ -244,6 +244,8 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
                       e.stopPropagation();
                       handleVolumeChange(track.id, e.target.value);
                     }}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => e.stopPropagation()}
                     className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-600"
                   />
                 </div>
@@ -267,6 +269,8 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
                       e.stopPropagation();
                       handlePanChange(track.id, e.target.value);
                     }}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => e.stopPropagation()}
                     className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-600"
                   />
                 </div>

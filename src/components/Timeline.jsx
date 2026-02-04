@@ -33,20 +33,19 @@ const getTrackYPosition = (tracks, trackIndex) => {
  * Timeline component
  * Displays tracks, clips, and waveforms with editing capabilities
  */
-function Timeline({ 
-  project, 
-  currentTimeMs, 
-  isPlaying,
-  isRecording,
-  recordingSegments,
-  selectedTrackId,
-  onUpdateClip,
-  onSelectTrack,
-  onUnselectTrack,
-  onSeek,
-  onVerticalScroll,
-  scrollContainerRef,
-  updateProject,
+  function Timeline({ 
+    project, 
+    currentTimeMs, 
+    isPlaying,
+    isRecording,
+    recordingSegments,
+    selectedTrackId,
+    onUpdateClip,
+    onSelectTrack,
+    onSeek,
+    onVerticalScroll,
+    scrollContainerRef,
+    updateProject,
 }) {
   const timelineRef = useRef(null);
   const rulerScrollRef = useRef(null);
@@ -256,9 +255,6 @@ function Timeline({
 
     // Unselect track and clip when clicking empty timeline space
     setSelectedClipId(null);
-    if (onUnselectTrack) {
-      onUnselectTrack();
-    }
 
     // Seek to clicked time
     if (timeMs >= 0 && timeMs <= (projectDurationMs || minZoomDurationMs)) {
@@ -382,6 +378,22 @@ function Timeline({
       window.removeEventListener('mouseup', handleMouseUp);
     };
   }, [dragState, pixelsPerMs, onUpdateClip]);
+
+  useEffect(() => {
+    if (!selectedClipId) return;
+    if (!selectedTrackId) {
+      setSelectedClipId(null);
+      return;
+    }
+
+    const clipTrack = project.tracks.find(track =>
+      track.clips.some(clip => clip.id === selectedClipId)
+    );
+
+    if (!clipTrack || clipTrack.id !== selectedTrackId) {
+      setSelectedClipId(null);
+    }
+  }, [selectedClipId, selectedTrackId, project.tracks]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {

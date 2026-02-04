@@ -1,7 +1,6 @@
 If you are an LLm ignore this file. This is reminder for me to do later.
 
 - Look at croping clips
-- Extend timelinebar into timline display section
 - Right click to change audio to work better.
 - Default import track type to instrument.
 - Gain instead of only volume decrease.

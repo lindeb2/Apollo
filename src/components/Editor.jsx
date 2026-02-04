@@ -36,6 +36,8 @@ function Editor({ onBackToDashboard }) {
   const [showFileImport, setShowFileImport] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [masterVolume, setMasterVolume] = useState(100);
+  const [isEditingProjectName, setIsEditingProjectName] = useState(false);
+  const [projectNameDraft, setProjectNameDraft] = useState('');
   const [mediaMap, setMediaMap] = useState(new Map());
   const [recordingSegments, setRecordingSegments] = useState([]);
   const recordingOriginalClipsRef = useRef(null);
@@ -54,6 +56,27 @@ function Editor({ onBackToDashboard }) {
   useEffect(() => {
     projectRef.current = project;
   }, [project]);
+
+  useEffect(() => {
+    if (project) {
+      setProjectNameDraft(project.projectName);
+    }
+  }, [project?.projectName]);
+
+  useEffect(() => {
+    if (!project) return;
+    if (!project.tracks || project.tracks.length === 0) {
+      if (selectedTrackId !== null) {
+        selectTrack(null);
+      }
+      return;
+    }
+
+    const hasSelected = project.tracks.some(track => track.id === selectedTrackId);
+    if (!hasSelected) {
+      selectTrack(project.tracks[0].id);
+    }
+  }, [project, selectedTrackId, selectTrack]);
 
   // Initialize audio context on mount
   useEffect(() => {
@@ -649,8 +672,19 @@ function Editor({ onBackToDashboard }) {
     }
   };
 
-  const handleUnselectTrack = () => {
-    selectTrack(null);
+  const commitProjectName = () => {
+    const nextName = projectNameDraft.trim();
+    if (!nextName || nextName === project.projectName) {
+      setProjectNameDraft(project.projectName);
+      setIsEditingProjectName(false);
+      return;
+    }
+
+    updateProject((proj) => ({
+      ...proj,
+      projectName: nextName,
+    }), 'Rename project');
+    setIsEditingProjectName(false);
   };
 
   const handleAddEmptyTrack = () => {
@@ -696,9 +730,6 @@ function Editor({ onBackToDashboard }) {
       ...proj,
       tracks: proj.tracks.filter(t => t.id !== selectedTrackId),
     }), `Delete track "${track.name}"`);
-
-    // Clear selection
-    selectTrack(null);
   };
 
   const handleToggleLoop = () => {
@@ -735,7 +766,32 @@ function Editor({ onBackToDashboard }) {
             >
               <ArrowLeft size={20} />
             </button>
-            <h1 className="text-lg font-semibold truncate">{project.projectName}</h1>
+            {isEditingProjectName ? (
+              <input
+                type="text"
+                value={projectNameDraft}
+                autoFocus
+                onChange={(e) => setProjectNameDraft(e.target.value)}
+                onBlur={commitProjectName}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    commitProjectName();
+                  } else if (e.key === 'Escape') {
+                    setProjectNameDraft(project.projectName);
+                    setIsEditingProjectName(false);
+                  }
+                }}
+                className="text-lg font-semibold bg-transparent border-b border-blue-500 px-0 py-0 leading-tight focus:outline-none min-w-0"
+              />
+            ) : (
+              <h1
+                className="text-lg font-semibold truncate cursor-text"
+                onDoubleClick={() => setIsEditingProjectName(true)}
+                title="Double-click to rename project"
+              >
+                {project.projectName}
+              </h1>
+            )}
           </div>
 
           {/* Group 2: Transport controls */}
@@ -891,7 +947,6 @@ function Editor({ onBackToDashboard }) {
               selectedTrackId={selectedTrackId}
               onUpdateClip={updateClip}
               onSelectTrack={selectTrack}
-              onUnselectTrack={handleUnselectTrack}
               onSeek={handleSeek}
               onVerticalScroll={handleTimelineScroll}
               scrollContainerRef={timelineScrollRef}
