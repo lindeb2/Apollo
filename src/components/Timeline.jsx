@@ -463,12 +463,16 @@ function Timeline({
     const timeMs = Math.max(0, Math.min(x / pixelsPerMs, projectDurationMs || minZoomDurationMs));
     const hasLoop = project.loop.startMs !== undefined && project.loop.endMs !== undefined;
     const clickedLoop = hasLoop && timeMs >= project.loop.startMs && timeMs <= project.loop.endMs;
+    const mode = clickedLoop ? 'move' : 'create';
     
     setRulerDragState({
       startTimeMs: timeMs,
       startX: e.clientX,
       isDragging: false,
       clickedLoop,
+      mode,
+      initialLoopStartMs: project.loop.startMs,
+      initialLoopEndMs: project.loop.endMs,
     });
   };
 
@@ -498,41 +502,76 @@ function Timeline({
         const rect = rulerScrollRef.current.getBoundingClientRect();
         const x = e.clientX - rect.left + scrollLeft;
         const currentTimeMs = Math.max(0, Math.min(x / pixelsPerMs, projectDurationMs || minZoomDurationMs));
-        
-        // Update drag state with current position for visual feedback
-        const startMs = Math.min(rulerDragState.startTimeMs, currentTimeMs);
-        const endMs = Math.max(rulerDragState.startTimeMs, currentTimeMs);
-        
-        setRulerDragState(prev => ({
-          ...prev,
-          currentStartMs: startMs,
-          currentEndMs: endMs,
-        }));
-        
-        // DO NOT seek during drag - only on click
+
+        if (rulerDragState.mode === 'move' && rulerDragState.initialLoopStartMs !== undefined) {
+          const loopLengthMs = rulerDragState.initialLoopEndMs - rulerDragState.initialLoopStartMs;
+          const timelineDurationMs = projectDurationMs || minZoomDurationMs;
+          let newStartMs = rulerDragState.initialLoopStartMs + (currentTimeMs - rulerDragState.startTimeMs);
+          let newEndMs = newStartMs + loopLengthMs;
+
+          if (newStartMs < 0) {
+            newStartMs = 0;
+            newEndMs = loopLengthMs;
+          } else if (newEndMs > timelineDurationMs) {
+            newEndMs = timelineDurationMs;
+            newStartMs = timelineDurationMs - loopLengthMs;
+          }
+
+          setRulerDragState(prev => ({
+            ...prev,
+            currentStartMs: newStartMs,
+            currentEndMs: newEndMs,
+          }));
+        } else {
+          // Update drag state with current position for visual feedback (loop creation)
+          const startMs = Math.min(rulerDragState.startTimeMs, currentTimeMs);
+          const endMs = Math.max(rulerDragState.startTimeMs, currentTimeMs);
+
+          setRulerDragState(prev => ({
+            ...prev,
+            currentStartMs: startMs,
+            currentEndMs: endMs,
+          }));
+        }
       }
     };
 
     const handleMouseUp = (e) => {
       if (rulerDragState.isDragging) {
-        // Create loop
-        const rect = rulerScrollRef.current.getBoundingClientRect();
-        const x = e.clientX - rect.left + scrollLeft;
-        const endTimeMs = Math.max(0, Math.min(x / pixelsPerMs, projectDurationMs || minZoomDurationMs));
-        
-        const startMs = Math.min(rulerDragState.startTimeMs, endTimeMs);
-        const endMs = Math.max(rulerDragState.startTimeMs, endTimeMs);
-        
-        // Only create loop if there's a meaningful range (at least 100ms)
-        if (endMs - startMs >= 100) {
-          updateProject((proj) => ({
-            ...proj,
-            loop: {
-              enabled: true,
-              startMs,
-              endMs,
-            },
-          }), 'Set loop region');
+        if (rulerDragState.mode === 'move') {
+          const finalStartMs = rulerDragState.currentStartMs ?? rulerDragState.initialLoopStartMs;
+          const finalEndMs = rulerDragState.currentEndMs ?? rulerDragState.initialLoopEndMs;
+          if (finalStartMs !== rulerDragState.initialLoopStartMs || 
+              finalEndMs !== rulerDragState.initialLoopEndMs) {
+            updateProject((proj) => ({
+              ...proj,
+              loop: {
+                ...proj.loop,
+                startMs: finalStartMs,
+                endMs: finalEndMs,
+              },
+            }), 'Move loop region');
+          }
+        } else {
+          // Create loop
+          const rect = rulerScrollRef.current.getBoundingClientRect();
+          const x = e.clientX - rect.left + scrollLeft;
+          const endTimeMs = Math.max(0, Math.min(x / pixelsPerMs, projectDurationMs || minZoomDurationMs));
+          
+          const startMs = Math.min(rulerDragState.startTimeMs, endTimeMs);
+          const endMs = Math.max(rulerDragState.startTimeMs, endTimeMs);
+          
+          // Only create loop if there's a meaningful range (at least 100ms)
+          if (endMs - startMs >= 100) {
+            updateProject((proj) => ({
+              ...proj,
+              loop: {
+                enabled: true,
+                startMs,
+                endMs,
+              },
+            }), 'Set loop region');
+          }
         }
       } else if (rulerDragState.clickedLoop) {
         updateProject((proj) => ({
@@ -760,335 +799,343 @@ function Timeline({
         </div>
       </div>
 
-      {/* Timeline Ruler */}
-      <div className="bg-gray-850 border-b border-gray-700 flex" style={{ height: '24px' }}>
-        <div 
-          ref={rulerScrollRef}
-          className="flex-1 overflow-x-scroll overflow-y-hidden ruler-scrollbar-hidden"
-        >
+      <div className="relative flex-1 flex flex-col" style={{ minWidth: 0 }}>
+        {/* Timeline Ruler */}
+        <div className="bg-gray-850 border-b border-gray-700 flex" style={{ height: '24px' }}>
           <div 
-            style={{ width: `${timelineWidthPx}px`, height: '24px' }} 
-            className="relative cursor-pointer"
-            onMouseDown={handleRulerMouseDown}
+            ref={rulerScrollRef}
+            className="flex-1 overflow-x-scroll overflow-y-hidden ruler-scrollbar-hidden"
           >
-            {/* Time markers */}
-            {Array.from({ 
-              length: Math.ceil(Math.max(minZoomDurationMs, clampedVisibleMs) / rulerIntervalMs) + 1 
-            }).map((_, i) => {
-              const timeMs = i * rulerIntervalMs;
-              if (timeMs * pixelsPerMs > timelineWidthPx + 50) return null;
-              
-              return (
-                <div
-                  key={i}
-                  className="absolute top-0 border-l border-gray-600"
-                  style={{ left: `${timeMs * pixelsPerMs}px`, height: '24px' }}
-                >
-                  <span className="text-xs text-gray-500 ml-1 whitespace-nowrap pointer-events-none select-none">
-                    {formatRulerTime(timeMs, rulerIntervalMs)}
-                  </span>
-                </div>
-              );
-            }).filter(Boolean)}
+            <div 
+              style={{ width: `${timelineWidthPx}px`, height: '24px' }} 
+              className="relative cursor-pointer"
+              onMouseDown={handleRulerMouseDown}
+            >
+              {/* Time markers */}
+              {Array.from({ 
+                length: Math.ceil(Math.max(minZoomDurationMs, clampedVisibleMs) / rulerIntervalMs) + 1 
+              }).map((_, i) => {
+                const timeMs = i * rulerIntervalMs;
+                if (timeMs * pixelsPerMs > timelineWidthPx + 50) return null;
+                
+                return (
+                  <div
+                    key={i}
+                    className="absolute top-0 border-l border-gray-600"
+                    style={{ left: `${timeMs * pixelsPerMs}px`, height: '24px' }}
+                  >
+                    <span className="text-xs text-gray-500 ml-1 whitespace-nowrap pointer-events-none select-none">
+                      {formatRulerTime(timeMs, rulerIntervalMs)}
+                    </span>
+                  </div>
+                );
+              }).filter(Boolean)}
 
-            {/* Loop region background (always show if loop exists, faint when disabled) */}
-            {/* Show drag state if dragging new loop, otherwise show project loop */}
+              {/* Loop region background (always show if loop exists, faint when disabled) */}
+              {/* Show drag state if dragging new loop, otherwise show project loop */}
             {(() => {
               // If dragging a new loop, show that instead of project loop
-              if (rulerDragState?.isDragging && rulerDragState.currentStartMs !== undefined) {
+              if (rulerDragState?.isDragging && rulerDragState.mode === 'create' && rulerDragState.currentStartMs !== undefined) {
                 return (
                   <div
                     className="absolute top-0 bottom-0 pointer-events-none bg-yellow-500 bg-opacity-20"
-                    style={{
-                      left: `${rulerDragState.currentStartMs * pixelsPerMs}px`,
-                      width: `${(rulerDragState.currentEndMs - rulerDragState.currentStartMs) * pixelsPerMs}px`,
-                    }}
-                  />
-                );
-              }
-              
-              // Otherwise show project loop (if it exists)
-              if (project.loop.startMs !== undefined && project.loop.endMs !== undefined) {
-                const rawStartMs = loopMarkerDragState?.currentStartMs ?? project.loop.startMs;
-                const rawEndMs = loopMarkerDragState?.currentEndMs ?? project.loop.endMs;
+                      style={{
+                        left: `${rulerDragState.currentStartMs * pixelsPerMs}px`,
+                        width: `${(rulerDragState.currentEndMs - rulerDragState.currentStartMs) * pixelsPerMs}px`,
+                      }}
+                    />
+                  );
+                }
+                
+                // Otherwise show project loop (if it exists)
+                if (project.loop.startMs !== undefined && project.loop.endMs !== undefined) {
+                const rawStartMs = loopMarkerDragState?.currentStartMs 
+                  ?? (rulerDragState?.mode === 'move' ? rulerDragState.currentStartMs : undefined)
+                  ?? project.loop.startMs;
+                const rawEndMs = loopMarkerDragState?.currentEndMs 
+                  ?? (rulerDragState?.mode === 'move' ? rulerDragState.currentEndMs : undefined)
+                  ?? project.loop.endMs;
                 const displayStartMs = Math.min(rawStartMs, rawEndMs);
                 const displayEndMs = Math.max(rawStartMs, rawEndMs);
                 
                 return (
-                  <div
-                    className={`absolute top-0 bottom-0 pointer-events-none ${
-                      project.loop.enabled ? 'bg-yellow-500 bg-opacity-20' : 'bg-gray-500 bg-opacity-5'
-                    }`}
-                    style={{
-                      left: `${displayStartMs * pixelsPerMs}px`,
-                      width: `${(displayEndMs - displayStartMs) * pixelsPerMs}px`,
-                    }}
-                  />
-                );
-              }
-              
-              return null;
-            })()}
+                    <div
+                      className={`absolute top-0 bottom-0 pointer-events-none ${
+                        project.loop.enabled ? 'bg-yellow-500 bg-opacity-20' : 'bg-gray-500 bg-opacity-5'
+                      }`}
+                      style={{
+                        left: `${displayStartMs * pixelsPerMs}px`,
+                        width: `${(displayEndMs - displayStartMs) * pixelsPerMs}px`,
+                      }}
+                    />
+                  );
+                }
+                
+                return null;
+              })()}
 
-            {/* Loop start marker */}
-            {(() => {
-              // If dragging a new loop, show new loop markers
-              if (rulerDragState?.isDragging && rulerDragState.currentStartMs !== undefined) {
-                return (
-                  <div
-                    className="absolute top-0 bottom-0 w-1 pointer-events-none bg-yellow-500"
-                    style={{
-                      left: `${rulerDragState.currentStartMs * pixelsPerMs}px`,
-                    }}
-                  />
-                );
-              }
-              
-              // Otherwise show project loop markers
+              {/* Loop start marker */}
+              {(() => {
+                // If dragging a new loop, show new loop markers
+                if (rulerDragState?.isDragging && rulerDragState.currentStartMs !== undefined) {
+                  return (
+                    <div
+                      className="absolute top-0 bottom-0 w-1 pointer-events-none bg-yellow-500"
+                      style={{
+                        left: `${rulerDragState.currentStartMs * pixelsPerMs}px`,
+                      }}
+                    />
+                  );
+                }
+                
+                // Otherwise show project loop markers
               if (project.loop.startMs !== undefined && project.loop.endMs !== undefined) {
-                const displayStartMs = loopMarkerDragState?.currentStartMs ?? project.loop.startMs;
+                const displayStartMs = loopMarkerDragState?.currentStartMs 
+                  ?? (rulerDragState?.mode === 'move' ? rulerDragState.currentStartMs : undefined)
+                  ?? project.loop.startMs;
                 
                 return (
                   <div
                     className={`absolute top-0 bottom-0 w-1 cursor-ew-resize ${
-                      project.loop.enabled ? 'bg-yellow-500' : 'bg-gray-500 opacity-40'
-                    }`}
-                    style={{
-                      left: `${displayStartMs * pixelsPerMs}px`,
-                    }}
-                    onMouseDown={(e) => handleLoopMarkerMouseDown(e, 'start')}
-                  />
-                );
-              }
-              
-              return null;
-            })()}
+                        project.loop.enabled ? 'bg-yellow-500' : 'bg-gray-500 opacity-40'
+                      }`}
+                      style={{
+                        left: `${displayStartMs * pixelsPerMs}px`,
+                      }}
+                      onMouseDown={(e) => handleLoopMarkerMouseDown(e, 'start')}
+                    />
+                  );
+                }
+                
+                return null;
+              })()}
 
-            {/* Loop end marker */}
-            {(() => {
-              // If dragging a new loop, show new loop end marker
-              if (rulerDragState?.isDragging && rulerDragState.currentEndMs !== undefined) {
-                return (
-                  <div
-                    className="absolute top-0 bottom-0 w-1 pointer-events-none bg-yellow-500"
-                    style={{
-                      left: `${rulerDragState.currentEndMs * pixelsPerMs}px`,
-                    }}
-                  />
-                );
-              }
-              
-              // Otherwise show project loop end marker
+              {/* Loop end marker */}
+              {(() => {
+                // If dragging a new loop, show new loop end marker
+                if (rulerDragState?.isDragging && rulerDragState.currentEndMs !== undefined) {
+                  return (
+                    <div
+                      className="absolute top-0 bottom-0 w-1 pointer-events-none bg-yellow-500"
+                      style={{
+                        left: `${rulerDragState.currentEndMs * pixelsPerMs}px`,
+                      }}
+                    />
+                  );
+                }
+                
+                // Otherwise show project loop end marker
               if (project.loop.startMs !== undefined && project.loop.endMs !== undefined) {
-                const displayEndMs = loopMarkerDragState?.currentEndMs ?? project.loop.endMs;
+                const displayEndMs = loopMarkerDragState?.currentEndMs 
+                  ?? (rulerDragState?.mode === 'move' ? rulerDragState.currentEndMs : undefined)
+                  ?? project.loop.endMs;
                 
                 return (
                   <div
-                    className={`absolute top-0 bottom-0 w-1 cursor-ew-resize ${
-                      project.loop.enabled ? 'bg-yellow-500' : 'bg-gray-500 opacity-40'
-                    }`}
-                    style={{
-                      left: `${displayEndMs * pixelsPerMs}px`,
-                    }}
-                    onMouseDown={(e) => handleLoopMarkerMouseDown(e, 'end')}
-                  />
-                );
-              }
-              
-              return null;
-            })()}
+                      className={`absolute top-0 bottom-0 w-1 cursor-ew-resize ${
+                        project.loop.enabled ? 'bg-yellow-500' : 'bg-gray-500 opacity-40'
+                      }`}
+                      style={{
+                        left: `${displayEndMs * pixelsPerMs}px`,
+                      }}
+                      onMouseDown={(e) => handleLoopMarkerMouseDown(e, 'end')}
+                    />
+                  );
+                }
+                
+                return null;
+              })()}
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Timeline Tracks */}
-      <div 
-        ref={timelineRef}
-        className="flex-1 overflow-hidden relative"
-        style={{ minWidth: 0 }}
-        onClick={handleTimelineClick}
-        onContextMenu={handleContextMenu}
-      >
+        {/* Timeline Tracks */}
         <div 
-          ref={(el) => {
-            tracksScrollRef.current = el;
-            if (internalScrollRef) {
-              internalScrollRef.current = el;
-            }
-          }}
-          className="absolute inset-0 overflow-auto scrollbar-hidden"
-          onScroll={(e) => {
-            const newScrollLeft = e.target.scrollLeft;
-            setScrollLeft(newScrollLeft);
-            if (rulerScrollRef.current) {
-              rulerScrollRef.current.scrollLeft = newScrollLeft;
-            }
-            // Notify parent of vertical scroll
-            if (onVerticalScroll) {
-              onVerticalScroll(e.target.scrollTop);
-            }
-          }}
+          ref={timelineRef}
+          className="flex-1 overflow-hidden relative"
+          style={{ minWidth: 0 }}
+          onClick={handleTimelineClick}
+          onContextMenu={handleContextMenu}
         >
-          <div style={{ width: `${timelineWidthPx}px`, height: `${totalTimelineHeight}px`, position: 'relative' }}>
-            {project.tracks.map((track, trackIndex) => {
-              const trackHeight = getTrackHeight(track);
-              const trackY = getTrackYPosition(project.tracks, trackIndex);
-              
-              return (
-                <div
-                  key={track.id}
-                  className={`border-b border-gray-700 relative ${track.locked ? 'bg-gray-850' : ''}`}
-                  style={{ 
-                    height: `${trackHeight}px`,
-                    top: `${trackY}px`,
-                    position: 'absolute',
-                    width: '100%'
-                  }}
-                >
-                  {/* Locked track label */}
-                  {track.locked && (
-                    <div className="absolute left-2 top-1 text-xs text-gray-500 italic pointer-events-none z-10">
-                      {track.name} (locked)
-                    </div>
-                  )}
+          <div 
+            ref={(el) => {
+              tracksScrollRef.current = el;
+              if (internalScrollRef) {
+                internalScrollRef.current = el;
+              }
+            }}
+            className="absolute inset-0 overflow-auto scrollbar-hidden"
+            onScroll={(e) => {
+              const newScrollLeft = e.target.scrollLeft;
+              setScrollLeft(newScrollLeft);
+              if (rulerScrollRef.current) {
+                rulerScrollRef.current.scrollLeft = newScrollLeft;
+              }
+              // Notify parent of vertical scroll
+              if (onVerticalScroll) {
+                onVerticalScroll(e.target.scrollTop);
+              }
+            }}
+          >
+            <div style={{ width: `${timelineWidthPx}px`, height: `${totalTimelineHeight}px`, position: 'relative' }}>
+              {project.tracks.map((track, trackIndex) => {
+                const trackHeight = getTrackHeight(track);
+                const trackY = getTrackYPosition(project.tracks, trackIndex);
 
-                  {/* Clips */}
-                  {track.clips.map(clip => {
-                    const clipDurationMs = clip.cropEndMs - clip.cropStartMs;
-                    const clipWidthPx = clipDurationMs * pixelsPerMs;
-                    const clipLeftPx = clip.timelineStartMs * pixelsPerMs;
-                    const audioBuffer = audioManager.mediaCache.get(clip.blobId);
-                    const clipPadding = track.locked ? 4 : 8;
-                    const clipInternalHeight = trackHeight - (clipPadding * 2);
-
-                    return (
-                      <div
-                        key={clip.id}
-                        className={`absolute rounded overflow-hidden ${
-                          track.locked ? 'cursor-not-allowed opacity-50' : ''
-                        } ${
-                          selectedClipId === clip.id 
-                            ? 'ring-2 ring-blue-500' 
-                            : 'hover:ring-2 hover:ring-gray-500'
-                        }`}
-                        style={{
-                          left: `${clipLeftPx}px`,
-                          top: `${clipPadding}px`,
-                          width: `${clipWidthPx}px`,
-                          height: `${clipInternalHeight}px`,
-                          backgroundColor: 'rgba(79, 142, 247, 0.3)',
-                        }}
-                        onClick={(e) => handleClipClick(e, clip.id, track.id)}
-                        onMouseDown={(e) => handleClipMouseDown(e, clip, track)}
-                      >
-                        {/* Middle area with move cursor */}
-                        {!track.locked && (
-                          <div 
-                            className="absolute inset-0 cursor-move"
-                            style={{ 
-                              pointerEvents: 'none',
-                              zIndex: 1,
-                            }}
-                          />
-                        )}
-                        {/* Waveform - now shown for locked tracks too */}
-                        {audioBuffer && (
-                          <Waveform
-                            audioBuffer={audioBuffer}
-                            clipId={clip.id}
-                            cropStartMs={clip.cropStartMs}
-                            cropEndMs={clip.cropEndMs}
-                            sourceDurationMs={clip.sourceDurationMs}
-                            height={clipInternalHeight}
-                            color="rgba(79, 142, 247, 0.8)"
-                            globalPeakAmplitude={globalPeakAmplitude}
-                          />
-                        )}
-
-                        {/* Clip Label - hidden for locked tracks to save space */}
-                        {!track.locked && (
-                          <div className="absolute top-1 left-2 text-xs text-white font-medium pointer-events-none">
-                            {track.name}
-                            {clip.gainDb !== 0 && (
-                              <span className="ml-2 text-yellow-400">
-                                {clip.gainDb > 0 ? '+' : ''}{clip.gainDb.toFixed(1)} dB
-                              </span>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Resize Handles - wider invisible hover zones with visible indicators */}
-                        {!track.locked && (
-                          <>
-                            <div 
-                              className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize group"
-                              style={{ 
-                                zIndex: 10,
-                              }}
-                            >
-                              <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-400 opacity-0 group-hover:opacity-70 transition-opacity"></div>
-                            </div>
-                            <div 
-                              className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize group"
-                              style={{ 
-                                zIndex: 10,
-                              }}
-                            >
-                              <div className="absolute right-0 top-0 bottom-0 w-1 bg-blue-400 opacity-0 group-hover:opacity-70 transition-opacity"></div>
-                            </div>
-                          </>
-                        )}
+                return (
+                  <div
+                    key={track.id}
+                    className={`border-b border-gray-700 relative ${track.locked ? 'bg-gray-850' : ''}`}
+                    style={{ 
+                      height: `${trackHeight}px`,
+                      top: `${trackY}px`,
+                      position: 'absolute',
+                      width: '100%'
+                    }}
+                  >
+                    {/* Locked track label */}
+                    {track.locked && (
+                      <div className="absolute left-2 top-1 text-xs text-gray-500 italic pointer-events-none z-10">
+                        {track.name} (locked)
                       </div>
-                    );
-                  })}
+                    )}
 
-                  {/* Recording Clip - show in real-time during recording */}
-                  {isRecording && recordingSegments && recordingSegments.length > 0 && selectedTrackId === track.id && (() => {
-                    const currentSegment = recordingSegments[recordingSegments.length - 1];
-                    const recordingStartMs = currentSegment.startTimeMs;
-                    const recordingDurationMs = Math.max(0, currentTimeMs - recordingStartMs);
-                    const recordingWidthPx = recordingDurationMs * pixelsPerMs;
-                    const recordingLeftPx = recordingStartMs * pixelsPerMs;
-                    const clipPadding = track.locked ? 4 : 8;
-                    const clipInternalHeight = trackHeight - (clipPadding * 2);
+                    {/* Clips */}
+                    {track.clips.map(clip => {
+                      const clipDurationMs = clip.cropEndMs - clip.cropStartMs;
+                      const clipWidthPx = clipDurationMs * pixelsPerMs;
+                      const clipLeftPx = clip.timelineStartMs * pixelsPerMs;
+                      const audioBuffer = audioManager.mediaCache.get(clip.blobId);
+                      const clipPadding = track.locked ? 4 : 8;
+                      const clipInternalHeight = trackHeight - (clipPadding * 2);
 
-                    return (
-                      <div
-                        key="recording-clip"
-                        className="absolute rounded overflow-hidden pointer-events-none animate-pulse"
-                        style={{
-                          left: `${recordingLeftPx}px`,
-                          top: `${clipPadding}px`,
-                          width: `${recordingWidthPx}px`,
-                          height: `${clipInternalHeight}px`,
-                          backgroundColor: 'rgba(239, 68, 68, 0.3)',
-                          border: '2px solid rgb(239, 68, 68)',
-                        }}
-                      >
-                        {!track.locked && (
-                          <div className="absolute top-1 left-2 text-xs text-red-500 font-bold pointer-events-none flex items-center gap-1">
-                            <span className="inline-block w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
-                            REC {recordingSegments.length > 1 && `(${recordingSegments.length})`}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </div>
-              );
-            })}
+                      return (
+                        <div
+                          key={clip.id}
+                          className={`absolute rounded overflow-hidden ${
+                            track.locked ? 'cursor-not-allowed opacity-50' : ''
+                          } ${
+                            selectedClipId === clip.id 
+                              ? 'ring-2 ring-blue-500' 
+                              : 'hover:ring-2 hover:ring-gray-500'
+                          }`}
+                          style={{
+                            left: `${clipLeftPx}px`,
+                            top: `${clipPadding}px`,
+                            width: `${clipWidthPx}px`,
+                            height: `${clipInternalHeight}px`,
+                            backgroundColor: 'rgba(79, 142, 247, 0.3)',
+                          }}
+                          onClick={(e) => handleClipClick(e, clip.id, track.id)}
+                          onMouseDown={(e) => handleClipMouseDown(e, clip, track)}
+                        >
+                          {/* Middle area with move cursor */}
+                          {!track.locked && (
+                            <div 
+                              className="absolute inset-0 cursor-move"
+                              style={{ 
+                                pointerEvents: 'none',
+                                zIndex: 1,
+                              }}
+                            />
+                          )}
+                          {/* Waveform - now shown for locked tracks too */}
+                          {audioBuffer && (
+                            <Waveform
+                              audioBuffer={audioBuffer}
+                              clipId={clip.id}
+                              cropStartMs={clip.cropStartMs}
+                              cropEndMs={clip.cropEndMs}
+                              sourceDurationMs={clip.sourceDurationMs}
+                              height={clipInternalHeight}
+                              color="rgba(79, 142, 247, 0.8)"
+                              globalPeakAmplitude={globalPeakAmplitude}
+                            />
+                          )}
+
+                          {/* Clip Label - hidden for locked tracks to save space */}
+                          {!track.locked && (
+                            <div className="absolute top-1 left-2 text-xs text-white font-medium pointer-events-none">
+                              {track.name}
+                              {clip.gainDb !== 0 && (
+                                <span className="ml-2 text-yellow-400">
+                                  {clip.gainDb > 0 ? '+' : ''}{clip.gainDb.toFixed(1)} dB
+                                </span>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Resize Handles - wider invisible hover zones with visible indicators */}
+                          {!track.locked && (
+                            <>
+                              <div 
+                                className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize group"
+                                style={{ 
+                                  zIndex: 10,
+                                }}
+                              >
+                                <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-400 opacity-0 group-hover:opacity-70 transition-opacity"></div>
+                              </div>
+                              <div 
+                                className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize group"
+                                style={{ 
+                                  zIndex: 10,
+                                }}
+                              >
+                                <div className="absolute right-0 top-0 bottom-0 w-1 bg-blue-400 opacity-0 group-hover:opacity-70 transition-opacity"></div>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* Recording Clip - show in real-time during recording */}
+                    {isRecording && recordingSegments && recordingSegments.length > 0 && selectedTrackId === track.id && (() => {
+                      const currentSegment = recordingSegments[recordingSegments.length - 1];
+                      const recordingStartMs = currentSegment.startTimeMs;
+                      const recordingDurationMs = Math.max(0, currentTimeMs - recordingStartMs);
+                      const recordingWidthPx = recordingDurationMs * pixelsPerMs;
+                      const recordingLeftPx = recordingStartMs * pixelsPerMs;
+                      const clipPadding = track.locked ? 4 : 8;
+                      const clipInternalHeight = trackHeight - (clipPadding * 2);
+
+                      return (
+                        <div
+                          key="recording-clip"
+                          className="absolute rounded overflow-hidden pointer-events-none animate-pulse"
+                          style={{
+                            left: `${recordingLeftPx}px`,
+                            top: `${clipPadding}px`,
+                            width: `${recordingWidthPx}px`,
+                            height: `${clipInternalHeight}px`,
+                            backgroundColor: 'rgba(239, 68, 68, 0.3)',
+                            border: '2px solid rgb(239, 68, 68)',
+                          }}
+                        >
+                          {!track.locked && (
+                            <div className="absolute top-1 left-2 text-xs text-red-500 font-bold pointer-events-none flex items-center gap-1">
+                              <span className="inline-block w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+                              REC {recordingSegments.length > 1 && `(${recordingSegments.length})`}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
 
         {/* Playhead */}
         <div
-          className="absolute top-0 bottom-0 w-0.5 bg-red-500 pointer-events-none z-20"
+          className="absolute top-0 bottom-0 w-0.5 bg-red-500 pointer-events-none z-30"
           style={{
             left: `${currentTimeMs * pixelsPerMs - scrollLeft}px`,
           }}
-        >
-          <div className="w-3 h-3 bg-red-500 -ml-1.5 -mt-1 rounded-sm"></div>
-        </div>
+        />
       </div>
     </div>
   );
