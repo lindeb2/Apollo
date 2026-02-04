@@ -3,19 +3,23 @@
  * Handles volume/pan conversions per spec
  */
 
+const MIN_VOLUME_DB = -60;
+const MAX_VOLUME_DB = 6;
+const VOLUME_RANGE_DB = MAX_VOLUME_DB - MIN_VOLUME_DB;
+
 /**
  * Convert volume slider value (0-100) to decibels
- * Spec: dB = -60 + (slider / 100) * 60
+ * Spec: dB = -60 + (slider / 100) * 66
  */
 export function volumeToDb(sliderValue) {
-  return -60 + (sliderValue / 100) * 60;
+  return MIN_VOLUME_DB + (sliderValue / 100) * VOLUME_RANGE_DB;
 }
 
 /**
  * Convert decibels to volume slider value (0-100)
  */
 export function dbToVolume(db) {
-  return ((db + 60) / 60) * 100;
+  return ((db - MIN_VOLUME_DB) / VOLUME_RANGE_DB) * 100;
 }
 
 /**

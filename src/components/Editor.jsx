@@ -865,11 +865,11 @@ function Editor({ onBackToDashboard }) {
                 value={masterVolume}
                 onChange={(e) => setMasterVolume(parseFloat(e.target.value))}
                 onDoubleClick={handleMasterVolumeDoubleClick}
-                className="w-24 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                className="w-28 volume-slider cursor-pointer"
                 title="Master Volume (double-click for numeric input)"
               />
               <span className="text-xs text-gray-500 w-16 text-right">
-                {volumeToDb(masterVolume).toFixed(1)} dB
+                {masterVolume === 0 ? '-∞ dB' : `${volumeToDb(masterVolume).toFixed(1)} dB`}
               </span>
             </div>
 

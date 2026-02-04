@@ -1,25 +1,38 @@
 import { useState } from 'react';
-import { Lock, Unlock, Volume2, VolumeX } from 'lucide-react';
-import { volumeToDb, dbToVolume } from '../utils/audio';
+import { Lock, Unlock, Volume2, VolumeX, Headphones, Mic, Music, Users, Waves } from 'lucide-react';
 import { TRACK_ROLES } from '../types/project';
 
-const TRACK_HEIGHT = 140; // Increased from 120 to prevent overflow
-const LOCKED_TRACK_HEIGHT = 40; // Increased to accommodate waveforms
-
-// Define role cycle order
-const ROLE_ORDER = [
-  TRACK_ROLES.INSTRUMENT,
-  TRACK_ROLES.LEAD,
-  TRACK_ROLES.CHOIR_PART_1,
-  TRACK_ROLES.CHOIR_PART_2,
-  TRACK_ROLES.CHOIR_PART_3,
-  TRACK_ROLES.CHOIR_PART_4,
-  TRACK_ROLES.CHOIR_PART_5,
-  TRACK_ROLES.OTHER,
-];
+const TRACK_HEIGHT = 120;
+const LOCKED_TRACK_HEIGHT = 120; // Keep layout consistent for locked tracks
 
 function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
   const [editingName, setEditingName] = useState(null);
+  const iconOptions = [
+    { key: 'mic', Icon: Mic },
+    { key: 'music', Icon: Music },
+    { key: 'users', Icon: Users },
+    { key: 'wave', Icon: Waves },
+  ];
+
+  const getDefaultIconKey = (role) => {
+    if (role === TRACK_ROLES.INSTRUMENT) return 'music';
+    if (role === TRACK_ROLES.LEAD) return 'mic';
+    if (role.startsWith('choir-part')) return 'users';
+    return 'wave';
+  };
+
+  const getIconForTrack = (track) => {
+    const iconKey = track.icon || getDefaultIconKey(track.role);
+    const option = iconOptions.find(opt => opt.key === iconKey);
+    return option || iconOptions[0];
+  };
+
+  const cycleIcon = (track) => {
+    const iconKey = track.icon || getDefaultIconKey(track.role);
+    const currentIndex = iconOptions.findIndex(opt => opt.key === iconKey);
+    const nextIndex = (currentIndex + 1) % iconOptions.length;
+    onUpdateTrack(track.id, { icon: iconOptions[nextIndex].key });
+  };
 
   const handleVolumeChange = (trackId, value) => {
     onUpdateTrack(trackId, { volume: parseFloat(value) });
@@ -48,27 +61,6 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
     setEditingName(null);
   };
 
-  const handleRoleClick = (trackId, currentRole) => {
-    const currentIndex = ROLE_ORDER.indexOf(currentRole);
-    const nextIndex = (currentIndex + 1) % ROLE_ORDER.length;
-    const nextRole = ROLE_ORDER[nextIndex];
-    onUpdateTrack(trackId, { role: nextRole });
-  };
-
-  const getRoleLabel = (role) => {
-    const labels = {
-      'instrument': 'Inst',
-      'lead': 'Lead',
-      'choir-part-1': 'C1',
-      'choir-part-2': 'C2',
-      'choir-part-3': 'C3',
-      'choir-part-4': 'C4',
-      'choir-part-5': 'C5',
-      'other': 'Other',
-    };
-    return labels[role] || role;
-  };
-
   const getRoleColor = (role) => {
     const colors = {
       'instrument': 'bg-purple-600',
@@ -95,12 +87,12 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
     <div className="flex flex-col">
       {tracks.map((track) => {
         const trackHeight = track.locked ? LOCKED_TRACK_HEIGHT : TRACK_HEIGHT;
+        const { Icon: TrackIcon } = getIconForTrack(track);
         
         return (
           <div
             key={track.id}
-            onClick={() => onSelectTrack(track.id)}
-            className={`border-b border-gray-700 px-3 py-2 cursor-pointer transition-colors ${
+            className={`border-b border-gray-700 px-4 py-3 cursor-pointer transition-colors ${
               selectedTrackId === track.id
                 ? 'bg-gray-700'
                 : 'bg-gray-800 hover:bg-gray-750'
@@ -110,130 +102,108 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
               minHeight: `${trackHeight}px`,
               maxHeight: `${trackHeight}px`,
               display: 'flex',
-              flexDirection: 'column',
-              justifyContent: track.locked ? 'center' : 'space-between'
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: '16px'
             }}
           >
-            {track.locked ? (
-              // Compact locked track view
-              <div className="flex items-center gap-2">
-                {/* Lock Button */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleToggleLock(track.id, track.locked);
-                  }}
-                  className="p-1 rounded transition-colors flex-shrink-0 text-gray-500 hover:text-gray-400"
-                  title="Unlock track"
-                >
-                  <Lock size={16} />
-                </button>
+            <div
+              className="flex-shrink-0"
+              onClick={() => onSelectTrack(track.id)}
+            >
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  cycleIcon(track);
+                }}
+                className={`w-14 h-14 rounded-lg ${getRoleColor(track.role)} text-white flex items-center justify-center`}
+                title="Click to change icon"
+              >
+                <TrackIcon size={22} />
+              </button>
+            </div>
 
-                {/* Track Name (smaller for locked) */}
-                <span className="flex-1 text-sm text-gray-400 truncate italic min-w-0">
-                  {track.name}
-                </span>
+            <div className="flex-1 min-w-0 flex flex-col gap-3">
+              {/* Upper Row: Name */}
+              <div
+                className="flex items-center min-w-0"
+                onClick={() => onSelectTrack(track.id)}
+              >
+                {editingName === track.id ? (
+                  <input
+                    type="text"
+                    defaultValue={track.name}
+                    autoFocus
+                    onBlur={(e) => handleNameChange(track.id, e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        handleNameChange(track.id, e.target.value);
+                      } else if (e.key === 'Escape') {
+                        setEditingName(null);
+                      }
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-lg leading-tight focus:outline-none min-w-0"
+                  />
+                ) : (
+                  <span
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      setEditingName(track.id);
+                    }}
+                    className="flex-1 text-lg font-semibold truncate min-w-0"
+                    title="Double-click to edit"
+                  >
+                    {track.name}
+                  </span>
+                )}
               </div>
-            ) : (
-              // Full track view
-              <>
-                {/* Top Row: Name, Role, Controls */}
-                <div className="flex items-center gap-2 mb-1">
-                  {/* Lock Button */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleToggleLock(track.id, track.locked);
-                    }}
-                    className="p-1 rounded transition-colors flex-shrink-0 text-gray-500 hover:text-gray-400"
-                    title="Lock track"
-                  >
-                    <Unlock size={14} />
-                  </button>
 
-                  {/* Track Name */}
-                  {editingName === track.id ? (
-                    <input
-                      type="text"
-                      defaultValue={track.name}
-                      autoFocus
-                      onBlur={(e) => handleNameChange(track.id, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          handleNameChange(track.id, e.target.value);
-                        } else if (e.key === 'Escape') {
-                          setEditingName(null);
-                        }
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                      className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-sm leading-tight focus:outline-none min-w-0"
-                    />
-                  ) : (
-                    <span
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        setEditingName(track.id);
-                      }}
-                      className="flex-1 text-sm font-medium truncate min-w-0"
-                      title="Double-click to edit"
-                    >
-                      {track.name}
-                    </span>
-                  )}
-
-                  {/* Role Badge (Clickable) */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleRoleClick(track.id, track.role);
-                    }}
-                    className={`text-xs ${getRoleColor(track.role)} hover:opacity-80 transition-opacity px-2 py-1 rounded flex-shrink-0 font-semibold text-white`}
-                    title={`Click to change role (current: ${track.role})`}
-                  >
-                    {getRoleLabel(track.role)}
-                  </button>
-
-                  {/* Mute Button */}
+              {/* Lower Row: Controls */}
+              <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center gap-0">
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       handleToggleMute(track.id, track.muted);
                     }}
-                    className={`p-1 rounded transition-colors flex-shrink-0 ${
+                    className={`w-7 h-7 flex items-center justify-center rounded-l-md rounded-r-none border border-gray-600 transition-colors ${
                       track.muted
                         ? 'bg-red-600 text-white'
-                        : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                        : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
                     }`}
                     title={track.muted ? 'Unmute' : 'Mute'}
                   >
-                    {track.muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                    {track.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
                   </button>
-
-                  {/* Solo Button */}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       handleToggleSolo(track.id, track.soloed);
                     }}
-                    className={`px-2 py-1 rounded text-xs font-semibold transition-colors flex-shrink-0 ${
+                    className={`w-7 h-7 flex items-center justify-center rounded-r-md rounded-l-none border border-l-0 border-gray-600 transition-colors ${
                       track.soloed
                         ? 'bg-yellow-600 text-white'
-                        : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                        : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
                     }`}
                     title={track.soloed ? 'Unsolo' : 'Solo'}
                   >
-                    S
+                    <Headphones size={16} />
                   </button>
                 </div>
 
-                {/* Middle Row: Volume Control */}
-                <div className="mb-1">
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-xs text-gray-400">Vol</label>
-                    <span className="text-xs text-gray-500">
-                      {volumeToDb(track.volume).toFixed(1)} dB
-                    </span>
-                  </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleToggleLock(track.id, track.locked);
+                  }}
+                  className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-600 transition-colors bg-gray-800 hover:bg-gray-600 text-gray-300 -ml-1"
+                  title={track.locked ? 'Unlock track' : 'Lock track'}
+                >
+                  {track.locked ? <Lock size={16} /> : <Unlock size={16} />}
+                </button>
+
+                <div className="flex-1 flex items-center">
                   <input
                     type="range"
                     min="0"
@@ -246,19 +216,20 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
                     }}
                     onMouseDown={(e) => e.stopPropagation()}
                     onClick={(e) => e.stopPropagation()}
-                    className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                    className="w-full volume-slider volume-slider-lg cursor-pointer"
                   />
                 </div>
 
-                {/* Bottom Row: Pan Control */}
-                <div className="mb-1">
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="text-xs text-gray-400">Pan</label>
-                    <span className="text-xs text-gray-500">
-                      {track.pan > 0 ? 'R' : track.pan < 0 ? 'L' : 'C'}
-                      {track.pan !== 0 ? Math.abs(track.pan) : ''}
-                    </span>
-                  </div>
+                <div className="relative w-12 h-12 flex-shrink-0">
+                  <div className="absolute inset-0 rounded-full bg-gray-800 border border-gray-600 shadow-inner pointer-events-none" />
+                  <div className="absolute inset-1 rounded-full bg-gray-700 shadow-inner pointer-events-none" />
+                  <div
+                    className="absolute left-1/2 top-1/2 w-1 h-3 bg-gray-200 rounded-full origin-bottom pointer-events-none"
+                    style={{
+                      transform: `translate(-50%, -100%) rotate(${(track.pan / 100) * 135}deg)`,
+                    }}
+                  />
+                  <div className="absolute top-1/2 left-1/2 w-1.5 h-1.5 rounded-full bg-emerald-400 -translate-x-1/2 -translate-y-5 pointer-events-none" />
                   <input
                     type="range"
                     min="-100"
@@ -271,11 +242,12 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
                     }}
                     onMouseDown={(e) => e.stopPropagation()}
                     onClick={(e) => e.stopPropagation()}
-                    className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                    className="absolute inset-0 pan-knob opacity-0 cursor-pointer z-10 pointer-events-auto appearance-none touch-none"
+                    aria-label="Pan"
                   />
                 </div>
-              </>
-            )}
+              </div>
+            </div>
           </div>
         );
       })}

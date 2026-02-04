@@ -34,6 +34,7 @@ export const SAMPLE_RATE = 44100;
  * @property {string} id - UUID
  * @property {string} name - Track name
  * @property {string} role - Track role (from TRACK_ROLES)
+ * @property {string} icon - Track icon key
  * @property {boolean} locked - Lock state (locked tracks are non-draggable)
  * @property {number} volume - Volume (0-100, maps to -60dB to 0dB)
  * @property {number} pan - Pan (-100 to +100, maps to -1 to +1)
@@ -81,10 +82,22 @@ export function createEmptyProject(name = 'Untitled Project') {
  * Create a new track
  */
 export function createTrack(name, role = TRACK_ROLES.OTHER, locked = false) {
+  const defaultIconByRole = {
+    [TRACK_ROLES.INSTRUMENT]: 'music',
+    [TRACK_ROLES.LEAD]: 'mic',
+    [TRACK_ROLES.CHOIR_PART_1]: 'users',
+    [TRACK_ROLES.CHOIR_PART_2]: 'users',
+    [TRACK_ROLES.CHOIR_PART_3]: 'users',
+    [TRACK_ROLES.CHOIR_PART_4]: 'users',
+    [TRACK_ROLES.CHOIR_PART_5]: 'users',
+    [TRACK_ROLES.OTHER]: 'wave',
+  };
+
   return {
     id: crypto.randomUUID(),
     name,
     role,
+    icon: defaultIconByRole[role] || 'wave',
     locked,
     volume: 100,
     pan: 0,
