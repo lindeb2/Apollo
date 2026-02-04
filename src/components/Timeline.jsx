@@ -461,15 +461,15 @@ function Timeline({
     const rect = rulerScrollRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left + scrollLeft;
     const timeMs = Math.max(0, Math.min(x / pixelsPerMs, projectDurationMs || minZoomDurationMs));
+    const hasLoop = project.loop.startMs !== undefined && project.loop.endMs !== undefined;
+    const clickedLoop = hasLoop && timeMs >= project.loop.startMs && timeMs <= project.loop.endMs;
     
     setRulerDragState({
       startTimeMs: timeMs,
       startX: e.clientX,
       isDragging: false,
+      clickedLoop,
     });
-    
-    // Immediately seek to clicked position
-    onSeek(timeMs);
   };
 
   const handleLoopMarkerMouseDown = (e, markerType) => {
@@ -534,6 +534,16 @@ function Timeline({
             },
           }), 'Set loop region');
         }
+      } else if (rulerDragState.clickedLoop) {
+        updateProject((proj) => ({
+          ...proj,
+          loop: {
+            ...proj.loop,
+            enabled: !proj.loop.enabled,
+          },
+        }), 'Toggle loop');
+      } else {
+        onSeek(rulerDragState.startTimeMs);
       }
       
       setRulerDragState(null);
@@ -561,11 +571,11 @@ function Timeline({
       let newEndMs = loopMarkerDragState.initialEndMs;
       
       if (loopMarkerDragState.markerType === 'start') {
-        // Dragging start marker - ensure it doesn't go past end (with 100ms minimum)
-        newStartMs = Math.min(timeMs, loopMarkerDragState.initialEndMs - 100);
+        // Dragging start marker - allow crossing past end
+        newStartMs = timeMs;
       } else {
-        // Dragging end marker - ensure it doesn't go before start (with 100ms minimum)
-        newEndMs = Math.max(timeMs, loopMarkerDragState.initialStartMs + 100);
+        // Dragging end marker - allow crossing past start
+        newEndMs = timeMs;
       }
       
       // Update the drag state to store current values for visual update
@@ -578,8 +588,10 @@ function Timeline({
 
     const handleMouseUp = () => {
       // Get final values from drag state
-      const finalStartMs = loopMarkerDragState.currentStartMs ?? loopMarkerDragState.initialStartMs;
-      const finalEndMs = loopMarkerDragState.currentEndMs ?? loopMarkerDragState.initialEndMs;
+      const rawStartMs = loopMarkerDragState.currentStartMs ?? loopMarkerDragState.initialStartMs;
+      const rawEndMs = loopMarkerDragState.currentEndMs ?? loopMarkerDragState.initialEndMs;
+      const finalStartMs = Math.min(rawStartMs, rawEndMs);
+      const finalEndMs = Math.max(rawStartMs, rawEndMs);
       
       // Only create undo entry if values actually changed
       if (finalStartMs !== loopMarkerDragState.initialStartMs || 
@@ -797,8 +809,10 @@ function Timeline({
               
               // Otherwise show project loop (if it exists)
               if (project.loop.startMs !== undefined && project.loop.endMs !== undefined) {
-                const displayStartMs = loopMarkerDragState?.currentStartMs ?? project.loop.startMs;
-                const displayEndMs = loopMarkerDragState?.currentEndMs ?? project.loop.endMs;
+                const rawStartMs = loopMarkerDragState?.currentStartMs ?? project.loop.startMs;
+                const rawEndMs = loopMarkerDragState?.currentEndMs ?? project.loop.endMs;
+                const displayStartMs = Math.min(rawStartMs, rawEndMs);
+                const displayEndMs = Math.max(rawStartMs, rawEndMs);
                 
                 return (
                   <div
