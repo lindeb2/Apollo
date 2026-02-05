@@ -323,7 +323,7 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
                     className="w-full volume-slider volume-slider-lg cursor-pointer"
                   />
                   {dragTooltip?.trackId === track.id && dragTooltip.type === 'volume' && (
-                    <div className="absolute -top-8 left-1/2 -translate-x-1/2 w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center">
+                    <div className="absolute -top-6 left-1/2 -translate-x-1/2 w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center">
                       {dragTooltip.value <= 0 ? '-∞' : volumeToDb(dragTooltip.value).toFixed(1)}
                     </div>
                   )}
@@ -341,7 +341,7 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
                           setEditTooltip(null);
                         }
                       }}
-                      className="absolute -top-8 left-1/2 -translate-x-1/2 w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none"
+                      className="absolute -top-6 left-1/2 -translate-x-1/2 w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none"
                       autoFocus
                     />
                   )}
@@ -375,7 +375,7 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
                     aria-label="Pan"
                   />
                   {dragTooltip?.trackId === track.id && dragTooltip.type === 'pan' && (
-                    <div className="absolute -top-8 left-1/2 -translate-x-1/2 w-12 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center">
+                    <div className="absolute -top-6 left-1/2 -translate-x-1/2 w-12 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center">
                       {Math.round(dragTooltip.value)}
                     </div>
                   )}
@@ -393,7 +393,7 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
                           setEditTooltip(null);
                         }
                       }}
-                      className="absolute -top-8 left-1/2 -translate-x-1/2 w-12 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none"
+                      className="absolute -top-6 left-1/2 -translate-x-1/2 w-12 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none"
                       autoFocus
                     />
                   )}
