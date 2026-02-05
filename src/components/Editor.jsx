@@ -897,7 +897,7 @@ function Editor({ onBackToDashboard }) {
                   readOnly
                   onMouseDown={handleMasterVolumeMouseDown}
                   onDoubleClick={handleMasterVolumeDoubleClick}
-                  className="w-28 volume-slider cursor-pointer"
+                  className="w-28 volume-slider cursor-pointer block"
                   title="Master Volume (double-click for numeric input)"
                 />
                 {masterEditTooltip && (
@@ -935,9 +935,6 @@ function Editor({ onBackToDashboard }) {
                   />
                 )}
               </div>
-              <span className="text-xs text-gray-500 w-16 text-right">
-                {masterVolume === 0 ? '-∞ dB' : `${volumeToDb(masterVolume).toFixed(1)} dB`}
-              </span>
             </div>
 
             <button
@@ -973,12 +970,7 @@ function Editor({ onBackToDashboard }) {
       <div className="flex-1 flex overflow-hidden" style={{ minWidth: 0 }}>
         {/* Track List Sidebar */}
         <div className="w-96 min-w-96 max-w-96 bg-gray-850 border-r border-gray-700 flex flex-col overflow-hidden">
-          <div className="bg-gray-800 px-4 py-3 border-b border-gray-700 overflow-hidden">
-            <h2 className="font-semibold">Tracks</h2>
-            <p className="text-xs text-gray-500 mt-1">
-              {project.tracks.length} track{project.tracks.length !== 1 ? 's' : ''}
-            </p>
-          </div>
+          <div className="bg-gray-800 px-4 py-3 border-b border-gray-700 overflow-hidden" />
           
           <div 
             ref={trackListScrollRef}

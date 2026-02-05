@@ -11,8 +11,8 @@ import {
   findSafePosition 
 } from '../utils/clipCollision';
 
-const TRACK_HEIGHT = 140; // Increased to prevent pan slider overflow
-const LOCKED_TRACK_HEIGHT = 40; // Compact height for locked tracks (with waveforms)
+const TRACK_HEIGHT = 120;
+const LOCKED_TRACK_HEIGHT = 120;
 const TIMELINE_VIEWPORT_WIDTH = 1920; // Default viewport width (updated dynamically)
 const MIN_VISIBLE_DURATION_MS = 8000; // Minimum duration to show when zoomed out
 const MAX_ZOOM_VISIBLE_MS = 100; // At max zoom, show 100ms across viewport
@@ -768,50 +768,23 @@ const getTrackYPosition = (tracks, trackIndex) => {
   return (
     <div className="flex-1 flex flex-col bg-gray-900 overflow-hidden" style={{ minWidth: 0 }}>
       {/* Timeline Header */}
-      <div className="bg-gray-800 border-b border-gray-700 px-4 py-2 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-gray-400">Timeline</span>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleZoomOut}
-              className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-              disabled={visibleDurationMs === null}
-              title="Zoom out"
-            >
-              −
-            </button>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={zoomSliderValue}
-              onChange={handleSliderChange}
-              className="w-32 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-              title="Zoom"
-              style={{
-                background: `linear-gradient(to right, #4F8EF7 0%, #4F8EF7 ${zoomSliderValue * 100}%, #4B5563 ${zoomSliderValue * 100}%, #4B5563 100%)`
-              }}
-            />
-            <button
-              onClick={handleZoomIn}
-              className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-              disabled={clampedVisibleMs <= maxZoomDurationMs}
-              title="Zoom in"
-            >
-              +
-            </button>
-            <span className="text-xs text-gray-400 w-20 text-center" title="Visible duration">
-              {formatVisibleDuration(clampedVisibleMs)}
-            </span>
-          </div>
-        </div>
-        <div className="text-xs text-gray-500">
-          Drag clips to move • Drag edges to crop • Right-drag for gain • Ctrl+Wheel: zoom • Shift+Wheel: scroll
-        </div>
-      </div>
-
       <div className="relative flex-1 flex flex-col" style={{ minWidth: 0 }}>
+        {/* Zoom overlay */}
+        <div className="absolute top-9 right-3 z-40 bg-gray-800/90 border border-gray-700 rounded-md px-2 py-2 shadow-lg flex items-center">
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value={zoomSliderValue}
+            onChange={handleSliderChange}
+            className="w-20 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+            title="Zoom"
+            style={{
+              background: `linear-gradient(to right, #4F8EF7 0%, #4F8EF7 ${zoomSliderValue * 100}%, #4B5563 ${zoomSliderValue * 100}%, #4B5563 100%)`
+            }}
+          />
+        </div>
         {/* Timeline Ruler */}
         <div className="bg-gray-850 border-b border-gray-700 flex" style={{ height: '24px' }}>
           <div 
