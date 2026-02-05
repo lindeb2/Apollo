@@ -96,7 +96,7 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
               selectedTrackId === track.id
                 ? 'bg-gray-700'
                 : 'bg-gray-800 hover:bg-gray-750'
-            } ${track.locked ? 'bg-gray-850 border-l-4 border-l-gray-600' : ''}`}
+            } ${track.locked ? 'bg-gray-850' : ''}`}
             style={{ 
               height: `${trackHeight}px`,
               minHeight: `${trackHeight}px`,
