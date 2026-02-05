@@ -18,13 +18,13 @@ import {
 describe('Audio Utilities - Volume Conversion', () => {
   it('should convert volume slider to dB correctly', () => {
     expect(volumeToDb(0)).toBeCloseTo(-60, 5);
-    expect(volumeToDb(50)).toBeCloseTo(-27, 5);
+    expect(volumeToDb(50)).toBeCloseTo(-6.02, 2);
     expect(volumeToDb(100)).toBeCloseTo(6, 5);
   });
 
   it('should convert dB to volume slider correctly', () => {
     expect(dbToVolume(-60)).toBeCloseTo(0, 5);
-    expect(dbToVolume(-27)).toBeCloseTo(50, 5);
+    expect(dbToVolume(-6.02)).toBeCloseTo(50, 2);
     expect(dbToVolume(6)).toBeCloseTo(100, 5);
   });
 
@@ -42,7 +42,7 @@ describe('Audio Utilities - Volume Conversion', () => {
 
   it('should convert volume slider directly to gain', () => {
     expect(volumeToGain(100)).toBeCloseTo(1.995262, 5);
-    expect(volumeToGain(50)).toBeCloseTo(0.0446684, 5);
+    expect(volumeToGain(50)).toBeCloseTo(0.4995, 4);
     expect(volumeToGain(0)).toBeCloseTo(0.001, 5);
   });
 });

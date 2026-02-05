@@ -5,21 +5,29 @@
 
 const MIN_VOLUME_DB = -60;
 const MAX_VOLUME_DB = 6;
-const VOLUME_RANGE_DB = MAX_VOLUME_DB - MIN_VOLUME_DB;
+const MIN_VOLUME_GAIN = 0.001;
+const MAX_VOLUME_GAIN = 1.9952623149688795; // 10^(6/20)
+const VOLUME_GAIN_RANGE = MAX_VOLUME_GAIN - MIN_VOLUME_GAIN;
 
 /**
  * Convert volume slider value (0-100) to decibels
- * Spec: dB = -60 + (slider / 100) * 66
+ * dB = 20 * log10(0.001 + (1.994 * x^2))
  */
 export function volumeToDb(sliderValue) {
-  return MIN_VOLUME_DB + (sliderValue / 100) * VOLUME_RANGE_DB;
+  const position = Math.max(0, Math.min(1, sliderValue / 100));
+  const gain = MIN_VOLUME_GAIN + (VOLUME_GAIN_RANGE * position * position);
+  return gainToDb(gain);
 }
 
 /**
  * Convert decibels to volume slider value (0-100)
  */
 export function dbToVolume(db) {
-  return ((db - MIN_VOLUME_DB) / VOLUME_RANGE_DB) * 100;
+  if (!Number.isFinite(db)) return 0;
+  const gain = dbToGain(db);
+  const normalized = (gain - MIN_VOLUME_GAIN) / VOLUME_GAIN_RANGE;
+  const position = Math.sqrt(Math.max(0, normalized));
+  return Math.min(100, Math.max(0, position * 100));
 }
 
 /**
@@ -41,8 +49,8 @@ export function gainToDb(gain) {
  * Convert volume slider value directly to linear gain
  */
 export function volumeToGain(sliderValue) {
-  const db = volumeToDb(sliderValue);
-  return dbToGain(db);
+  const position = Math.max(0, Math.min(1, sliderValue / 100));
+  return MIN_VOLUME_GAIN + (VOLUME_GAIN_RANGE * position * position);
 }
 
 /**

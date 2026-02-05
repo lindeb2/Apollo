@@ -36,6 +36,7 @@ function Editor({ onBackToDashboard }) {
   const [showFileImport, setShowFileImport] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [masterVolume, setMasterVolume] = useState(100);
+  const masterDragRef = useRef(null);
   const [isEditingProjectName, setIsEditingProjectName] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState('');
   const [mediaMap, setMediaMap] = useState(new Map());
@@ -127,6 +128,27 @@ function Editor({ onBackToDashboard }) {
   useEffect(() => {
     audioManager.setMasterVolume(masterVolume);
   }, [masterVolume]);
+
+  useEffect(() => {
+    const handleMove = (e) => {
+      if (!masterDragRef.current) return;
+      const { startX, startValue, width, moved } = masterDragRef.current;
+      const deltaX = e.clientX - startX;
+      if (!moved && Math.abs(deltaX) < 2) return;
+      masterDragRef.current.moved = true;
+      const next = Math.min(100, Math.max(0, startValue + (deltaX / width) * 100));
+      setMasterVolume(next);
+    };
+    const handleUp = () => {
+      masterDragRef.current = null;
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+  }, []);
 
   useEffect(() => {
     let interval = null;
@@ -672,6 +694,17 @@ function Editor({ onBackToDashboard }) {
     }
   };
 
+  const handleMasterVolumeMouseDown = (e) => {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    masterDragRef.current = {
+      startX: e.clientX,
+      startValue: masterVolume,
+      width: rect.width,
+      moved: false,
+    };
+  };
+
   const commitProjectName = () => {
     const nextName = projectNameDraft.trim();
     if (!nextName || nextName === project.projectName) {
@@ -863,7 +896,8 @@ function Editor({ onBackToDashboard }) {
                 max="100"
                 step="1"
                 value={masterVolume}
-                onChange={(e) => setMasterVolume(parseFloat(e.target.value))}
+                readOnly
+                onMouseDown={handleMasterVolumeMouseDown}
                 onDoubleClick={handleMasterVolumeDoubleClick}
                 className="w-28 volume-slider cursor-pointer"
                 title="Master Volume (double-click for numeric input)"
