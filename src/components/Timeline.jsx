@@ -12,7 +12,7 @@ import {
 } from '../utils/clipCollision';
 
 const TRACK_HEIGHT = 120;
-const LOCKED_TRACK_HEIGHT = 120;
+const LOCKED_TRACK_HEIGHT = 80;
 const TIMELINE_VIEWPORT_WIDTH = 1920; // Default viewport width (updated dynamically)
 const MIN_VISIBLE_DURATION_MS = 8000; // Minimum duration to show when zoomed out
 const MAX_ZOOM_VISIBLE_MS = 100; // At max zoom, show 100ms across viewport
@@ -979,11 +979,11 @@ const getTrackYPosition = (tracks, trackIndex) => {
                     }}
                   >
                     {/* Locked track label */}
-                    {track.locked && (
-                      <div className="absolute left-2 top-1 text-xs text-gray-500 italic pointer-events-none z-10">
-                        {track.name} (locked)
-                      </div>
-                    )}
+                  {track.locked && (
+                    <div className="absolute inset-y-0 left-3 right-3 flex items-center text-4xl text-gray-200 font-semibold pointer-events-none z-10">
+                      {track.name}
+                    </div>
+                  )}
 
                     {/* Clips */}
                     {track.clips.map(clip => {

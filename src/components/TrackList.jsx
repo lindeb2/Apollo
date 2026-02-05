@@ -4,7 +4,7 @@ import { TRACK_ROLES } from '../types/project';
 import { dbToVolume, volumeToDb } from '../utils/audio';
 
 const TRACK_HEIGHT = 120;
-const LOCKED_TRACK_HEIGHT = 120; // Keep layout consistent for locked tracks
+const LOCKED_TRACK_HEIGHT = 80;
 
 function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
   const [editingName, setEditingName] = useState(null);
@@ -224,41 +224,43 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
               </button>
             </div>
 
-            <div className="flex-1 min-w-0 flex flex-col gap-3">
+            <div className={`flex-1 min-w-0 flex flex-col ${track.locked ? 'justify-center gap-3' : 'gap-3'}`}>
               {/* Upper Row: Name */}
-              <div
-                className="flex items-center min-w-0"
-                onClick={() => onSelectTrack(track.id)}
-              >
-                {editingName === track.id ? (
-                  <input
-                    type="text"
-                    defaultValue={track.name}
-                    autoFocus
-                    onBlur={(e) => handleNameChange(track.id, e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        handleNameChange(track.id, e.target.value);
-                      } else if (e.key === 'Escape') {
-                        setEditingName(null);
-                      }
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                    className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-lg leading-tight focus:outline-none min-w-0"
-                  />
-                ) : (
-                  <span
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      setEditingName(track.id);
-                    }}
-                    className="flex-1 text-lg font-semibold truncate min-w-0"
-                    title="Double-click to edit"
-                  >
-                    {track.name}
-                  </span>
-                )}
-              </div>
+              {!track.locked && (
+                <div
+                  className="flex items-center min-w-0"
+                  onClick={() => onSelectTrack(track.id)}
+                >
+                  {editingName === track.id ? (
+                    <input
+                      type="text"
+                      defaultValue={track.name}
+                      autoFocus
+                      onBlur={(e) => handleNameChange(track.id, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleNameChange(track.id, e.target.value);
+                        } else if (e.key === 'Escape') {
+                          setEditingName(null);
+                        }
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-lg leading-tight focus:outline-none min-w-0"
+                    />
+                  ) : (
+                    <span
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        setEditingName(track.id);
+                      }}
+                      className="flex-1 text-lg font-semibold truncate min-w-0"
+                      title="Double-click to edit"
+                    >
+                      {track.name}
+                    </span>
+                  )}
+                </div>
+              )}
 
               {/* Lower Row: Controls */}
               <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
