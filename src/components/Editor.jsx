@@ -36,6 +36,7 @@ function Editor({ onBackToDashboard }) {
   const [showFileImport, setShowFileImport] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [masterVolume, setMasterVolume] = useState(100);
+  const [masterEditTooltip, setMasterEditTooltip] = useState(null);
   const masterDragRef = useRef(null);
   const [isEditingProjectName, setIsEditingProjectName] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState('');
@@ -136,6 +137,7 @@ function Editor({ onBackToDashboard }) {
       const deltaX = e.clientX - startX;
       if (!moved && Math.abs(deltaX) < 2) return;
       masterDragRef.current.moved = true;
+      if (masterEditTooltip) setMasterEditTooltip(null);
       const next = Math.min(100, Math.max(0, startValue + (deltaX / width) * 100));
       setMasterVolume(next);
     };
@@ -685,17 +687,12 @@ function Editor({ onBackToDashboard }) {
   };
 
   const handleMasterVolumeDoubleClick = () => {
-    const newValue = prompt('Enter master volume (0-100):', masterVolume);
-    if (newValue !== null) {
-      const parsed = parseFloat(newValue);
-      if (!isNaN(parsed) && parsed >= 0 && parsed <= 100) {
-        setMasterVolume(parsed);
-      }
-    }
+    setMasterEditTooltip({ text: masterVolume.toFixed(1) });
   };
 
   const handleMasterVolumeMouseDown = (e) => {
     e.preventDefault();
+    if (masterEditTooltip) setMasterEditTooltip(null);
     const rect = e.currentTarget.getBoundingClientRect();
     masterDragRef.current = {
       startX: e.clientX,
@@ -890,18 +887,54 @@ function Editor({ onBackToDashboard }) {
           <div className="flex items-center gap-4 flex-shrink-0">
             <div className="flex items-center gap-2">
               <Volume2 size={18} className="text-gray-400" />
-              <input
-                type="range"
-                min="0"
-                max="100"
-                step="1"
-                value={masterVolume}
-                readOnly
-                onMouseDown={handleMasterVolumeMouseDown}
-                onDoubleClick={handleMasterVolumeDoubleClick}
-                className="w-28 volume-slider cursor-pointer"
-                title="Master Volume (double-click for numeric input)"
-              />
+              <div className="relative">
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value={masterVolume}
+                  readOnly
+                  onMouseDown={handleMasterVolumeMouseDown}
+                  onDoubleClick={handleMasterVolumeDoubleClick}
+                  className="w-28 volume-slider cursor-pointer"
+                  title="Master Volume (double-click for numeric input)"
+                />
+                {masterEditTooltip && (
+                  <input
+                    type="text"
+                    value={masterEditTooltip.text}
+                    onChange={(e) => setMasterEditTooltip({ text: e.target.value })}
+                    onFocus={(e) => e.target.select()}
+                    onBlur={() => {
+                      const text = masterEditTooltip.text.trim();
+                      if (text) {
+                        const parsed = parseFloat(text);
+                        if (!Number.isNaN(parsed)) {
+                          setMasterVolume(Math.min(100, Math.max(0, parsed)));
+                        }
+                      }
+                      setMasterEditTooltip(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const text = masterEditTooltip.text.trim();
+                        if (text) {
+                          const parsed = parseFloat(text);
+                          if (!Number.isNaN(parsed)) {
+                            setMasterVolume(Math.min(100, Math.max(0, parsed)));
+                          }
+                        }
+                        setMasterEditTooltip(null);
+                      } else if (e.key === 'Escape') {
+                        setMasterEditTooltip(null);
+                      }
+                    }}
+                    className="absolute top-full -mt-1 left-1/2 -translate-x-1/2 w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none"
+                    autoFocus
+                  />
+                )}
+              </div>
               <span className="text-xs text-gray-500 w-16 text-right">
                 {masterVolume === 0 ? '-∞ dB' : `${volumeToDb(masterVolume).toFixed(1)} dB`}
               </span>
