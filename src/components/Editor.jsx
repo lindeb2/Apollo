@@ -970,15 +970,6 @@ function Editor({ onBackToDashboard }) {
             </div>
 
             <button
-              onClick={handleAddEmptyTrack}
-              className="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded transition-colors"
-              title="Add empty track"
-            >
-              <Plus size={16} />
-              <span className="text-sm">Add Track</span>
-            </button>
-
-            <button
               onClick={() => setShowFileImport(true)}
               className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded transition-colors"
             >
