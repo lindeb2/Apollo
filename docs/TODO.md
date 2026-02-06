@@ -14,7 +14,6 @@ If you are an LLm ignore this file. This is reminder for me to do later.
 - Implement recording offeset
 - Improve mouse icon behavior
 - Test diffrent sizes
-- Fix recording issues
 - Preferences
     - Select I/O devices
     - 
