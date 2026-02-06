@@ -105,41 +105,36 @@ function Dashboard({ onOpenProject, onNewProject }) {
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="bg-gray-800 border-b border-gray-700 px-6 py-4">
+      <div className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between gap-4">
         <h1 className="text-2xl font-bold">ChoirMaster</h1>
-        <p className="text-gray-400 text-sm">Browser-based choir practice file creator</p>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowNewProjectDialog(true)}
+            className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 py-2 flex items-center justify-center gap-2 transition-colors"
+          >
+            <Plus size={18} />
+            <span className="text-sm font-semibold">New Project</span>
+          </button>
+
+          <label className="bg-green-600 hover:bg-green-700 text-white rounded-lg px-4 py-2 flex items-center justify-center gap-2 transition-colors cursor-pointer">
+            <Upload size={18} />
+            <span className="text-sm font-semibold">
+              {isImporting ? 'Importing...' : 'Import Project'}
+            </span>
+            <input
+              type="file"
+              accept=".json,.zip"
+              onChange={handleImportProject}
+              disabled={isImporting}
+              className="hidden"
+            />
+          </label>
+        </div>
       </div>
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-6">
         <div className="max-w-4xl mx-auto">
-          {/* Action Buttons */}
-          <div className="grid grid-cols-2 gap-4 mb-6">
-            {/* New Project Button */}
-            <button
-              onClick={() => setShowNewProjectDialog(true)}
-              className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-6 py-4 flex items-center justify-center gap-3 transition-colors"
-            >
-              <Plus size={24} />
-              <span className="text-lg font-semibold">New Project</span>
-            </button>
-
-            {/* Import Project Button */}
-            <label className="bg-green-600 hover:bg-green-700 text-white rounded-lg px-6 py-4 flex items-center justify-center gap-3 transition-colors cursor-pointer">
-              <Upload size={24} />
-              <span className="text-lg font-semibold">
-                {isImporting ? 'Importing...' : 'Import Project'}
-              </span>
-              <input
-                type="file"
-                accept=".json,.zip"
-                onChange={handleImportProject}
-                disabled={isImporting}
-                className="hidden"
-              />
-            </label>
-          </div>
-
           {/* New Project Dialog */}
           {showNewProjectDialog && (
             <div className="mb-6 bg-gray-800 border border-gray-700 rounded-lg p-6">
