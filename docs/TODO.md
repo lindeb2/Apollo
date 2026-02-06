@@ -21,3 +21,4 @@ If you are an LLm ignore this file. This is reminder for me to do later.
 
 - Add bars
 - Add MIDI-support
+- Native audio engine

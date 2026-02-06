@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
-import { FolderOpen, Plus, FileAudio, Upload } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { FolderOpen, Plus, FileAudio, Upload, Settings } from 'lucide-react';
 import { listProjects, deleteProject as deleteProjectFromDB, saveProject } from '../lib/db';
 import { importFromJSON, importFromZIP } from '../lib/projectPortability';
 import { audioManager } from '../lib/audioManager';
 import { storeMediaBlob } from '../lib/db';
 import { formatTime } from '../utils/audio';
+import { getOutputLatencyMs, estimateRecordingOffsetMs } from '../utils/latency';
 
 function Dashboard({ onOpenProject, onNewProject }) {
   const [projects, setProjects] = useState([]);
@@ -12,11 +13,107 @@ function Dashboard({ onOpenProject, onNewProject }) {
   const [showNewProjectDialog, setShowNewProjectDialog] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [audioInputs, setAudioInputs] = useState([]);
+  const [audioOutputs, setAudioOutputs] = useState([]);
+  const [audioSettings, setAudioSettings] = useState({
+    inputDeviceId: '',
+    outputDeviceId: '',
+    recordingOffsetMs: 0,
+    recordingOffsetMode: 'auto',
+    manualRecordingOffsetMs: 0,
+    lastCalibrationAt: null,
+  });
+  const [isCalibrating, setIsCalibrating] = useState(false);
+  const [calibrationStatus, setCalibrationStatus] = useState('');
+  const autoCalibrationScheduledRef = useRef(false);
 
   // Load projects on mount
   useEffect(() => {
     loadProjects();
   }, []);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('choirmaster.settings');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setAudioSettings((prev) => ({
+          ...prev,
+          ...parsed,
+          recordingOffsetMode: parsed.recordingOffsetMode || 'auto',
+          manualRecordingOffsetMs:
+            typeof parsed.manualRecordingOffsetMs === 'number'
+              ? parsed.manualRecordingOffsetMs
+              : typeof parsed.recordingOffsetMs === 'number'
+                ? parsed.recordingOffsetMs
+                : prev.manualRecordingOffsetMs,
+          recordingOffsetMs:
+            typeof parsed.recordingOffsetMs === 'number' ? parsed.recordingOffsetMs : prev.recordingOffsetMs,
+        }));
+      } catch {
+        // Ignore invalid settings
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('choirmaster.settings', JSON.stringify(audioSettings));
+  }, [audioSettings]);
+
+  const runCalibration = async (source = 'manual') => {
+    if (isCalibrating) return;
+    setCalibrationStatus(source === 'auto' ? 'Auto-estimating offset...' : 'Estimating offset...');
+    setIsCalibrating(true);
+
+    try {
+      await audioManager.init();
+      await audioManager.resume();
+      const ctx = audioManager.audioContext;
+      const inputLatencyMs = 0;
+      let outputLatencyMs = getOutputLatencyMs(ctx);
+
+      if (source === 'auto') {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const stabilized = getOutputLatencyMs(ctx);
+        outputLatencyMs = Math.max(outputLatencyMs, stabilized);
+      }
+
+      const offsetMs = estimateRecordingOffsetMs({
+        outputLatencyMs,
+        inputLatencyMs,
+      });
+
+      setAudioSettings((prev) => ({
+        ...prev,
+        recordingOffsetMs: offsetMs,
+        lastCalibrationAt: Date.now(),
+      }));
+
+      setCalibrationStatus(`Offset updated: ${offsetMs} ms`);
+    } catch (error) {
+      setCalibrationStatus(error?.message || 'Offset estimate failed.');
+    } finally {
+      setIsCalibrating(false);
+      setTimeout(() => setCalibrationStatus(''), 2500);
+    }
+  };
+
+  useEffect(() => {
+    if (audioSettings.recordingOffsetMode !== 'auto') return;
+    autoCalibrationScheduledRef.current = false;
+
+    const handleFirstGesture = () => {
+      if (autoCalibrationScheduledRef.current) return;
+      autoCalibrationScheduledRef.current = true;
+      runCalibration('auto');
+    };
+
+    window.addEventListener('pointerdown', handleFirstGesture);
+    return () => {
+      window.removeEventListener('pointerdown', handleFirstGesture);
+    };
+  }, [audioSettings.recordingOffsetMode]);
 
   const loadProjects = async () => {
     try {
@@ -103,6 +200,22 @@ function Dashboard({ onOpenProject, onNewProject }) {
     }
   };
 
+  const refreshAudioDevices = async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    let devices = await navigator.mediaDevices.enumerateDevices();
+    const hasLabels = devices.some((device) => device.label);
+    if (!hasLabels) {
+      try {
+        await navigator.mediaDevices.getUserMedia({ audio: true });
+        devices = await navigator.mediaDevices.enumerateDevices();
+      } catch {
+        // Permission denied or unavailable; keep unlabeled devices
+      }
+    }
+    setAudioInputs(devices.filter((device) => device.kind === 'audioinput'));
+    setAudioOutputs(devices.filter((device) => device.kind === 'audiooutput'));
+  };
+
   useEffect(() => {
     const closeMenu = () => setContextMenu(null);
     window.addEventListener('click', closeMenu);
@@ -115,7 +228,19 @@ function Dashboard({ onOpenProject, onNewProject }) {
     <div className="h-full flex flex-col">
       {/* Header */}
       <div className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-bold">ChoirMaster</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-2xl font-bold">ChoirMaster</h1>
+          <button
+            className="p-2 rounded-md hover:bg-gray-700 text-gray-300"
+            title="Settings"
+            onClick={() => {
+              setSettingsOpen(true);
+              refreshAudioDevices();
+            }}
+          >
+            <Settings size={18} />
+          </button>
+        </div>
         <div className="flex items-center gap-3">
           <button
             onClick={() => setShowNewProjectDialog(true)}
@@ -250,6 +375,151 @@ function Dashboard({ onOpenProject, onNewProject }) {
           >
             Delete
           </button>
+        </div>
+      )}
+
+      {settingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-lg rounded-lg border border-gray-700 bg-gray-800 shadow-xl">
+            <div className="flex items-center justify-between border-b border-gray-700 px-4 py-3">
+              <div className="text-sm font-semibold">Settings</div>
+              <button
+                className="text-gray-400 hover:text-gray-200"
+                onClick={() => setSettingsOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="px-4 py-3">
+              <div className="mb-3 text-xs uppercase tracking-wide text-gray-400">Audio</div>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Input device</label>
+                  <select
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={audioSettings.inputDeviceId}
+                    onChange={(e) =>
+                      setAudioSettings((prev) => ({ ...prev, inputDeviceId: e.target.value }))
+                    }
+                  >
+                    <option value="">Default</option>
+                    {audioInputs.map((device) => (
+                      <option key={device.deviceId} value={device.deviceId}>
+                        {device.label || `Input ${device.deviceId.slice(0, 6)}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Output device</label>
+                  <select
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={audioSettings.outputDeviceId}
+                    onChange={(e) =>
+                      setAudioSettings((prev) => ({ ...prev, outputDeviceId: e.target.value }))
+                    }
+                  >
+                    <option value="">Default</option>
+                    {audioOutputs.map((device) => (
+                      <option key={device.deviceId} value={device.deviceId}>
+                        {device.label || `Output ${device.deviceId.slice(0, 6)}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-2">Recording offset</label>
+                  <div className="flex items-center gap-2 mb-2">
+                    <button
+                      className={`flex-1 rounded px-3 py-2 text-xs ${
+                        audioSettings.recordingOffsetMode === 'auto'
+                          ? 'bg-gray-700 text-white'
+                          : 'bg-gray-900 text-gray-400 border border-gray-700'
+                      }`}
+                      onClick={() =>
+                        setAudioSettings((prev) => ({
+                          ...prev,
+                          recordingOffsetMode: 'auto',
+                          recordingOffsetMs:
+                            typeof prev.recordingOffsetMs === 'number' ? prev.recordingOffsetMs : 0,
+                        }))
+                      }
+                    >
+                      Auto
+                    </button>
+                    <button
+                      className={`flex-1 rounded px-3 py-2 text-xs ${
+                        audioSettings.recordingOffsetMode === 'manual'
+                          ? 'bg-gray-700 text-white'
+                          : 'bg-gray-900 text-gray-400 border border-gray-700'
+                      }`}
+                      onClick={() =>
+                        setAudioSettings((prev) => ({
+                          ...prev,
+                          recordingOffsetMode: 'manual',
+                          recordingOffsetMs:
+                            typeof prev.manualRecordingOffsetMs === 'number'
+                              ? prev.manualRecordingOffsetMs
+                              : 0,
+                        }))
+                      }
+                    >
+                      Manual
+                    </button>
+                  </div>
+
+                  {audioSettings.recordingOffsetMode === 'manual' ? (
+                    <input
+                      type="number"
+                      className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                      value={audioSettings.manualRecordingOffsetMs}
+                      onChange={(e) => {
+                        const manualValue = Number(e.target.value);
+                        setAudioSettings((prev) => ({
+                          ...prev,
+                          manualRecordingOffsetMs: manualValue,
+                          recordingOffsetMs: manualValue,
+                        }));
+                      }}
+                    />
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="text-xs text-gray-400">
+                        Current offset: <span className="text-gray-200">{audioSettings.recordingOffsetMs} ms</span>
+                      </div>
+                      <button
+                        className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-50"
+                        disabled={isCalibrating}
+                        onClick={() => runCalibration('manual')}
+                      >
+                        {isCalibrating ? 'Estimating...' : 'Re-estimate now'}
+                      </button>
+                      {calibrationStatus && (
+                        <div className="text-[11px] text-gray-400">{calibrationStatus}</div>
+                      )}
+                      <div className="text-[11px] text-gray-500">
+                        Auto-estimates on startup after your first click.
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <button
+                  className="text-xs text-gray-400 hover:text-gray-200"
+                  onClick={refreshAudioDevices}
+                >
+                  Refresh device list
+                </button>
+              </div>
+            </div>
+            <div className="border-t border-gray-700 px-4 py-3 flex justify-end">
+              <button
+                className="bg-gray-700 hover:bg-gray-600 text-white rounded px-3 py-2 text-sm"
+                onClick={() => setSettingsOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

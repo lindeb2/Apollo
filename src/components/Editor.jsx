@@ -43,6 +43,7 @@ function Editor({ onBackToDashboard }) {
   const [projectNameDraft, setProjectNameDraft] = useState('');
   const [mediaMap, setMediaMap] = useState(new Map());
   const [recordingSegments, setRecordingSegments] = useState([]);
+  const [recordingOffsetMs, setRecordingOffsetMs] = useState(0);
   const recordingOriginalClipsRef = useRef(null);
   const previousTimeRef = useRef(0);
   const recordingStartTimeRef = useRef(0);
@@ -72,6 +73,19 @@ function Editor({ onBackToDashboard }) {
       setProjectNameDraft(project.projectName);
     }
   }, [project?.projectName]);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('choirmaster.settings');
+    if (!saved) return;
+    try {
+      const parsed = JSON.parse(saved);
+      if (typeof parsed?.recordingOffsetMs === 'number') {
+        setRecordingOffsetMs(Math.max(0, parsed.recordingOffsetMs));
+      }
+    } catch {
+      // Ignore invalid settings
+    }
+  }, [project?.projectId]);
 
   useEffect(() => {
     if (!project) return;
@@ -290,6 +304,36 @@ function Editor({ onBackToDashboard }) {
     });
   };
 
+  const normalizeRecordingOffset = (value) => {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return 0;
+    return Math.max(0, numeric);
+  };
+
+  const getSegmentOffsetMs = (segment) =>
+    normalizeRecordingOffset(segment?.offsetMs ?? recordingOffsetMs);
+
+  const getEffectiveRecordingEndMs = (segment, timeMs) => {
+    if (!segment) return timeMs;
+    const offsetMs = getSegmentOffsetMs(segment);
+    return Math.max(segment.startTimeMs, timeMs - offsetMs);
+  };
+
+  const applyRecordingOffsetToClip = (clip, offsetMs) => {
+    const safeOffset = normalizeRecordingOffset(offsetMs);
+    if (!clip || safeOffset <= 0) {
+      return { clip, durationMs: clip ? clip.cropEndMs - clip.cropStartMs : 0 };
+    }
+    const trimMs = Math.min(safeOffset, clip.sourceDurationMs);
+    const nextClip = {
+      ...clip,
+      cropStartMs: trimMs,
+      cropEndMs: clip.sourceDurationMs,
+    };
+    const durationMs = Math.max(0, nextClip.cropEndMs - nextClip.cropStartMs);
+    return { clip: durationMs > 0 ? nextClip : null, durationMs };
+  };
+
   if (!project) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -349,7 +393,7 @@ function Editor({ onBackToDashboard }) {
       
       const currentSegment = recordingSegments[recordingSegments.length - 1];
       const segmentStart = currentSegment.startTimeMs;
-      const segmentEnd = project.loop.endMs;
+      const segmentOffsetMs = getSegmentOffsetMs(currentSegment);
       
       // Process the audio
       const arrayBuffer = await result.blob.arrayBuffer();
@@ -362,11 +406,15 @@ function Editor({ onBackToDashboard }) {
       // Create clip for this segment
       const duration = audioBuffer.duration * 1000;
       const clip = createClip(blobId, segmentStart, duration);
+      const { clip: adjustedClip, durationMs: adjustedDurationMs } = applyRecordingOffsetToClip(
+        clip,
+        segmentOffsetMs
+      );
       
       // Update the segment with the blobId
       const updatedSegments = recordingSegments.map((seg, idx) => 
         idx === recordingSegments.length - 1 
-          ? { ...seg, blobId, clip }
+          ? { ...seg, blobId, clip: adjustedClip }
           : seg
       );
       
@@ -374,11 +422,14 @@ function Editor({ onBackToDashboard }) {
       const track = project.tracks.find(t => t.id === selectedTrackId);
       if (!track) return;
       
-      // Apply overwrites for this segment
-      let updatedClips = processRecordingOverwrites(segmentStart, segmentEnd, track.clips);
-      
-      // Add the new clip
-      updatedClips = [...updatedClips, clip];
+      let updatedClips = track.clips;
+      if (adjustedClip && adjustedDurationMs > 0) {
+        const segmentEnd = segmentStart + adjustedDurationMs;
+        // Apply overwrites for this segment
+        updatedClips = processRecordingOverwrites(segmentStart, segmentEnd, track.clips);
+        // Add the new clip
+        updatedClips = [...updatedClips, adjustedClip];
+      }
       
       // Apply overwrites from previous segments to the clips
       for (const segment of updatedSegments.slice(0, -1)) {
@@ -401,7 +452,10 @@ function Editor({ onBackToDashboard }) {
       
       // Start a new segment at loop start
       await recordingManager.startRecording(selectedTrackId, project.loop.startMs);
-      setRecordingSegments([...updatedSegments, { startTimeMs: project.loop.startMs }]);
+      setRecordingSegments([
+        ...updatedSegments,
+        { startTimeMs: project.loop.startMs, offsetMs: segmentOffsetMs },
+      ]);
       
       console.log('New recording segment started at loop start');
     } catch (error) {
@@ -414,7 +468,8 @@ function Editor({ onBackToDashboard }) {
     
     const currentSegment = recordingSegments[recordingSegments.length - 1];
     const recordingStart = currentSegment.startTimeMs;
-    const recordingEnd = currentTime;
+    const recordingEnd = getEffectiveRecordingEndMs(currentSegment, currentTime);
+    if (recordingEnd <= recordingStart) return;
     const track = project.tracks.find(t => t.id === selectedTrackId);
     
     if (!track) return;
@@ -458,7 +513,7 @@ function Editor({ onBackToDashboard }) {
       
       const currentSegment = recordingSegments[recordingSegments.length - 1];
       const recordingStart = currentSegment.startTimeMs;
-      const recordingEnd = currentTimeMs; // Capture the final recording end position
+      const segmentOffsetMs = getSegmentOffsetMs(currentSegment);
       
       const arrayBuffer = await result.blob.arrayBuffer();
       const audioBuffer = await audioManager.decodeAudioFile(arrayBuffer);
@@ -472,11 +527,12 @@ function Editor({ onBackToDashboard }) {
 
       // Create clip for final segment
       const finalClip = createClip(blobId, recordingStart, totalDurationMs);
+      const { clip: adjustedFinalClip } = applyRecordingOffsetToClip(finalClip, segmentOffsetMs);
       
       // Update the final segment
       const finalSegments = recordingSegments.map((seg, idx) => 
         idx === recordingSegments.length - 1 
-          ? { ...seg, blobId, clip: finalClip }
+          ? { ...seg, blobId, clip: adjustedFinalClip }
           : seg
       );
       
@@ -541,13 +597,15 @@ function Editor({ onBackToDashboard }) {
       // Start recording
       try {
         const track = project.tracks.find(t => t.id === selectedTrackId);
+        const offsetMs = normalizeRecordingOffset(recordingOffsetMs);
         
         await recordingManager.startRecording(selectedTrackId, currentTimeMs);
+
         startRecording();
         
         // Initialize first recording segment
         recordingStartTimeRef.current = currentTimeMs;
-        setRecordingSegments([{ startTimeMs: currentTimeMs }]);
+        setRecordingSegments([{ startTimeMs: currentTimeMs, offsetMs }]);
         
         // Store original clips state
         recordingOriginalClipsRef.current = track ? JSON.parse(JSON.stringify(track.clips)) : [];
