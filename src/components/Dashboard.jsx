@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { FolderOpen, Plus, Trash2, FileAudio, Upload } from 'lucide-react';
+import { FolderOpen, Plus, FileAudio, Upload } from 'lucide-react';
 import { listProjects, deleteProject as deleteProjectFromDB, saveProject } from '../lib/db';
 import { importFromJSON, importFromZIP } from '../lib/projectPortability';
 import { audioManager } from '../lib/audioManager';
@@ -11,6 +11,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
   const [newProjectName, setNewProjectName] = useState('');
   const [showNewProjectDialog, setShowNewProjectDialog] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [contextMenu, setContextMenu] = useState(null);
 
   // Load projects on mount
   useEffect(() => {
@@ -102,6 +103,14 @@ function Dashboard({ onOpenProject, onNewProject }) {
     }
   };
 
+  useEffect(() => {
+    const closeMenu = () => setContextMenu(null);
+    window.addEventListener('click', closeMenu);
+    return () => {
+      window.removeEventListener('click', closeMenu);
+    };
+  }, []);
+
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
@@ -187,7 +196,15 @@ function Dashboard({ onOpenProject, onNewProject }) {
                   <div
                     key={project.projectId}
                     onClick={() => onOpenProject(project.projectId)}
-                    className="bg-gray-800 hover:bg-gray-750 border border-gray-700 rounded-lg px-6 py-4 cursor-pointer transition-colors flex items-center justify-between group"
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setContextMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        project,
+                      });
+                    }}
+                    className="bg-gray-800 hover:bg-gray-750 border border-gray-700 rounded-lg px-6 py-4 cursor-pointer transition-colors flex items-center justify-between"
                   >
                     <div className="flex-1">
                       <h3 className="font-semibold text-lg">{project.projectName}</h3>
@@ -197,13 +214,6 @@ function Dashboard({ onOpenProject, onNewProject }) {
                         <span>Last modified: {formatDate(project.lastModified)}</span>
                       </div>
                     </div>
-                    <button
-                      onClick={(e) => handleDeleteProject(project.projectId, e)}
-                      className="opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-400 p-2 transition-all"
-                      title="Delete project"
-                    >
-                      <Trash2 size={20} />
-                    </button>
                   </div>
                 ))}
               </div>
@@ -211,6 +221,37 @@ function Dashboard({ onOpenProject, onNewProject }) {
           </div>
         </div>
       </div>
+
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-1"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700"
+            onClick={() => {
+              const newName = window.prompt('New project name:', contextMenu.project.projectName);
+              if (newName && newName.trim()) {
+                const trimmed = newName.trim();
+                const updated = { ...contextMenu.project, projectName: trimmed, lastModified: Date.now() };
+                saveProject(updated).then(loadProjects);
+              }
+              setContextMenu(null);
+            }}
+          >
+            Rename
+          </button>
+          <button
+            className="w-full text-left px-3 py-1.5 text-sm text-red-300 hover:bg-gray-700"
+            onClick={(e) => {
+              handleDeleteProject(contextMenu.project.projectId, e);
+              setContextMenu(null);
+            }}
+          >
+            Delete
+          </button>
+        </div>
+      )}
 
       {/* Footer */}
       <div className="bg-gray-800 border-t border-gray-700 mt-auto inline-flex items-center justify-center gap-1 px-4 py-4 text-sm text-gray-300">

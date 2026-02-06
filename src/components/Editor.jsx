@@ -37,6 +37,7 @@ function Editor({ onBackToDashboard }) {
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [masterVolume, setMasterVolume] = useState(100);
   const [masterEditTooltip, setMasterEditTooltip] = useState(null);
+  const [trackListContextMenu, setTrackListContextMenu] = useState(null);
   const masterDragRef = useRef(null);
   const [isEditingProjectName, setIsEditingProjectName] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState('');
@@ -747,12 +748,12 @@ function Editor({ onBackToDashboard }) {
     selectTrack(newTrack.id);
   };
 
-  const handleDeleteTrack = () => {
-    if (!selectedTrackId) {
+  const handleDeleteTrackById = (trackId) => {
+    if (!trackId) {
       return; // No track selected
     }
 
-    const track = project.tracks.find(t => t.id === selectedTrackId);
+    const track = project.tracks.find(t => t.id === trackId);
     if (!track) {
       return; // Track not found
     }
@@ -774,8 +775,12 @@ function Editor({ onBackToDashboard }) {
     // Delete the track
     updateProject((proj) => ({
       ...proj,
-      tracks: proj.tracks.filter(t => t.id !== selectedTrackId),
+      tracks: proj.tracks.filter(t => t.id !== trackId),
     }), `Delete track "${track.name}"`);
+  };
+
+  const handleDeleteTrack = () => {
+    handleDeleteTrackById(selectedTrackId);
   };
 
   const handleToggleLoop = () => {
@@ -999,17 +1004,31 @@ function Editor({ onBackToDashboard }) {
         <div className="w-96 min-w-96 max-w-96 bg-gray-850 border-r border-gray-700 flex flex-col overflow-hidden">
           <div className="bg-gray-800 px-4 py-3 border-b border-gray-700 overflow-hidden" />
           
-          <div 
+          <div
             ref={trackListScrollRef}
             className="flex-1 overflow-auto scrollbar-hidden"
             onScroll={handleTrackListScroll}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setTrackListContextMenu({
+                x: e.clientX,
+                y: e.clientY,
+                type: 'empty',
+              });
+            }}
           >
-            <TrackList
-              tracks={project.tracks}
-              onUpdateTrack={handleUpdateTrack}
-              onSelectTrack={selectTrack}
-              selectedTrackId={selectedTrackId}
-            />
+            <div className="min-h-full">
+              <TrackList
+                tracks={project.tracks}
+                onUpdateTrack={handleUpdateTrack}
+                onSelectTrack={selectTrack}
+                selectedTrackId={selectedTrackId}
+                onAddTrack={handleAddEmptyTrack}
+                onDeleteTrack={handleDeleteTrackById}
+                emptyContextMenu={trackListContextMenu}
+                onClearEmptyContextMenu={() => setTrackListContextMenu(null)}
+              />
+            </div>
           </div>
         </div>
 

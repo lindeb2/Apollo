@@ -7,14 +7,6 @@ import Editor from './components/Editor';
 function App() {
   const [view, setView] = useState('dashboard'); // 'dashboard' | 'editor'
   const { project, loadProject: loadProjectToStore, initProject } = useStore();
-  const disableContextMenu = true;
-
-  useEffect(() => {
-    if (!disableContextMenu) return;
-    const handler = (e) => e.preventDefault();
-    window.addEventListener('contextmenu', handler);
-    return () => window.removeEventListener('contextmenu', handler);
-  }, [disableContextMenu]);
 
   // Load project from IndexedDB into store
   const handleOpenProject = async (projectId) => {

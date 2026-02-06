@@ -6,11 +6,21 @@ import { dbToVolume, volumeToDb } from '../utils/audio';
 const TRACK_HEIGHT = 120;
 const LOCKED_TRACK_HEIGHT = 80;
 
-function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
+function TrackList({
+  tracks,
+  onUpdateTrack,
+  onSelectTrack,
+  selectedTrackId,
+  onAddTrack,
+  onDeleteTrack,
+  emptyContextMenu,
+  onClearEmptyContextMenu,
+}) {
   const [editingName, setEditingName] = useState(null);
   const dragRef = useRef(null);
   const [dragTooltip, setDragTooltip] = useState(null);
   const [editTooltip, setEditTooltip] = useState(null);
+  const [contextMenu, setContextMenu] = useState(null);
   const iconOptions = [
     { key: 'mic', Icon: Mic },
     { key: 'music', Icon: Music },
@@ -143,6 +153,19 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
     };
   }, []);
 
+  useEffect(() => {
+    const closeMenu = () => setContextMenu(null);
+    window.addEventListener('click', closeMenu);
+    return () => window.removeEventListener('click', closeMenu);
+  }, []);
+
+  useEffect(() => {
+    if (!emptyContextMenu) return;
+    setContextMenu(emptyContextMenu);
+    onClearEmptyContextMenu?.();
+  }, [emptyContextMenu, onClearEmptyContextMenu]);
+
+
   const handleToggleLock = (trackId, currentLocked) => {
     onUpdateTrack(trackId, { locked: !currentLocked });
   };
@@ -185,7 +208,18 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
   }
 
   return (
-    <div className="flex flex-col">
+    <div
+      className="flex flex-col min-h-full"
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setContextMenu({
+          x: e.clientX,
+          y: e.clientY,
+          type: 'empty',
+        });
+      }}
+    >
       {tracks.map((track) => {
         const trackHeight = track.locked ? LOCKED_TRACK_HEIGHT : TRACK_HEIGHT;
         const { Icon: TrackIcon } = getIconForTrack(track);
@@ -193,6 +227,16 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
         return (
           <div
             key={track.id}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setContextMenu({
+                x: e.clientX,
+                y: e.clientY,
+                type: 'track',
+                track,
+              });
+            }}
             className={`border-b border-gray-700 px-4 py-3 cursor-pointer transition-colors ${
               selectedTrackId === track.id
                 ? 'bg-gray-700'
@@ -407,6 +451,55 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
           </div>
         );
       })}
+
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-1"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          {contextMenu.type === 'track' ? (
+            <>
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700"
+                onClick={() => {
+                  onAddTrack?.();
+                  setContextMenu(null);
+                }}
+              >
+                Add new track
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700"
+                onClick={() => {
+                  setEditingName(contextMenu.track.id);
+                  setContextMenu(null);
+                }}
+              >
+                Rename track
+              </button>
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm text-red-300 hover:bg-gray-700"
+                onClick={() => {
+                  onDeleteTrack?.(contextMenu.track.id);
+                  setContextMenu(null);
+                }}
+              >
+                Delete track
+              </button>
+            </>
+          ) : (
+            <button
+              className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700"
+              onClick={() => {
+                onAddTrack?.();
+                setContextMenu(null);
+              }}
+            >
+              Create a track
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
