@@ -1,3 +1,5 @@
+import { dbToVolume } from '../utils/audio';
+
 /**
  * Project data model types (authoritative)
  * All time values are in milliseconds
@@ -71,7 +73,7 @@ export function createEmptyProject(name = 'Untitled Project') {
     projectId: crypto.randomUUID(),
     projectName: name,
     sampleRate: SAMPLE_RATE,
-    masterVolume: 100,
+    masterVolume: dbToVolume(0),
     tracks: [],
     loop: { enabled: false, startMs: 0, endMs: 0 },
     undoStackSize: 100,

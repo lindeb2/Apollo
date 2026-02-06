@@ -33,19 +33,20 @@ const getTrackYPosition = (tracks, trackIndex) => {
  * Timeline component
  * Displays tracks, clips, and waveforms with editing capabilities
  */
-  function Timeline({ 
-    project, 
-    currentTimeMs, 
-    isPlaying,
-    isRecording,
-    recordingSegments,
-    selectedTrackId,
-    onUpdateClip,
-    onSelectTrack,
-    onSeek,
-    onVerticalScroll,
-    scrollContainerRef,
-    updateProject,
+function Timeline({ 
+  project, 
+  currentTimeMs, 
+  isPlaying,
+  isRecording,
+  recordingSegments,
+  selectedTrackId,
+  onUpdateClip,
+  onSelectTrack,
+  onSeek,
+  onVerticalScroll,
+  scrollContainerRef,
+  updateProject,
+  shortcutsEnabled = false,
 }) {
   const timelineRef = useRef(null);
   const rulerScrollRef = useRef(null);
@@ -270,6 +271,9 @@ const getTrackYPosition = (tracks, trackIndex) => {
 
   const handleClipMouseDown = (e, clip, track) => {
     if (track.locked) return;
+    if (e.button === 2) {
+      e.preventDefault();
+    }
 
     e.stopPropagation();
 
@@ -396,6 +400,8 @@ const getTrackYPosition = (tracks, trackIndex) => {
   }, [selectedClipId, selectedTrackId, project.tracks]);
 
   useEffect(() => {
+    if (!shortcutsEnabled) return;
+
     const handleKeyDown = (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
@@ -461,7 +467,7 @@ const getTrackYPosition = (tracks, trackIndex) => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedClipId, selectedTrackId, clipboardClip, currentTimeMs, project.tracks, onUpdateClip]);
+  }, [shortcutsEnabled, selectedClipId, selectedTrackId, clipboardClip, currentTimeMs, project.tracks, onUpdateClip]);
 
   const handleContextMenu = (e) => {
     e.preventDefault();

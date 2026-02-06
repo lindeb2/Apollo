@@ -350,14 +350,16 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
                 </div>
 
                 <div className="relative w-8 h-8 flex-shrink-0">
-                  <div className="absolute inset-0 pan-ring pointer-events-none" />
-                  <div className="absolute left-1/2 top-1/2 w-6 h-6 rounded-full bg-gray-700 border border-gray-600 -translate-x-1/2 -translate-y-1/2 pointer-events-none" />
-                  <div
-                    className="absolute left-1/2 top-1/2 w-1 h-3 bg-gray-200 rounded-full origin-bottom pointer-events-none"
-                    style={{
-                      transform: `translate(-50%, -100%) rotate(${(track.pan / 100) * 135}deg)`,
-                    }}
-                  />
+                  <div className="absolute inset-0 overflow-hidden">
+                    <div className="absolute inset-0 pan-ring pointer-events-none" />
+                    <div className="absolute left-1/2 top-1/2 w-6 h-6 rounded-full bg-gray-700 border border-gray-600 -translate-x-1/2 -translate-y-1/2 pointer-events-none" />
+                    <div
+                      className="absolute left-1/2 top-1/2 w-[3px] h-3 bg-gray-200 rounded-full origin-bottom pointer-events-none"
+                      style={{
+                        transform: `translate(-50%, -100%) rotate(${(track.pan / 100) * 135}deg)`,
+                      }}
+                    />
+                  </div>
                   <input
                     type="range"
                     min="-100"
@@ -373,7 +375,7 @@ function TrackList({ tracks, onUpdateTrack, onSelectTrack, selectedTrackId }) {
                       e.stopPropagation();
                       handlePanDoubleClick(track);
                     }}
-                    className="absolute inset-0 pan-knob opacity-0 cursor-pointer z-10 pointer-events-auto appearance-none touch-none"
+                    className="absolute top-0 left-0 right-0 h-4 pan-knob opacity-0 cursor-pointer z-10 pointer-events-auto appearance-none touch-none"
                     aria-label="Pan"
                   />
                   {dragTooltip?.trackId === track.id && dragTooltip.type === 'pan' && (

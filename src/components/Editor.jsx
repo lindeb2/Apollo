@@ -9,7 +9,7 @@ import FileImport from './FileImport';
 import TrackList from './TrackList';
 import Timeline from './Timeline';
 import ExportDialog from './ExportDialog';
-import { volumeToDb } from '../utils/audio';
+import { dbToVolume, volumeToDb } from '../utils/audio';
 import useKeyboardShortcuts from '../utils/useKeyboardShortcuts';
 import { processRecordingOverwrites } from '../utils/clipCollision';
 
@@ -58,6 +58,13 @@ function Editor({ onBackToDashboard }) {
   useEffect(() => {
     projectRef.current = project;
   }, [project]);
+
+  useEffect(() => {
+    if (!project) return;
+    if (typeof project.masterVolume === 'number' && project.masterVolume !== masterVolume) {
+      setMasterVolume(project.masterVolume);
+    }
+  }, [project?.masterVolume, masterVolume, project]);
 
   useEffect(() => {
     if (project) {
@@ -139,7 +146,7 @@ function Editor({ onBackToDashboard }) {
       masterDragRef.current.moved = true;
       if (masterEditTooltip) setMasterEditTooltip(null);
       const next = Math.min(100, Math.max(0, startValue + (deltaX / width) * 100));
-      setMasterVolume(next);
+      applyMasterVolume(next);
     };
     const handleUp = () => {
       masterDragRef.current = null;
@@ -687,7 +694,8 @@ function Editor({ onBackToDashboard }) {
   };
 
   const handleMasterVolumeDoubleClick = () => {
-    setMasterEditTooltip({ text: masterVolume.toFixed(1) });
+    const display = masterVolume <= 0 ? '-∞' : volumeToDb(masterVolume).toFixed(1);
+    setMasterEditTooltip({ text: display });
   };
 
   const handleMasterVolumeMouseDown = (e) => {
@@ -700,6 +708,14 @@ function Editor({ onBackToDashboard }) {
       width: rect.width,
       moved: false,
     };
+  };
+
+  const applyMasterVolume = (value) => {
+    setMasterVolume(value);
+    updateProject((proj) => ({
+      ...proj,
+      masterVolume: value,
+    }), 'Set master volume');
   };
 
   const commitProjectName = () => {
@@ -774,6 +790,7 @@ function Editor({ onBackToDashboard }) {
   };
 
   useKeyboardShortcuts({
+    enabled: false,
     onPlayPause: handlePlay,
     onRecord: handleRecord,
     onToggleLoop: handleToggleLoop,
@@ -906,25 +923,35 @@ function Editor({ onBackToDashboard }) {
                     value={masterEditTooltip.text}
                     onChange={(e) => setMasterEditTooltip({ text: e.target.value })}
                     onFocus={(e) => e.target.select()}
-                    onBlur={() => {
-                      const text = masterEditTooltip.text.trim();
-                      if (text) {
+                  onBlur={() => {
+                    const text = masterEditTooltip.text.trim();
+                    if (text) {
+                      const normalized = text.toLowerCase();
+                      if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
+                        applyMasterVolume(0);
+                      } else {
                         const parsed = parseFloat(text);
                         if (!Number.isNaN(parsed)) {
-                          setMasterVolume(Math.min(100, Math.max(0, parsed)));
+                          applyMasterVolume(dbToVolume(Math.min(6, Math.max(-60, parsed))));
                         }
                       }
-                      setMasterEditTooltip(null);
-                    }}
+                    }
+                    setMasterEditTooltip(null);
+                  }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
                         const text = masterEditTooltip.text.trim();
-                        if (text) {
+                      if (text) {
+                        const normalized = text.toLowerCase();
+                        if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
+                          applyMasterVolume(0);
+                        } else {
                           const parsed = parseFloat(text);
                           if (!Number.isNaN(parsed)) {
-                            setMasterVolume(Math.min(100, Math.max(0, parsed)));
+                            applyMasterVolume(dbToVolume(Math.min(6, Math.max(-60, parsed))));
                           }
                         }
+                      }
                         setMasterEditTooltip(null);
                       } else if (e.key === 'Escape') {
                         setMasterEditTooltip(null);
@@ -1010,6 +1037,7 @@ function Editor({ onBackToDashboard }) {
               onVerticalScroll={handleTimelineScroll}
               scrollContainerRef={timelineScrollRef}
               updateProject={updateProject}
+              shortcutsEnabled={false}
             />
           )}
         </div>

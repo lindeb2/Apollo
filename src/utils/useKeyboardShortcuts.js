@@ -5,6 +5,7 @@ import { useEffect } from 'react';
  * Handles global keyboard shortcuts for the editor
  */
 function useKeyboardShortcuts({
+  enabled = false,
   onPlayPause,
   onStop,
   onRecord,
@@ -14,6 +15,8 @@ function useKeyboardShortcuts({
   onDeleteTrack,
 }) {
   useEffect(() => {
+    if (!enabled) return;
+
     const handleKeyDown = (e) => {
       // Ignore if typing in an input field
       if (
@@ -69,7 +72,7 @@ function useKeyboardShortcuts({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [onPlayPause, onStop, onRecord, onUndo, onRedo, onToggleLoop, onDeleteTrack]);
+  }, [enabled, onPlayPause, onStop, onRecord, onUndo, onRedo, onToggleLoop, onDeleteTrack]);
 }
 
 export default useKeyboardShortcuts;
