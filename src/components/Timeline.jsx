@@ -819,6 +819,13 @@ function Timeline({
             className="relative cursor-pointer"
             onMouseDown={handleRulerMouseDown}
           >
+            {/* Playhead (ruler) */}
+            <div
+              className="absolute top-0 bottom-0 w-0.5 bg-red-500 pointer-events-none z-30"
+              style={{
+                left: `${currentTimeMs * pixelsPerMs - scrollLeft}px`,
+              }}
+            />
             {/* Time markers */}
             {Array.from({ 
               length: Math.ceil(Math.max(minZoomDurationMs, clampedVisibleMs) / rulerIntervalMs) + 1 
