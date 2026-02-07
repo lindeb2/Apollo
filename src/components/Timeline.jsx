@@ -47,6 +47,8 @@ function Timeline({
   scrollContainerRef,
   updateProject,
   shortcutsEnabled = false,
+  sharedVerticalScroll = false,
+  children,
 }) {
   const timelineRef = useRef(null);
   const rulerScrollRef = useRef(null);
@@ -699,12 +701,20 @@ function Timeline({
           }
         }
       }
-      // Shift + Wheel = Horizontal scroll (only when zoomed in)
+      // Shift + Wheel = Horizontal scroll
       else if (e.shiftKey) {
         const scrollElement = tracksScrollRef.current;
         if (scrollElement && scrollElement.scrollWidth > scrollElement.clientWidth) {
           e.preventDefault();
           scrollElement.scrollLeft += e.deltaY * 3;
+        }
+      }
+      // Trackpad horizontal scroll
+      else if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        const scrollElement = tracksScrollRef.current;
+        if (scrollElement && scrollElement.scrollWidth > scrollElement.clientWidth) {
+          e.preventDefault();
+          scrollElement.scrollLeft += e.deltaX;
         }
       }
       // Regular wheel = Vertical scroll between tracks (default behavior)
@@ -771,204 +781,205 @@ function Timeline({
     }
   };
 
-  return (
-    <div className="flex-1 flex flex-col bg-gray-900 overflow-hidden" style={{ minWidth: 0 }}>
-      {/* Timeline Header */}
-      <div className="relative flex-1 flex flex-col" style={{ minWidth: 0 }}>
-        {/* Zoom overlay */}
-        <div className="absolute top-9 right-3 z-40 bg-gray-800/90 border border-gray-700 rounded-md px-2 py-2 shadow-lg flex items-center">
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            value={zoomSliderValue}
-            onChange={handleSliderChange}
-            className="w-20 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-            title="Zoom"
-            style={{
-              background: `linear-gradient(to right, #4F8EF7 0%, #4F8EF7 ${zoomSliderValue * 100}%, #4B5563 ${zoomSliderValue * 100}%, #4B5563 100%)`
-            }}
-          />
-        </div>
-        {/* Timeline Ruler */}
-        <div className="bg-gray-850 border-b border-gray-700 flex" style={{ height: '24px' }}>
-          <div 
-            ref={rulerScrollRef}
-            className="flex-1 overflow-x-scroll overflow-y-hidden ruler-scrollbar-hidden"
-          >
-            <div 
-              style={{ width: `${timelineWidthPx}px`, height: '24px' }} 
-              className="relative cursor-pointer"
-              onMouseDown={handleRulerMouseDown}
-            >
-              {/* Time markers */}
-              {Array.from({ 
-                length: Math.ceil(Math.max(minZoomDurationMs, clampedVisibleMs) / rulerIntervalMs) + 1 
-              }).map((_, i) => {
-                const timeMs = i * rulerIntervalMs;
-                if (timeMs * pixelsPerMs > timelineWidthPx + 50) return null;
-                
-                return (
-                  <div
-                    key={i}
-                    className="absolute top-0 border-l border-gray-600"
-                    style={{ left: `${timeMs * pixelsPerMs}px`, height: '24px' }}
-                  >
-                    <span className="text-xs text-gray-500 ml-1 whitespace-nowrap pointer-events-none select-none">
-                      {formatRulerTime(timeMs, rulerIntervalMs)}
-                    </span>
-                  </div>
-                );
-              }).filter(Boolean)}
+  const zoomOverlay = (
+    <div className="bg-gray-800/90 border border-gray-700 rounded-md px-2 py-2 shadow-lg flex items-center">
+      <input
+        type="range"
+        min="0"
+        max="1"
+        step="0.01"
+        value={zoomSliderValue}
+        onChange={handleSliderChange}
+        className="w-20 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+        title="Zoom"
+        style={{
+          background: `linear-gradient(to right, #4F8EF7 0%, #4F8EF7 ${zoomSliderValue * 100}%, #4B5563 ${zoomSliderValue * 100}%, #4B5563 100%)`
+        }}
+      />
+    </div>
+  );
 
-              {/* Loop region background (always show if loop exists, faint when disabled) */}
-              {/* Show drag state if dragging new loop, otherwise show project loop */}
-            {(() => {
-              // If dragging a new loop, show that instead of project loop
-              if (rulerDragState?.isDragging && rulerDragState.mode === 'create' && rulerDragState.currentStartMs !== undefined) {
-                return (
-                  <div
-                    className="absolute top-0 bottom-0 pointer-events-none bg-yellow-500 bg-opacity-20"
-                      style={{
-                        left: `${rulerDragState.currentStartMs * pixelsPerMs}px`,
-                        width: `${(rulerDragState.currentEndMs - rulerDragState.currentStartMs) * pixelsPerMs}px`,
-                      }}
-                    />
-                  );
-                }
-                
-                // Otherwise show project loop (if it exists)
-                if (project.loop.startMs !== undefined && project.loop.endMs !== undefined) {
-                const rawStartMs = loopMarkerDragState?.currentStartMs 
-                  ?? (rulerDragState?.mode === 'move' ? rulerDragState.currentStartMs : undefined)
-                  ?? project.loop.startMs;
-                const rawEndMs = loopMarkerDragState?.currentEndMs 
-                  ?? (rulerDragState?.mode === 'move' ? rulerDragState.currentEndMs : undefined)
-                  ?? project.loop.endMs;
-                const displayStartMs = Math.min(rawStartMs, rawEndMs);
-                const displayEndMs = Math.max(rawStartMs, rawEndMs);
-                
-                return (
-                    <div
-                      className={`absolute top-0 bottom-0 pointer-events-none ${
-                        project.loop.enabled ? 'bg-yellow-500 bg-opacity-20' : 'bg-gray-500 bg-opacity-5'
-                      }`}
-                      style={{
-                        left: `${displayStartMs * pixelsPerMs}px`,
-                        width: `${(displayEndMs - displayStartMs) * pixelsPerMs}px`,
-                      }}
-                    />
-                  );
-                }
-                
-                return null;
-              })()}
-
-              {/* Loop start marker */}
-              {(() => {
-                // If dragging a new loop, show new loop markers
-                if (rulerDragState?.isDragging && rulerDragState.currentStartMs !== undefined) {
-                  return (
-                    <div
-                      className="absolute top-0 bottom-0 w-1 pointer-events-none bg-yellow-500"
-                      style={{
-                        left: `${rulerDragState.currentStartMs * pixelsPerMs}px`,
-                      }}
-                    />
-                  );
-                }
-                
-                // Otherwise show project loop markers
-              if (project.loop.startMs !== undefined && project.loop.endMs !== undefined) {
-                const displayStartMs = loopMarkerDragState?.currentStartMs 
-                  ?? (rulerDragState?.mode === 'move' ? rulerDragState.currentStartMs : undefined)
-                  ?? project.loop.startMs;
-                
-                return (
-                  <div
-                    className={`absolute top-0 bottom-0 w-1 cursor-ew-resize ${
-                        project.loop.enabled ? 'bg-yellow-500' : 'bg-gray-500 opacity-40'
-                      }`}
-                      style={{
-                        left: `${displayStartMs * pixelsPerMs}px`,
-                      }}
-                      onMouseDown={(e) => handleLoopMarkerMouseDown(e, 'start')}
-                    />
-                  );
-                }
-                
-                return null;
-              })()}
-
-              {/* Loop end marker */}
-              {(() => {
-                // If dragging a new loop, show new loop end marker
-                if (rulerDragState?.isDragging && rulerDragState.currentEndMs !== undefined) {
-                  return (
-                    <div
-                      className="absolute top-0 bottom-0 w-1 pointer-events-none bg-yellow-500"
-                      style={{
-                        left: `${rulerDragState.currentEndMs * pixelsPerMs}px`,
-                      }}
-                    />
-                  );
-                }
-                
-                // Otherwise show project loop end marker
-              if (project.loop.startMs !== undefined && project.loop.endMs !== undefined) {
-                const displayEndMs = loopMarkerDragState?.currentEndMs 
-                  ?? (rulerDragState?.mode === 'move' ? rulerDragState.currentEndMs : undefined)
-                  ?? project.loop.endMs;
-                
-                return (
-                  <div
-                      className={`absolute top-0 bottom-0 w-1 cursor-ew-resize ${
-                        project.loop.enabled ? 'bg-yellow-500' : 'bg-gray-500 opacity-40'
-                      }`}
-                      style={{
-                        left: `${displayEndMs * pixelsPerMs}px`,
-                      }}
-                      onMouseDown={(e) => handleLoopMarkerMouseDown(e, 'end')}
-                    />
-                  );
-                }
-                
-                return null;
-              })()}
-            </div>
-          </div>
-        </div>
-
-        {/* Timeline Tracks */}
+  const header = (
+    <div className="relative flex flex-col overflow-visible w-full min-w-0">
+      {/* Timeline Ruler */}
+      <div className="bg-gray-850 border-b border-gray-700 flex" style={{ height: '24px' }}>
         <div 
-          ref={timelineRef}
-          className="flex-1 overflow-hidden relative"
-          style={{ minWidth: 0 }}
-          onClick={handleTimelineClick}
-          onContextMenu={handleContextMenu}
+          ref={rulerScrollRef}
+          className="flex-1 overflow-x-scroll overflow-y-hidden ruler-scrollbar-hidden w-full min-w-0"
+          onScroll={(e) => {
+            const newScrollLeft = e.target.scrollLeft;
+            if (tracksScrollRef.current && tracksScrollRef.current.scrollLeft !== newScrollLeft) {
+              tracksScrollRef.current.scrollLeft = newScrollLeft;
+            }
+            setScrollLeft(newScrollLeft);
+          }}
         >
           <div 
-            ref={(el) => {
-              tracksScrollRef.current = el;
-              if (internalScrollRef) {
-                internalScrollRef.current = el;
-              }
-            }}
-            className="absolute inset-0 overflow-auto scrollbar-hidden"
-            onScroll={(e) => {
-              const newScrollLeft = e.target.scrollLeft;
-              setScrollLeft(newScrollLeft);
-              if (rulerScrollRef.current) {
-                rulerScrollRef.current.scrollLeft = newScrollLeft;
-              }
-              // Notify parent of vertical scroll
-              if (onVerticalScroll) {
-                onVerticalScroll(e.target.scrollTop);
-              }
-            }}
+            style={{ width: `${timelineWidthPx}px`, height: '24px' }} 
+            className="relative cursor-pointer"
+            onMouseDown={handleRulerMouseDown}
           >
-            <div style={{ width: `${timelineWidthPx}px`, height: `${totalTimelineHeight}px`, position: 'relative' }}>
+            {/* Time markers */}
+            {Array.from({ 
+              length: Math.ceil(Math.max(minZoomDurationMs, clampedVisibleMs) / rulerIntervalMs) + 1 
+            }).map((_, i) => {
+              const timeMs = i * rulerIntervalMs;
+              if (timeMs * pixelsPerMs > timelineWidthPx + 50) return null;
+              
+              return (
+                <div
+                  key={i}
+                  className="absolute top-0 border-l border-gray-600"
+                  style={{ left: `${timeMs * pixelsPerMs}px`, height: '24px' }}
+                >
+                  <span className="text-xs text-gray-500 ml-1 whitespace-nowrap pointer-events-none select-none">
+                    {formatRulerTime(timeMs, rulerIntervalMs)}
+                  </span>
+                </div>
+              );
+            }).filter(Boolean)}
+
+            {/* Loop region background (always show if loop exists, faint when disabled) */}
+            {/* Show drag state if dragging new loop, otherwise show project loop */}
+          {(() => {
+            if (rulerDragState?.isDragging && rulerDragState.mode === 'create' && rulerDragState.currentStartMs !== undefined) {
+              return (
+                <div
+                  className="absolute top-0 bottom-0 pointer-events-none bg-yellow-500 bg-opacity-20"
+                    style={{
+                      left: `${rulerDragState.currentStartMs * pixelsPerMs}px`,
+                      width: `${(rulerDragState.currentEndMs - rulerDragState.currentStartMs) * pixelsPerMs}px`,
+                    }}
+                  />
+                );
+              }
+              
+              if (project.loop.startMs !== undefined && project.loop.endMs !== undefined) {
+              const rawStartMs = loopMarkerDragState?.currentStartMs 
+                ?? (rulerDragState?.mode === 'move' ? rulerDragState.currentStartMs : undefined)
+                ?? project.loop.startMs;
+              const rawEndMs = loopMarkerDragState?.currentEndMs 
+                ?? (rulerDragState?.mode === 'move' ? rulerDragState.currentEndMs : undefined)
+                ?? project.loop.endMs;
+              const displayStartMs = Math.min(rawStartMs, rawEndMs);
+              const displayEndMs = Math.max(rawStartMs, rawEndMs);
+              
+              return (
+                  <div
+                    className={`absolute top-0 bottom-0 pointer-events-none ${
+                      project.loop.enabled ? 'bg-yellow-500 bg-opacity-20' : 'bg-gray-500 bg-opacity-5'
+                    }`}
+                    style={{
+                      left: `${displayStartMs * pixelsPerMs}px`,
+                      width: `${(displayEndMs - displayStartMs) * pixelsPerMs}px`,
+                    }}
+                  />
+                );
+              }
+              
+              return null;
+            })()}
+
+            {/* Loop start marker */}
+            {(() => {
+              if (rulerDragState?.isDragging && rulerDragState.currentStartMs !== undefined) {
+                return (
+                  <div
+                    className="absolute top-0 bottom-0 w-1 pointer-events-none bg-yellow-500"
+                    style={{
+                      left: `${rulerDragState.currentStartMs * pixelsPerMs}px`,
+                    }}
+                  />
+                );
+              }
+              
+            if (project.loop.startMs !== undefined && project.loop.endMs !== undefined) {
+              const displayStartMs = loopMarkerDragState?.currentStartMs 
+                ?? (rulerDragState?.mode === 'move' ? rulerDragState.currentStartMs : undefined)
+                ?? project.loop.startMs;
+              
+              return (
+                <div
+                  className={`absolute top-0 bottom-0 w-1 cursor-ew-resize ${
+                      project.loop.enabled ? 'bg-yellow-500' : 'bg-gray-500 opacity-40'
+                    }`}
+                  style={{
+                    left: `${displayStartMs * pixelsPerMs}px`,
+                  }}
+                  onMouseDown={(e) => handleLoopMarkerMouseDown(e, 'start')}
+                />
+              );
+            }
+            
+            return null;
+            })()}
+
+            {/* Loop end marker */}
+            {(() => {
+              if (rulerDragState?.isDragging && rulerDragState.currentEndMs !== undefined) {
+                return (
+                  <div
+                    className="absolute top-0 bottom-0 w-1 pointer-events-none bg-yellow-500"
+                    style={{
+                      left: `${rulerDragState.currentEndMs * pixelsPerMs}px`,
+                    }}
+                  />
+                );
+              }
+              
+            if (project.loop.startMs !== undefined && project.loop.endMs !== undefined) {
+              const displayEndMs = loopMarkerDragState?.currentEndMs 
+                ?? (rulerDragState?.mode === 'move' ? rulerDragState.currentEndMs : undefined)
+                ?? project.loop.endMs;
+              
+              return (
+                <div
+                  className={`absolute top-0 bottom-0 w-1 cursor-ew-resize ${
+                    project.loop.enabled ? 'bg-yellow-500' : 'bg-gray-500 opacity-40'
+                  }`}
+                  style={{
+                    left: `${displayEndMs * pixelsPerMs}px`,
+                  }}
+                  onMouseDown={(e) => handleLoopMarkerMouseDown(e, 'end')}
+                />
+              );
+            }
+            
+            return null;
+            })()}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const tracks = (
+    <div 
+      ref={timelineRef}
+      className={`${sharedVerticalScroll ? 'relative' : 'flex-1 overflow-hidden relative'} bg-gray-900 w-full min-w-0`}
+      onClick={handleTimelineClick}
+      onContextMenu={handleContextMenu}
+    >
+      <div 
+        ref={(el) => {
+          tracksScrollRef.current = el;
+          if (internalScrollRef) {
+            internalScrollRef.current = el;
+          }
+        }}
+        className={`${sharedVerticalScroll ? 'overflow-x-auto overflow-y-hidden' : 'absolute inset-0 overflow-auto'} scrollbar-hidden w-full min-w-0`}
+        onScroll={(e) => {
+          const newScrollLeft = e.target.scrollLeft;
+          setScrollLeft(newScrollLeft);
+          if (rulerScrollRef.current) {
+            rulerScrollRef.current.scrollLeft = newScrollLeft;
+          }
+          if (!sharedVerticalScroll && onVerticalScroll) {
+            onVerticalScroll(e.target.scrollTop);
+          }
+        }}
+      >
+        <div style={{ width: `${timelineWidthPx}px`, height: `${totalTimelineHeight}px`, position: 'relative' }}>
               {project.tracks.map((track, trackIndex) => {
                 const trackHeight = getTrackHeight(track);
                 const trackY = getTrackYPosition(project.tracks, trackIndex);
@@ -1120,16 +1131,25 @@ function Timeline({
               })}
             </div>
           </div>
-        </div>
+      {/* Playhead */}
+      <div
+        className="absolute top-0 bottom-0 w-0.5 bg-red-500 pointer-events-none z-30"
+        style={{
+          left: `${currentTimeMs * pixelsPerMs - scrollLeft}px`,
+        }}
+      />
+    </div>
+  );
 
-        {/* Playhead */}
-        <div
-          className="absolute top-0 bottom-0 w-0.5 bg-red-500 pointer-events-none z-30"
-          style={{
-            left: `${currentTimeMs * pixelsPerMs - scrollLeft}px`,
-          }}
-        />
-      </div>
+  if (typeof children === 'function') {
+    return children({ header, tracks, zoomOverlay });
+  }
+
+  return (
+    <div className={`${sharedVerticalScroll ? '' : 'flex-1'} flex flex-col bg-gray-900 ${sharedVerticalScroll ? '' : 'overflow-hidden'} relative`} style={{ minWidth: 0 }}>
+      <div className="absolute top-9 right-3 z-50">{zoomOverlay}</div>
+      {header}
+      {tracks}
     </div>
   );
 }

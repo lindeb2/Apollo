@@ -1064,67 +1064,81 @@ function Editor({ onBackToDashboard }) {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden" style={{ minWidth: 0 }}>
-        {/* Track List Sidebar */}
-        <div className="w-96 min-w-96 max-w-96 bg-gray-850 border-r border-gray-700 flex flex-col overflow-hidden">
-          <div className="bg-gray-800 px-4 py-3 border-b border-gray-700 overflow-hidden" />
-          
-          <div
-            ref={trackListScrollRef}
-            className="flex-1 overflow-auto scrollbar-hidden"
-            onScroll={handleTrackListScroll}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              setTrackListContextMenu({
-                x: e.clientX,
-                y: e.clientY,
-                type: 'empty',
-              });
-            }}
-          >
-            <div className="min-h-full">
-              <TrackList
-                tracks={project.tracks}
-                onUpdateTrack={handleUpdateTrack}
-                onSelectTrack={selectTrack}
-                selectedTrackId={selectedTrackId}
-                onAddTrack={handleAddEmptyTrack}
-                onDeleteTrack={handleDeleteTrackById}
-                emptyContextMenu={trackListContextMenu}
-                onClearEmptyContextMenu={() => setTrackListContextMenu(null)}
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Timeline Area */}
-        <div className="flex-1 flex flex-col bg-gray-900" style={{ minWidth: 0 }}>
-          {hasNoTracks ? (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="text-center text-gray-500">
-                <Upload size={48} className="mx-auto mb-4 opacity-50" />
-                <p className="text-lg mb-2">No tracks yet</p>
-                <p className="text-sm">Click Import to add audio files</p>
+      <div className="flex-1 overflow-hidden" style={{ minWidth: 0 }}>
+        <Timeline
+          project={project}
+          currentTimeMs={currentTimeMs}
+          isPlaying={isPlaying}
+          isRecording={isRecording}
+          recordingSegments={recordingSegments}
+          selectedTrackId={selectedTrackId}
+          onUpdateClip={updateClip}
+          onSelectTrack={selectTrack}
+          onSeek={handleSeek}
+          updateProject={updateProject}
+          shortcutsEnabled={false}
+          sharedVerticalScroll
+          scrollContainerRef={timelineScrollRef}
+        >
+          {({ header, tracks, zoomOverlay }) => (
+            <div className="grid grid-cols-[384px_1fr] grid-rows-[24px_minmax(0,1fr)] h-full min-h-0 min-w-0">
+              <div className="bg-gray-800 border-b border-gray-700" />
+              <div className="relative z-50 overflow-visible min-w-0">{header}</div>
+              <div
+                className="col-span-2 min-h-0 overflow-y-auto scrollbar-hidden relative z-10"
+                onWheel={(e) => {
+                  if (e.defaultPrevented) return;
+                  if (e.ctrlKey || e.metaKey) return;
+                  if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+                    const scrollElement = timelineScrollRef.current;
+                    if (scrollElement && scrollElement.scrollWidth > scrollElement.clientWidth) {
+                      e.preventDefault();
+                      scrollElement.scrollLeft += e.shiftKey ? e.deltaY * 3 : e.deltaX;
+                    }
+                  }
+                }}
+              >
+                <div className="grid grid-cols-[384px_1fr] min-w-0">
+                  <div
+                    className="bg-gray-850 border-r border-gray-700"
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setTrackListContextMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        type: 'empty',
+                      });
+                    }}
+                  >
+                    <TrackList
+                      tracks={project.tracks}
+                      onUpdateTrack={handleUpdateTrack}
+                      onSelectTrack={selectTrack}
+                      selectedTrackId={selectedTrackId}
+                      onAddTrack={handleAddEmptyTrack}
+                      onDeleteTrack={handleDeleteTrackById}
+                      emptyContextMenu={trackListContextMenu}
+                      onClearEmptyContextMenu={() => setTrackListContextMenu(null)}
+                    />
+                  </div>
+                  <div className="min-w-0 bg-gray-900 relative overflow-hidden">
+                    <div className="absolute top-2 right-3 z-40">{zoomOverlay}</div>
+                    {tracks}
+                    {hasNoTracks && (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="text-center text-gray-500">
+                          <Upload size={48} className="mx-auto mb-4 opacity-50" />
+                          <p className="text-lg mb-2">No tracks yet</p>
+                          <p className="text-sm">Click Import to add audio files</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
-          ) : (
-            <Timeline
-              project={project}
-              currentTimeMs={currentTimeMs}
-              isPlaying={isPlaying}
-              isRecording={isRecording}
-              recordingSegments={recordingSegments}
-              selectedTrackId={selectedTrackId}
-              onUpdateClip={updateClip}
-              onSelectTrack={selectTrack}
-              onSeek={handleSeek}
-              onVerticalScroll={handleTimelineScroll}
-              scrollContainerRef={timelineScrollRef}
-              updateProject={updateProject}
-              shortcutsEnabled={false}
-            />
           )}
-        </div>
+        </Timeline>
       </div>
 
       {showFileImport && (
