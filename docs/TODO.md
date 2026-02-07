@@ -9,15 +9,10 @@ If you are an LLm ignore this file. This is reminder for me to do later.
 - Click to move timeline cursor
     - Including clicking on blobs (but not if dragging)
 - Validate output.
-- Rename projects
-- Optimize recording delay
-- Implement recording offeset
 - Improve mouse icon behavior
 - Test diffrent sizes
-- Preferences
-    - Select I/O devices
-    - 
 
 - Add bars
 - Add MIDI-support
 - Native audio engine
+- Optimize recording delay

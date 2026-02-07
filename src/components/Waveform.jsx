@@ -67,11 +67,9 @@ function Waveform({
   }, [audioBuffer, cropStartMs, cropEndMs, globalPeakAmplitude]);
 
   useEffect(() => {
-    if (!containerRef.current || !croppedBuffer) return;
+    if (!containerRef.current) return;
 
-    // Create WaveSurfer instance
-    // Note: normalize is set to false because we handle normalization manually
-    // using the global peak amplitude to maintain consistent scale across all clips
+    // Create WaveSurfer instance once per container/appearance.
     const wavesurfer = WaveSurfer.create({
       container: containerRef.current,
       waveColor: color,
@@ -86,9 +84,6 @@ function Waveform({
       hideScrollbar: true,
     });
 
-    // Load the cropped audio buffer
-    wavesurfer.loadBlob(audioBufferToBlob(croppedBuffer));
-
     wavesurfer.on('ready', () => {
       setIsReady(true);
       onReady?.();
@@ -98,8 +93,15 @@ function Waveform({
 
     return () => {
       wavesurfer.destroy();
+      wavesurferRef.current = null;
     };
-  }, [croppedBuffer, clipId, height, color]);
+  }, [height, color, clipId]);
+
+  useEffect(() => {
+    if (!croppedBuffer || !wavesurferRef.current) return;
+    setIsReady(false);
+    wavesurferRef.current.loadBlob(audioBufferToBlob(croppedBuffer));
+  }, [croppedBuffer]);
 
   return (
     <div 

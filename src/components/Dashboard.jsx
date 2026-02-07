@@ -12,6 +12,8 @@ function Dashboard({ onOpenProject, onNewProject }) {
   const [showNewProjectDialog, setShowNewProjectDialog] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
+  const [editingProjectId, setEditingProjectId] = useState(null);
+  const [editingProjectName, setEditingProjectName] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [audioInputs, setAudioInputs] = useState([]);
   const [audioOutputs, setAudioOutputs] = useState([]);
@@ -162,6 +164,34 @@ function Dashboard({ onOpenProject, onNewProject }) {
     };
   }, []);
 
+  const beginProjectRename = (project) => {
+    setEditingProjectId(project.projectId);
+    setEditingProjectName(project.projectName);
+  };
+
+  const commitProjectRename = async () => {
+    if (!editingProjectId) return;
+    const project = projects.find((p) => p.projectId === editingProjectId);
+    if (!project) {
+      setEditingProjectId(null);
+      setEditingProjectName('');
+      return;
+    }
+    const trimmed = editingProjectName.trim();
+    if (trimmed && trimmed !== project.projectName) {
+      const updated = { ...project, projectName: trimmed, lastModified: Date.now() };
+      await saveProject(updated);
+      await loadProjects();
+    }
+    setEditingProjectId(null);
+    setEditingProjectName('');
+  };
+
+  const cancelProjectRename = () => {
+    setEditingProjectId(null);
+    setEditingProjectName('');
+  };
+
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
@@ -258,7 +288,10 @@ function Dashboard({ onOpenProject, onNewProject }) {
                 {projects.map((project) => (
                   <div
                     key={project.projectId}
-                    onClick={() => onOpenProject(project.projectId)}
+                    onClick={() => {
+                      if (editingProjectId === project.projectId) return;
+                      onOpenProject(project.projectId);
+                    }}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       setContextMenu({
@@ -270,7 +303,34 @@ function Dashboard({ onOpenProject, onNewProject }) {
                     className="bg-gray-800 hover:bg-gray-750 border border-gray-700 rounded-lg px-6 py-4 cursor-pointer transition-colors flex items-center justify-between"
                   >
                     <div className="flex-1">
-                      <h3 className="font-semibold text-lg">{project.projectName}</h3>
+                      {editingProjectId === project.projectId ? (
+                        <input
+                          type="text"
+                          value={editingProjectName}
+                          autoFocus
+                          onChange={(e) => setEditingProjectName(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          onBlur={commitProjectRename}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              commitProjectRename();
+                            } else if (e.key === 'Escape') {
+                              cancelProjectRename();
+                            }
+                          }}
+                          className="font-semibold text-lg bg-transparent border-b border-blue-500 px-0 py-0 leading-none focus:outline-none w-full h-[28px]"
+                        />
+                      ) : (
+                        <h3
+                          className="font-semibold text-lg h-[28px] flex items-center"
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            beginProjectRename(project);
+                          }}
+                        >
+                          {project.projectName}
+                        </h3>
+                      )}
                       <div className="text-sm text-gray-400 mt-1">
                         <span>{project.tracks?.length || 0} tracks</span>
                         <span className="mx-2">•</span>
@@ -293,12 +353,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
           <button
             className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700"
             onClick={() => {
-              const newName = window.prompt('New project name:', contextMenu.project.projectName);
-              if (newName && newName.trim()) {
-                const trimmed = newName.trim();
-                const updated = { ...contextMenu.project, projectName: trimmed, lastModified: Date.now() };
-                saveProject(updated).then(loadProjects);
-              }
+              beginProjectRename(contextMenu.project);
               setContextMenu(null);
             }}
           >

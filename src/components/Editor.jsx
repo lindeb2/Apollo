@@ -37,6 +37,7 @@ function Editor({ onBackToDashboard }) {
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [masterVolume, setMasterVolume] = useState(100);
   const [masterEditTooltip, setMasterEditTooltip] = useState(null);
+  const [masterDragTooltip, setMasterDragTooltip] = useState(null);
   const [trackListContextMenu, setTrackListContextMenu] = useState(null);
   const masterDragRef = useRef(null);
   const [isEditingProjectName, setIsEditingProjectName] = useState(false);
@@ -162,9 +163,11 @@ function Editor({ onBackToDashboard }) {
       if (masterEditTooltip) setMasterEditTooltip(null);
       const next = Math.min(100, Math.max(0, startValue + (deltaX / width) * 100));
       applyMasterVolume(next);
+      setMasterDragTooltip(next);
     };
     const handleUp = () => {
       masterDragRef.current = null;
+      setMasterDragTooltip(null);
     };
     window.addEventListener('mousemove', handleMove);
     window.addEventListener('mouseup', handleUp);
@@ -980,15 +983,25 @@ function Editor({ onBackToDashboard }) {
                   className="w-28 volume-slider cursor-pointer block"
                   title="Master Volume (double-click for numeric input)"
                 />
+                {masterDragTooltip !== null && (
+                  <div
+                    className="absolute top-full left-1/2 -translate-x-1/2 w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
+                    style={{ marginTop: '1px' }}
+                  >
+                    {masterDragTooltip <= 0 ? '-∞' : volumeToDb(masterDragTooltip).toFixed(1)}
+                  </div>
+                )}
                 {masterEditTooltip && (
                   <input
                     type="text"
                     value={masterEditTooltip.text}
                     onChange={(e) => setMasterEditTooltip({ text: e.target.value })}
-                    onFocus={(e) => e.target.select()}
+                  onFocus={(e) => e.target.select()}
                   onBlur={() => {
                     const text = masterEditTooltip.text.trim();
-                    if (text) {
+                    if (!text) {
+                      applyMasterVolume(dbToVolume(0));
+                    } else {
                       const normalized = text.toLowerCase();
                       if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
                         applyMasterVolume(0);
@@ -1004,7 +1017,9 @@ function Editor({ onBackToDashboard }) {
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
                         const text = masterEditTooltip.text.trim();
-                      if (text) {
+                      if (!text) {
+                        applyMasterVolume(dbToVolume(0));
+                      } else {
                         const normalized = text.toLowerCase();
                         if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
                           applyMasterVolume(0);
@@ -1020,7 +1035,8 @@ function Editor({ onBackToDashboard }) {
                         setMasterEditTooltip(null);
                       }
                     }}
-                    className="absolute top-full -mt-1 left-1/2 -translate-x-1/2 w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none"
+                    className="absolute top-full left-1/2 -translate-x-1/2 w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
+                    style={{ marginTop: '1px' }}
                     autoFocus
                   />
                 )}

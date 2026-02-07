@@ -60,14 +60,16 @@ function TrackList({
     e.preventDefault();
     e.stopPropagation();
     if (editTooltip) setEditTooltip(null);
+    const startValue = type === 'volume'
+      ? tracks.find(t => t.id === trackId)?.volume ?? 0
+      : tracks.find(t => t.id === trackId)?.pan ?? 0;
+    setDragTooltip({ trackId, type, value: startValue });
     const rect = e.currentTarget.getBoundingClientRect();
     dragRef.current = {
       trackId,
       type,
       startX: e.clientX,
-      startValue: type === 'volume'
-        ? tracks.find(t => t.id === trackId)?.volume ?? 0
-        : tracks.find(t => t.id === trackId)?.pan ?? 0,
+      startValue,
       width: rect.width,
       moved: false,
     };
@@ -115,6 +117,7 @@ function TrackList({
     const text = editTooltip.text.trim();
     if (editTooltip.type === 'volume') {
       if (!text) {
+        handleVolumeChange(track.id, dbToVolume(0));
         setEditTooltip(null);
         return;
       }
@@ -131,6 +134,7 @@ function TrackList({
       }
     } else {
       if (!text) {
+        handlePanChange(track.id, 0);
         setEditTooltip(null);
         return;
       }
@@ -289,7 +293,7 @@ function TrackList({
                         }
                       }}
                       onClick={(e) => e.stopPropagation()}
-                      className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-lg leading-tight focus:outline-none min-w-0"
+                      className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-lg font-semibold leading-none focus:outline-none min-w-0 h-[28px]"
                     />
                   ) : (
                     <span
@@ -297,7 +301,7 @@ function TrackList({
                         e.stopPropagation();
                         setEditingName(track.id);
                       }}
-                      className="flex-1 text-lg font-semibold truncate min-w-0"
+                      className="flex-1 text-lg font-semibold truncate min-w-0 h-[28px] flex items-center"
                       title="Double-click to edit"
                     >
                       {track.name}
