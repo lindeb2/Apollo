@@ -865,6 +865,24 @@ function Editor({ onBackToDashboard }) {
     onDeleteTrack: handleDeleteTrack,
   });
 
+  useEffect(() => {
+    const handleSpaceToggle = (e) => {
+      if (e.code !== 'Space') return;
+      if (
+        e.target.tagName === 'INPUT' ||
+        e.target.tagName === 'TEXTAREA' ||
+        e.target.isContentEditable
+      ) {
+        return;
+      }
+      e.preventDefault();
+      handlePlay();
+    };
+
+    window.addEventListener('keydown', handleSpaceToggle);
+    return () => window.removeEventListener('keydown', handleSpaceToggle);
+  }, [handlePlay]);
+
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
@@ -1077,6 +1095,7 @@ function Editor({ onBackToDashboard }) {
           onSeek={handleSeek}
           updateProject={updateProject}
           shortcutsEnabled={false}
+          deleteClipShortcutEnabled
           sharedVerticalScroll
           scrollContainerRef={timelineScrollRef}
         >

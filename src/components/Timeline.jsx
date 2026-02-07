@@ -47,6 +47,7 @@ function Timeline({
   scrollContainerRef,
   updateProject,
   shortcutsEnabled = false,
+  deleteClipShortcutEnabled = false,
   sharedVerticalScroll = false,
   children,
 }) {
@@ -402,13 +403,22 @@ function Timeline({
   }, [selectedClipId, selectedTrackId, project.tracks]);
 
   useEffect(() => {
-    if (!shortcutsEnabled) return;
+    if (!shortcutsEnabled && !deleteClipShortcutEnabled) return;
 
     const handleKeyDown = (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
       const selectedTrack = project.tracks.find(t => t.id === selectedTrackId);
       const selectedClip = selectedTrack?.clips.find(c => c.id === selectedClipId);
+
+      if (deleteClipShortcutEnabled && (e.code === 'Delete' || e.code === 'Backspace') && selectedClip && selectedTrackId) {
+        e.preventDefault();
+        onUpdateClip(selectedTrackId, selectedClipId, null, 'delete');
+        setSelectedClipId(null);
+        return;
+      }
+
+      if (!shortcutsEnabled) return;
 
       if (e.code === 'KeyC' && (e.ctrlKey || e.metaKey) && selectedClip) {
         e.preventDefault();
@@ -460,16 +470,11 @@ function Timeline({
         }
       }
 
-      if ((e.code === 'Delete' || e.code === 'Backspace') && selectedClip && selectedTrackId) {
-        e.preventDefault();
-        onUpdateClip(selectedTrackId, selectedClipId, null, 'delete');
-        setSelectedClipId(null);
-      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [shortcutsEnabled, selectedClipId, selectedTrackId, clipboardClip, currentTimeMs, project.tracks, onUpdateClip]);
+  }, [shortcutsEnabled, deleteClipShortcutEnabled, selectedClipId, selectedTrackId, clipboardClip, currentTimeMs, project.tracks, onUpdateClip]);
 
   const handleContextMenu = (e) => {
     e.preventDefault();

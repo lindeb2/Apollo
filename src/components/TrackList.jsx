@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Lock, Unlock, Volume2, VolumeX, Headphones, Mic, Music, Users, Waves } from 'lucide-react';
+import { Lock, Unlock, Volume2, VolumeX, Headphones, Mic, Music, Users, Waves, ChevronRight } from 'lucide-react';
 import { TRACK_ROLES } from '../types/project';
 import { dbToVolume, volumeToDb } from '../utils/audio';
 
@@ -21,12 +21,50 @@ function TrackList({
   const [dragTooltip, setDragTooltip] = useState(null);
   const [editTooltip, setEditTooltip] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
+  const [typeMenuOpen, setTypeMenuOpen] = useState(false);
+  const [typeMenuPos, setTypeMenuPos] = useState({ x: 0, y: 0 });
+  const [choirMenuOpen, setChoirMenuOpen] = useState(false);
+  const [choirMenuPos, setChoirMenuPos] = useState({ x: 0, y: 0 });
+  const [isTypeTriggerHover, setIsTypeTriggerHover] = useState(false);
+  const [isTypeMenuHover, setIsTypeMenuHover] = useState(false);
+  const [isChoirTriggerHover, setIsChoirTriggerHover] = useState(false);
+  const [isChoirMenuHover, setIsChoirMenuHover] = useState(false);
   const iconOptions = [
     { key: 'mic', Icon: Mic },
     { key: 'music', Icon: Music },
     { key: 'users', Icon: Users },
     { key: 'wave', Icon: Waves },
   ];
+  
+  useEffect(() => {
+    if (!contextMenu) {
+      setTypeMenuOpen(false);
+      setChoirMenuOpen(false);
+      setIsTypeTriggerHover(false);
+      setIsTypeMenuHover(false);
+      setIsChoirTriggerHover(false);
+      setIsChoirMenuHover(false);
+    }
+  }, [contextMenu]);
+
+  useEffect(() => {
+    const typeOpen = isTypeTriggerHover || isTypeMenuHover || isChoirTriggerHover || isChoirMenuHover;
+    const choirOpen = isChoirTriggerHover || isChoirMenuHover;
+    setTypeMenuOpen(typeOpen);
+    setChoirMenuOpen(choirOpen);
+  }, [isTypeTriggerHover, isTypeMenuHover, isChoirTriggerHover, isChoirMenuHover]);
+
+  const openTypeMenu = (event) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setTypeMenuPos({ x: rect.right, y: rect.top - 1 });
+    setIsTypeTriggerHover(true);
+  };
+
+  const openChoirMenu = (event) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setChoirMenuPos({ x: rect.right, y: rect.top - 1 });
+    setIsChoirTriggerHover(true);
+  };
 
   const getDefaultIconKey = (role) => {
     if (role === TRACK_ROLES.INSTRUMENT) return 'music';
@@ -241,6 +279,7 @@ function TrackList({
                 track,
               });
             }}
+            onClick={() => onSelectTrack(track.id)}
             className={`border-b border-gray-700 px-4 py-3 cursor-pointer transition-colors ${
               selectedTrackId === track.id
                 ? 'bg-gray-700'
@@ -311,8 +350,8 @@ function TrackList({
               )}
 
               {/* Lower Row: Controls */}
-              <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
-                <div className="flex items-center gap-0">
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-0" onClick={(e) => e.stopPropagation()}>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -354,7 +393,11 @@ function TrackList({
                   {track.locked ? <Lock size={16} /> : <Unlock size={16} />}
                 </button>
 
-                <div className="flex-1 flex items-center relative">
+                <div
+                  className="flex-1 flex items-center relative"
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
                   <input
                     type="range"
                     min="0"
@@ -397,7 +440,11 @@ function TrackList({
                   )}
                 </div>
 
-                <div className="relative w-8 h-8 flex-shrink-0">
+                <div
+                  className="relative w-8 h-8 flex-shrink-0"
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
                   <div className="absolute inset-0 overflow-hidden">
                     <div className="absolute inset-0 pan-ring pointer-events-none" />
                     <div className="absolute left-1/2 top-1/2 w-6 h-6 rounded-full bg-gray-700 border border-gray-600 -translate-x-1/2 -translate-y-1/2 pointer-events-none" />
@@ -458,22 +505,17 @@ function TrackList({
 
       {contextMenu && (
         <div
-          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-1"
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden"
           style={{ left: contextMenu.x, top: contextMenu.y }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
         >
           {contextMenu.type === 'track' ? (
             <>
               <button
-                className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700"
-                onClick={() => {
-                  onAddTrack?.();
-                  setContextMenu(null);
-                }}
-              >
-                Add new track
-              </button>
-              <button
-                className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700"
+                className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700"
                 onClick={() => {
                   setEditingName(contextMenu.track.id);
                   setContextMenu(null);
@@ -481,8 +523,22 @@ function TrackList({
               >
                 Rename track
               </button>
+              <div className="relative">
+                <div
+                  className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 select-none w-full cursor-pointer"
+                  onMouseEnter={openTypeMenu}
+                  onMouseLeave={() => setIsTypeTriggerHover(false)}
+                  style={{ backgroundColor: (isTypeTriggerHover || isTypeMenuHover || isChoirTriggerHover || isChoirMenuHover) ? '#374151' : undefined }}
+                >
+                  <div className="flex items-center justify-between w-full">
+                  <span>Change track type</span>
+                  <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+                  </div>
+                </div>
+              </div>
+
               <button
-                className="w-full text-left px-3 py-1.5 text-sm text-red-300 hover:bg-gray-700"
+                className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-red-300 hover:bg-gray-700"
                 onClick={() => {
                   onDeleteTrack?.(contextMenu.track.id);
                   setContextMenu(null);
@@ -490,10 +546,21 @@ function TrackList({
               >
                 Delete track
               </button>
+
+              <div className="my-0.5 border-t border-gray-700" />
+              <button
+                className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700"
+                onClick={() => {
+                  onAddTrack?.();
+                  setContextMenu(null);
+                }}
+              >
+                Create new track
+              </button>
             </>
           ) : (
             <button
-              className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700"
+              className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700"
               onClick={() => {
                 onAddTrack?.();
                 setContextMenu(null);
@@ -502,6 +569,117 @@ function TrackList({
               Create a track
             </button>
           )}
+        </div>
+      )}
+
+      {contextMenu && typeMenuOpen && (
+        <div
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[20px]"
+          style={{ left: typeMenuPos.x, top: typeMenuPos.y }}
+          onMouseEnter={() => setIsTypeMenuHover(true)}
+          onMouseLeave={() => setIsTypeMenuHover(false)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+        >
+          <button
+            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            onClick={() => {
+              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.INSTRUMENT });
+              setContextMenu(null);
+            }}
+          >
+            Instrument
+          </button>
+          <button
+            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            onClick={() => {
+              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.LEAD });
+              setContextMenu(null);
+            }}
+          >
+            Lead
+          </button>
+          <div
+            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 select-none whitespace-nowrap cursor-pointer"
+            onMouseEnter={openChoirMenu}
+            onMouseLeave={() => setIsChoirTriggerHover(false)}
+            style={{ backgroundColor: (isChoirTriggerHover || isChoirMenuHover) ? '#374151' : undefined }}
+          >
+            <div className="flex items-center justify-between w-full">
+              <span>Choir part</span>
+              <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+            </div>
+          </div>
+          <button
+            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            onClick={() => {
+              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.OTHER });
+              setContextMenu(null);
+            }}
+          >
+            Other
+          </button>
+        </div>
+      )}
+
+      {contextMenu && choirMenuOpen && (
+        <div
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[25px]"
+          style={{ left: choirMenuPos.x, top: choirMenuPos.y }}
+          onMouseEnter={() => setIsChoirMenuHover(true)}
+          onMouseLeave={() => setIsChoirMenuHover(false)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+        >
+          <button
+            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            onClick={() => {
+              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_1 });
+              setContextMenu(null);
+            }}
+          >
+            1
+          </button>
+          <button
+            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            onClick={() => {
+              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_2 });
+              setContextMenu(null);
+            }}
+          >
+            2
+          </button>
+          <button
+            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            onClick={() => {
+              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_3 });
+              setContextMenu(null);
+            }}
+          >
+            3
+          </button>
+          <button
+            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            onClick={() => {
+              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_4 });
+              setContextMenu(null);
+            }}
+          >
+            4
+          </button>
+          <button
+            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            onClick={() => {
+              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_5 });
+              setContextMenu(null);
+            }}
+          >
+            5
+          </button>
         </div>
       )}
     </div>
