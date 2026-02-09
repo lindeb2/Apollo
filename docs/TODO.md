@@ -16,3 +16,6 @@ If you are an LLm ignore this file. This is reminder for me to do later.
 - Add MIDI-support
 - Native audio engine
 - Optimize recording delay
+- Reverb
+  - Choir-group
+- Pan Law
