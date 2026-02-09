@@ -19,3 +19,6 @@ If you are an LLm ignore this file. This is reminder for me to do later.
 - Reverb
   - Choir-group
 - Pan Law
+- Improve auto-Pan
+  - description
+  - mirror

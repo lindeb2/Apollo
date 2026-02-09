@@ -1,4 +1,5 @@
 import { dbToVolume } from '../utils/audio';
+import { DEFAULT_AUTO_PAN_SETTINGS } from '../utils/choirAutoPan';
 
 /**
  * Project data model types (authoritative)
@@ -59,6 +60,11 @@ export const SAMPLE_RATE = 44100;
  * @property {string} projectName - Project name
  * @property {number} sampleRate - Sample rate (always 44100)
  * @property {number} masterVolume - Master volume (0-100)
+ * @property {Object} autoPan - Auto-pan configuration
+ * @property {boolean} autoPan.enabled - Auto-pan enabled
+ * @property {string} autoPan.strategy - Auto-pan strategy id
+ * @property {number} autoPan.rangeLimit - Max pan range
+ * @property {number} autoPan.spreadK - Spread factor
  * @property {Track[]} tracks - Array of tracks
  * @property {Loop} loop - Loop configuration
  * @property {number} undoStackSize - Max undo stack size (100)
@@ -67,13 +73,14 @@ export const SAMPLE_RATE = 44100;
 /**
  * Create a new empty project
  */
-export function createEmptyProject(name = 'Untitled Project') {
+export function createEmptyProject(name = 'Untitled Project', autoPan = null) {
   return {
     version: '1.0.0',
     projectId: crypto.randomUUID(),
     projectName: name,
     sampleRate: SAMPLE_RATE,
     masterVolume: dbToVolume(0),
+    autoPan: autoPan ?? { ...DEFAULT_AUTO_PAN_SETTINGS },
     tracks: [],
     loop: { enabled: false, startMs: 0, endMs: 0 },
     undoStackSize: 100,

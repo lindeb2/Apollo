@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { saveProject, saveUndoAction, loadUndoHistory } from '../lib/db';
 import { createEmptyProject } from '../types/project';
+import { normalizeAutoPanSettings, normalizeProjectAutoPan } from '../utils/choirAutoPan';
 
 /**
  * ChoirMaster Zustand Store
@@ -41,7 +42,21 @@ const useStore = create((set, get) => ({
    * Initialize a new project
    */
   initProject: (name) => {
-    const project = createEmptyProject(name);
+    let autoPan = normalizeAutoPanSettings();
+    try {
+      const saved = localStorage.getItem('choirmaster.settings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        const strategy = parsed?.defaultChoirPanning;
+        if (typeof strategy === 'string' && strategy !== 'off') {
+          autoPan = normalizeAutoPanSettings({ enabled: true, strategy });
+        }
+      }
+    } catch {
+      // Ignore invalid settings
+    }
+
+    const project = createEmptyProject(name, autoPan);
     set({
       project,
       currentProjectId: project.projectId,
@@ -58,29 +73,30 @@ const useStore = create((set, get) => ({
    * Load existing project
    */
   loadProject: async (projectData) => {
+    const normalizedProject = normalizeProjectAutoPan(projectData);
     // Load undo history
     const undoStack = await loadUndoHistory(projectData.projectId);
     const { selectedTrackByProjectId } = get();
     const rememberedTrackId = selectedTrackByProjectId[projectData.projectId];
     let initialSelectedTrackId = null;
-    if (projectData.tracks && projectData.tracks.length > 0) {
-      const hasRemembered = rememberedTrackId && projectData.tracks.some(t => t.id === rememberedTrackId);
-      initialSelectedTrackId = hasRemembered ? rememberedTrackId : projectData.tracks[0].id;
+    if (normalizedProject.tracks && normalizedProject.tracks.length > 0) {
+      const hasRemembered = rememberedTrackId && normalizedProject.tracks.some(t => t.id === rememberedTrackId);
+      initialSelectedTrackId = hasRemembered ? rememberedTrackId : normalizedProject.tracks[0].id;
     }
     
     set({
-      project: projectData,
-      currentProjectId: projectData.projectId,
+      project: normalizedProject,
+      currentProjectId: normalizedProject.projectId,
       selectedTrackId: initialSelectedTrackId,
       selectedTrackByProjectId: {
         ...selectedTrackByProjectId,
-        [projectData.projectId]: initialSelectedTrackId,
+        [normalizedProject.projectId]: initialSelectedTrackId,
       },
       undoStack,
       redoStack: [],
       undoIndex: undoStack.length,
       isDirty: false,
-      lastSaved: projectData.lastModified,
+      lastSaved: normalizedProject.lastModified,
     });
   },
   

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Lock, Unlock, Volume2, VolumeX, Headphones, Mic, Music, Users, Waves, ChevronRight } from 'lucide-react';
 import { TRACK_ROLES } from '../types/project';
 import { dbToVolume, volumeToDb } from '../utils/audio';
+import { AUTO_PAN_STRATEGIES } from '../utils/choirAutoPan';
 
 const TRACK_HEIGHT = 120;
 const LOCKED_TRACK_HEIGHT = 80;
@@ -13,6 +14,7 @@ function TrackList({
   selectedTrackId,
   onAddTrack,
   onDeleteTrack,
+  onSetAutoPanStrategy,
   emptyContextMenu,
   onClearEmptyContextMenu,
 }) {
@@ -25,10 +27,14 @@ function TrackList({
   const [typeMenuPos, setTypeMenuPos] = useState({ x: 0, y: 0 });
   const [choirMenuOpen, setChoirMenuOpen] = useState(false);
   const [choirMenuPos, setChoirMenuPos] = useState({ x: 0, y: 0 });
+  const [autoPanMenuOpen, setAutoPanMenuOpen] = useState(false);
+  const [autoPanMenuPos, setAutoPanMenuPos] = useState({ x: 0, y: 0 });
   const [isTypeTriggerHover, setIsTypeTriggerHover] = useState(false);
   const [isTypeMenuHover, setIsTypeMenuHover] = useState(false);
   const [isChoirTriggerHover, setIsChoirTriggerHover] = useState(false);
   const [isChoirMenuHover, setIsChoirMenuHover] = useState(false);
+  const [isAutoPanTriggerHover, setIsAutoPanTriggerHover] = useState(false);
+  const [isAutoPanMenuHover, setIsAutoPanMenuHover] = useState(false);
   const iconOptions = [
     { key: 'mic', Icon: Mic },
     { key: 'music', Icon: Music },
@@ -37,13 +43,16 @@ function TrackList({
   ];
   
   useEffect(() => {
-    if (!contextMenu) {
+    if (!contextMenu || contextMenu.type !== 'track') {
       setTypeMenuOpen(false);
       setChoirMenuOpen(false);
+      setAutoPanMenuOpen(false);
       setIsTypeTriggerHover(false);
       setIsTypeMenuHover(false);
       setIsChoirTriggerHover(false);
       setIsChoirMenuHover(false);
+      setIsAutoPanTriggerHover(false);
+      setIsAutoPanMenuHover(false);
     }
   }, [contextMenu]);
 
@@ -53,6 +62,11 @@ function TrackList({
     setTypeMenuOpen(typeOpen);
     setChoirMenuOpen(choirOpen);
   }, [isTypeTriggerHover, isTypeMenuHover, isChoirTriggerHover, isChoirMenuHover]);
+
+  useEffect(() => {
+    const autoOpen = isAutoPanTriggerHover || isAutoPanMenuHover;
+    setAutoPanMenuOpen(autoOpen);
+  }, [isAutoPanTriggerHover, isAutoPanMenuHover]);
 
   const openTypeMenu = (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -64,6 +78,12 @@ function TrackList({
     const rect = event.currentTarget.getBoundingClientRect();
     setChoirMenuPos({ x: rect.right, y: rect.top - 1 });
     setIsChoirTriggerHover(true);
+  };
+
+  const openAutoPanMenu = (event) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setAutoPanMenuPos({ x: rect.right, y: rect.top - 1 });
+    setIsAutoPanTriggerHover(true);
   };
 
   const getDefaultIconKey = (role) => {
@@ -537,6 +557,22 @@ function TrackList({
                 </div>
               </div>
 
+              {contextMenu.track.role?.startsWith('choir-part-') && (
+                <div className="relative">
+                  <div
+                    className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 select-none w-full cursor-pointer"
+                    onMouseEnter={openAutoPanMenu}
+                    onMouseLeave={() => setIsAutoPanTriggerHover(false)}
+                    style={{ backgroundColor: (isAutoPanTriggerHover || isAutoPanMenuHover) ? '#374151' : undefined }}
+                  >
+                    <div className="flex items-center justify-between w-full">
+                      <span>Auto-pan choir</span>
+                      <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <button
                 className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-red-300 hover:bg-gray-700"
                 onClick={() => {
@@ -680,6 +716,41 @@ function TrackList({
           >
             5
           </button>
+        </div>
+      )}
+
+      {contextMenu && autoPanMenuOpen && (
+        <div
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[120px]"
+          style={{ left: autoPanMenuPos.x, top: autoPanMenuPos.y }}
+          onMouseEnter={() => setIsAutoPanMenuHover(true)}
+          onMouseLeave={() => setIsAutoPanMenuHover(false)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+        >
+          <button
+            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            onClick={() => {
+              onSetAutoPanStrategy?.('off');
+              setContextMenu(null);
+            }}
+          >
+            Off
+          </button>
+          {AUTO_PAN_STRATEGIES.map((option) => (
+            <button
+              key={option.id}
+              className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+              onClick={() => {
+                onSetAutoPanStrategy?.(option.id);
+                setContextMenu(null);
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
         </div>
       )}
     </div>

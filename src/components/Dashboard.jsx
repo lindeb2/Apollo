@@ -5,6 +5,7 @@ import { importFromJSON, importFromZIP } from '../lib/projectPortability';
 import { audioManager } from '../lib/audioManager';
 import { storeMediaBlob } from '../lib/db';
 import { formatTime } from '../utils/audio';
+import { AUTO_PAN_STRATEGIES } from '../utils/choirAutoPan';
 
 function Dashboard({ onOpenProject, onNewProject }) {
   const [projects, setProjects] = useState([]);
@@ -21,6 +22,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
     inputDeviceId: '',
     outputDeviceId: '',
     recordingOffsetMs: 0,
+    defaultChoirPanning: 'off',
   });
   const hasHydratedSettingsRef = useRef(false);
 
@@ -41,11 +43,20 @@ function Dashboard({ onOpenProject, onNewProject }) {
           typeof parsed.recordingOffsetMs === 'number'
             ? parsed.recordingOffsetMs
             : prev.recordingOffsetMs,
+        defaultChoirPanning:
+          typeof parsed.defaultChoirPanning === 'string'
+            ? parsed.defaultChoirPanning
+            : prev.defaultChoirPanning,
       }));
     } catch {
       // Ignore invalid settings
     }
   }, []);
+
+  const choirPanOptions = [
+    { id: 'off', label: 'Off' },
+    ...AUTO_PAN_STRATEGIES,
+  ];
 
   useEffect(() => {
     if (!hasHydratedSettingsRef.current) {
@@ -433,6 +444,27 @@ function Dashboard({ onOpenProject, onNewProject }) {
                       }))
                     }
                   />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">
+                    Default choir auto-pan (new projects)
+                  </label>
+                  <select
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={audioSettings.defaultChoirPanning}
+                    onChange={(e) =>
+                      setAudioSettings((prev) => ({
+                        ...prev,
+                        defaultChoirPanning: e.target.value,
+                      }))
+                    }
+                  >
+                    {choirPanOptions.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <button
                   className="text-xs text-gray-400 hover:text-gray-200"

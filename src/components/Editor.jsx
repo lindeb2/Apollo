@@ -10,6 +10,7 @@ import TrackList from './TrackList';
 import Timeline from './Timeline';
 import ExportDialog from './ExportDialog';
 import { dbToVolume, volumeToDb } from '../utils/audio';
+import { applyChoirAutoPanToProject } from '../utils/choirAutoPan';
 import useKeyboardShortcuts from '../utils/useKeyboardShortcuts';
 import { processRecordingOverwrites } from '../utils/clipCollision';
 
@@ -738,20 +739,57 @@ function Editor({ onBackToDashboard }) {
   };
 
   const handleUpdateTrack = (trackId, updates) => {
-    updateProject((proj) => ({
-      ...proj,
-      tracks: proj.tracks.map(track =>
+    let panUpdates = null;
+    updateProject((proj) => {
+      const nextTracks = proj.tracks.map((track) =>
         track.id === trackId ? { ...track, ...updates } : track
-      ),
-    }), `Update track`);
+      );
+      let nextProject = {
+        ...proj,
+        tracks: nextTracks,
+      };
+
+      if (updates.role !== undefined && proj.autoPan?.enabled) {
+        const result = applyChoirAutoPanToProject(nextProject);
+        panUpdates = result.panUpdates;
+        nextProject = result.project;
+      }
+
+      return nextProject;
+    }, `Update track`);
 
     if (isPlaying) {
-      if (updates.volume !== undefined) {
-        audioManager.updateTrackVolume(trackId, updates.volume);
+      if (panUpdates) {
+        Object.entries(panUpdates).forEach(([id, pan]) => {
+          audioManager.updateTrackPan(id, pan);
+        });
+      } else {
+        if (updates.volume !== undefined) {
+          audioManager.updateTrackVolume(trackId, updates.volume);
+        }
+        if (updates.pan !== undefined) {
+          audioManager.updateTrackPan(trackId, updates.pan);
+        }
       }
-      if (updates.pan !== undefined) {
-        audioManager.updateTrackPan(trackId, updates.pan);
-      }
+    }
+  };
+
+  const handleSetAutoPanStrategy = (strategyId) => {
+    let panUpdates = null;
+    updateProject((proj) => {
+      const settingsUpdate =
+        strategyId === 'off'
+          ? { enabled: false }
+          : { enabled: true, strategy: strategyId };
+      const result = applyChoirAutoPanToProject(proj, settingsUpdate);
+      panUpdates = result.panUpdates;
+      return result.project;
+    }, 'Update choir auto-pan');
+
+    if (isPlaying && panUpdates) {
+      Object.entries(panUpdates).forEach(([id, pan]) => {
+        audioManager.updateTrackPan(id, pan);
+      });
     }
   };
 
@@ -818,6 +856,7 @@ function Editor({ onBackToDashboard }) {
     if (!track) {
       return; // Track not found
     }
+    const wasChoir = track.role?.startsWith('choir-part-');
 
     // Check if track has clips
     const hasClips = track.clips && track.clips.length > 0;
@@ -834,10 +873,27 @@ function Editor({ onBackToDashboard }) {
     }
 
     // Delete the track
-    updateProject((proj) => ({
-      ...proj,
-      tracks: proj.tracks.filter(t => t.id !== trackId),
-    }), `Delete track "${track.name}"`);
+    let panUpdates = null;
+    updateProject((proj) => {
+      let nextProject = {
+        ...proj,
+        tracks: proj.tracks.filter(t => t.id !== trackId),
+      };
+
+      if (wasChoir && proj.autoPan?.enabled) {
+        const result = applyChoirAutoPanToProject(nextProject);
+        panUpdates = result.panUpdates;
+        nextProject = result.project;
+      }
+
+      return nextProject;
+    }, `Delete track "${track.name}"`);
+
+    if (isPlaying && panUpdates) {
+      Object.entries(panUpdates).forEach(([id, pan]) => {
+        audioManager.updateTrackPan(id, pan);
+      });
+    }
   };
 
   const handleDeleteTrack = () => {
@@ -1136,6 +1192,7 @@ function Editor({ onBackToDashboard }) {
                       selectedTrackId={selectedTrackId}
                       onAddTrack={handleAddEmptyTrack}
                       onDeleteTrack={handleDeleteTrackById}
+                      onSetAutoPanStrategy={handleSetAutoPanStrategy}
                       emptyContextMenu={trackListContextMenu}
                       onClearEmptyContextMenu={() => setTrackListContextMenu(null)}
                     />
