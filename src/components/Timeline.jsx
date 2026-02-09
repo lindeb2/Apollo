@@ -1,5 +1,11 @@
 import { useRef, useState, useEffect } from 'react';
-import { formatTime, msToSeconds, secondsToMs, pixelsToDbChange } from '../utils/audio';
+import {
+  formatTime,
+  msToSeconds,
+  secondsToMs,
+  clipGainDbToPosition,
+  positionToClipGainDb,
+} from '../utils/audio';
 import { audioManager } from '../lib/audioManager';
 import Waveform from './Waveform';
 import { calculateGlobalPeakAmplitude } from '../utils/waveformUtils';
@@ -11,8 +17,8 @@ import {
   findSafePosition 
 } from '../utils/clipCollision';
 
-const TRACK_HEIGHT = 120;
-const LOCKED_TRACK_HEIGHT = 80;
+const TRACK_HEIGHT = 100;
+const LOCKED_TRACK_HEIGHT = 70;
 const TIMELINE_VIEWPORT_WIDTH = 1920; // Default viewport width (updated dynamically)
 const MIN_VISIBLE_DURATION_MS = 8000; // Minimum duration to show when zoomed out
 const MAX_ZOOM_VISIBLE_MS = 100; // At max zoom, show 100ms across viewport
@@ -287,9 +293,18 @@ function Timeline({
     const edgeThreshold = 12; // Match the w-3 (12px) hover zone width
     let dragType = 'move';
 
-    if (offsetX < edgeThreshold) {
+    const isOnLeftEdge = offsetX < edgeThreshold;
+    const isOnRightEdge = offsetX > clipWidthPx - edgeThreshold;
+    const isOnEdge = isOnLeftEdge || isOnRightEdge;
+
+    // Cropping requires left-click on edges. Right-click on edges does nothing.
+    if (isOnEdge && e.button !== 0) {
+      return;
+    }
+
+    if (isOnLeftEdge) {
       dragType = 'crop-start';
-    } else if (offsetX > clipWidthPx - edgeThreshold) {
+    } else if (isOnRightEdge) {
       dragType = 'crop-end';
     } else if (e.button === 2) {
       dragType = 'gain';
@@ -305,6 +320,7 @@ function Timeline({
       initialCropStartMs: clip.cropStartMs,
       initialCropEndMs: clip.cropEndMs,
       initialGainDb: clip.gainDb,
+      initialGainPosition: clipGainDbToPosition(clip.gainDb),
       sourceDurationMs: clip.sourceDurationMs,  // Store for validation during drag
     });
 
@@ -363,9 +379,16 @@ function Timeline({
         updates.cropEndMs = constrainedCropEndMs;
 
       } else if (dragState.type === 'gain') {
-        const deltaDb = pixelsToDbChange(deltaY);
-        const newGainDb = Math.max(-24, Math.min(24, dragState.initialGainDb + deltaDb));
-        updates.gainDb = newGainDb;
+        const gainDragPixels = 300;
+        const distance = Math.min(1, Math.abs(deltaY) / gainDragPixels);
+        const shaped = distance * distance * distance;
+        const deltaPosition = Math.sign(-deltaY) * shaped;
+        const nextPosition = Math.max(
+          0,
+          Math.min(1, dragState.initialGainPosition + deltaPosition)
+        );
+        const nextGainDb = positionToClipGainDb(nextPosition);
+        updates.gainDb = Math.abs(nextGainDb) < 0.1 ? 0 : nextGainDb;
       }
 
       if (Object.keys(updates).length > 0) {
@@ -807,10 +830,10 @@ function Timeline({
   const header = (
     <div className="relative flex flex-col overflow-visible w-full min-w-0">
       {/* Timeline Ruler */}
-      <div className="bg-gray-850 border-b border-gray-700 flex" style={{ height: '24px' }}>
+      <div className="bg-gray-850 flex overflow-visible" style={{ height: '24px' }}>
         <div 
           ref={rulerScrollRef}
-          className="flex-1 overflow-x-scroll overflow-y-hidden ruler-scrollbar-hidden w-full min-w-0"
+          className="flex-1 overflow-x-scroll overflow-y-visible ruler-scrollbar-hidden w-full min-w-0"
           onScroll={(e) => {
             const newScrollLeft = e.target.scrollLeft;
             if (tracksScrollRef.current && tracksScrollRef.current.scrollLeft !== newScrollLeft) {
@@ -824,14 +847,8 @@ function Timeline({
             className="relative cursor-pointer"
             onMouseDown={handleRulerMouseDown}
           >
-            {/* Playhead (ruler) */}
-            <div
-              className="absolute top-0 bottom-0 w-0.5 bg-red-500 pointer-events-none z-30"
-              style={{
-                left: `${currentTimeMs * pixelsPerMs - scrollLeft}px`,
-              }}
-            />
-            {/* Time markers */}
+            <div className="absolute left-0 right-0 top-0 h-[23px] overflow-hidden">
+              {/* Time markers */}
             {Array.from({ 
               length: Math.ceil(Math.max(minZoomDurationMs, clampedVisibleMs) / rulerIntervalMs) + 1 
             }).map((_, i) => {
@@ -842,7 +859,7 @@ function Timeline({
                 <div
                   key={i}
                   className="absolute top-0 border-l border-gray-600"
-                  style={{ left: `${timeMs * pixelsPerMs}px`, height: '24px' }}
+                  style={{ left: `${timeMs * pixelsPerMs}px`, height: '23px' }}
                 >
                   <span className="text-xs text-gray-500 ml-1 whitespace-nowrap pointer-events-none select-none">
                     {formatRulerTime(timeMs, rulerIntervalMs)}
@@ -891,13 +908,23 @@ function Timeline({
               
               return null;
             })()}
+            </div>
+            <div className="absolute left-0 right-0 bottom-0 h-px bg-gray-700 pointer-events-none" />
+            {/* Playhead (ruler) */}
+            <div
+              className="absolute top-0 w-0.5 bg-red-500 pointer-events-none z-40"
+              style={{
+                left: `${currentTimeMs * pixelsPerMs}px`,
+                height: '24px',
+              }}
+            />
 
             {/* Loop start marker */}
             {(() => {
               if (rulerDragState?.isDragging && rulerDragState.currentStartMs !== undefined) {
                 return (
                   <div
-                    className="absolute top-0 bottom-0 w-1 pointer-events-none bg-yellow-500"
+                    className="absolute top-0 bottom-px w-1 pointer-events-none bg-yellow-500"
                     style={{
                       left: `${rulerDragState.currentStartMs * pixelsPerMs}px`,
                     }}
@@ -912,7 +939,7 @@ function Timeline({
               
               return (
                 <div
-                  className={`absolute top-0 bottom-0 w-1 cursor-ew-resize ${
+                  className={`absolute top-0 bottom-px w-1 cursor-ew-resize ${
                       project.loop.enabled ? 'bg-yellow-500' : 'bg-gray-500 opacity-40'
                     }`}
                   style={{
@@ -931,7 +958,7 @@ function Timeline({
               if (rulerDragState?.isDragging && rulerDragState.currentEndMs !== undefined) {
                 return (
                   <div
-                    className="absolute top-0 bottom-0 w-1 pointer-events-none bg-yellow-500"
+                    className="absolute top-0 bottom-px w-1 pointer-events-none bg-yellow-500"
                     style={{
                       left: `${rulerDragState.currentEndMs * pixelsPerMs}px`,
                     }}
@@ -946,7 +973,7 @@ function Timeline({
               
               return (
                 <div
-                  className={`absolute top-0 bottom-0 w-1 cursor-ew-resize ${
+                  className={`absolute top-0 bottom-px w-1 cursor-ew-resize ${
                     project.loop.enabled ? 'bg-yellow-500' : 'bg-gray-500 opacity-40'
                   }`}
                   style={{
@@ -983,6 +1010,7 @@ function Timeline({
         onScroll={(e) => {
           const newScrollLeft = e.target.scrollLeft;
           setScrollLeft(newScrollLeft);
+          e.target.style.setProperty('--scroll-left', `${newScrollLeft}px`);
           if (rulerScrollRef.current) {
             rulerScrollRef.current.scrollLeft = newScrollLeft;
           }
@@ -990,8 +1018,16 @@ function Timeline({
             onVerticalScroll(e.target.scrollTop);
           }
         }}
+        style={{ '--scroll-left': '0px' }}
       >
         <div style={{ width: `${timelineWidthPx}px`, height: `${totalTimelineHeight}px`, position: 'relative' }}>
+              {/* Playhead (tracks) */}
+              <div
+                className="absolute top-0 bottom-0 w-0.5 bg-red-500 pointer-events-none z-30"
+                style={{
+                  left: `${currentTimeMs * pixelsPerMs}px`,
+                }}
+              />
               {project.tracks.map((track, trackIndex) => {
                 const trackHeight = getTrackHeight(track);
                 const trackY = getTrackYPosition(project.tracks, trackIndex);
@@ -1010,7 +1046,7 @@ function Timeline({
                     {/* Locked track label */}
                   {track.locked && (
                     <div className="absolute inset-y-0 left-3 right-3 flex items-center text-4xl text-gray-200 font-semibold pointer-events-none z-10">
-                      {track.name}
+                      <span className="sticky left-3">{track.name}</span>
                     </div>
                   )}
 
@@ -1022,6 +1058,14 @@ function Timeline({
                       const audioBuffer = audioManager.mediaCache.get(clip.blobId);
                       const clipPadding = track.locked ? 4 : 8;
                       const clipInternalHeight = trackHeight - (clipPadding * 2);
+                      const labelPadding = 8;
+                      const gainLabelText = `${clip.gainDb > 0 ? '+' : ''}${clip.gainDb.toFixed(1)} dB`;
+                      const estimatedLabelWidth = gainLabelText.length * 7;
+                      const clipRightPx = clipLeftPx + clipWidthPx;
+                      const visibleLeftPx = Math.max(clipLeftPx, scrollLeft);
+                      const visibleRightPx = Math.min(clipRightPx, scrollLeft + containerWidth);
+                      const visibleWidthPx = Math.max(0, visibleRightPx - visibleLeftPx);
+                      const labelFits = visibleWidthPx >= estimatedLabelWidth + (labelPadding * 2);
 
                       return (
                         <div
@@ -1039,6 +1083,8 @@ function Timeline({
                             width: `${clipWidthPx}px`,
                             height: `${clipInternalHeight}px`,
                             backgroundColor: 'rgba(79, 142, 247, 0.3)',
+                            '--clip-left': `${clipLeftPx}px`,
+                            '--clip-width': `${clipWidthPx}px`,
                           }}
                           onClick={(e) => handleClipClick(e, clip.id, track.id)}
                           onMouseDown={(e) => handleClipMouseDown(e, clip, track)}
@@ -1067,15 +1113,18 @@ function Timeline({
                             />
                           )}
 
-                          {/* Clip Label - hidden for locked tracks to save space */}
-                          {!track.locked && (
-                            <div className="absolute top-1 left-2 text-xs text-white font-medium pointer-events-none">
-                              {track.name}
-                              {clip.gainDb !== 0 && (
-                                <span className="ml-2 text-yellow-400">
-                                  {clip.gainDb > 0 ? '+' : ''}{clip.gainDb.toFixed(1)} dB
-                                </span>
-                              )}
+                          {/* Clip Gain Label - hidden for locked tracks to save space */}
+                          {!track.locked && Math.abs(clip.gainDb) >= 0.1 && labelFits && (
+                            <div className="absolute top-1 left-0 right-0 text-xs font-medium pointer-events-none">
+                              <span
+                                className="absolute text-yellow-400 whitespace-nowrap overflow-hidden text-ellipsis"
+                                style={{
+                                  left: `clamp(${labelPadding}px, calc(var(--scroll-left) - var(--clip-left) + ${labelPadding}px), calc(var(--clip-width) - ${labelPadding}px))`,
+                                  maxWidth: `calc(var(--clip-width) - ${labelPadding * 2}px)`,
+                                }}
+                              >
+                                {gainLabelText}
+                              </span>
                             </div>
                           )}
 
@@ -1143,13 +1192,6 @@ function Timeline({
               })}
             </div>
           </div>
-      {/* Playhead */}
-      <div
-        className="absolute top-0 bottom-0 w-0.5 bg-red-500 pointer-events-none z-30"
-        style={{
-          left: `${currentTimeMs * pixelsPerMs - scrollLeft}px`,
-        }}
-      />
     </div>
   );
 

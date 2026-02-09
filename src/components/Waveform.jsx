@@ -101,7 +101,7 @@ function Waveform({
     if (!croppedBuffer || !wavesurferRef.current) return;
     setIsReady(false);
     wavesurferRef.current.loadBlob(audioBufferToBlob(croppedBuffer));
-  }, [croppedBuffer]);
+  }, [croppedBuffer, height, clipId]);
 
   return (
     <div 

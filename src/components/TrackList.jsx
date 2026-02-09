@@ -4,8 +4,8 @@ import { TRACK_ROLES } from '../types/project';
 import { dbToVolume, volumeToDb } from '../utils/audio';
 import { AUTO_PAN_STRATEGIES } from '../utils/choirAutoPan';
 
-const TRACK_HEIGHT = 120;
-const LOCKED_TRACK_HEIGHT = 80;
+const TRACK_HEIGHT = 100;
+const LOCKED_TRACK_HEIGHT = 70;
 
 function TrackList({
   tracks,
@@ -331,7 +331,7 @@ function TrackList({
               </button>
             </div>
 
-            <div className={`flex-1 min-w-0 flex flex-col ${track.locked ? 'justify-center gap-3' : 'gap-3'}`}>
+            <div className={`flex-1 min-w-0 flex flex-col ${track.locked ? 'justify-center gap-3' : 'gap-1'}`}>
               {/* Upper Row: Name */}
               {!track.locked && (
                 <div

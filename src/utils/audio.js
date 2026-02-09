@@ -7,6 +7,8 @@ const MIN_VOLUME_DB = -60;
 const MAX_VOLUME_DB = 6;
 const MIN_VOLUME_GAIN = 0.001;
 const VOLUME_GAIN_SCALE = 1.994;
+const CLIP_GAIN_MIN_DB = -24;
+const CLIP_GAIN_MAX_DB = 24;
 
 /**
  * Convert volume slider value (0-100) to decibels
@@ -27,6 +29,29 @@ export function dbToVolume(db) {
   const normalized = (gain - MIN_VOLUME_GAIN) / VOLUME_GAIN_SCALE;
   const position = Math.sqrt(Math.max(0, normalized));
   return Math.min(100, Math.max(0, position * 100));
+}
+
+/**
+ * Convert clip gain dB (-24..+24) to normalized slider position (0..1)
+ * Uses the same curve as volume sliders, remapped to clip gain range.
+ */
+export function clipGainDbToPosition(db) {
+  const clamped = Math.max(CLIP_GAIN_MIN_DB, Math.min(CLIP_GAIN_MAX_DB, db));
+  const normalized = (clamped - CLIP_GAIN_MIN_DB) / (CLIP_GAIN_MAX_DB - CLIP_GAIN_MIN_DB);
+  const baseDb = MIN_VOLUME_DB + normalized * (MAX_VOLUME_DB - MIN_VOLUME_DB);
+  return dbToVolume(baseDb) / 100;
+}
+
+/**
+ * Convert normalized slider position (0..1) to clip gain dB (-24..+24)
+ * Uses the same curve as volume sliders, remapped to clip gain range.
+ */
+export function positionToClipGainDb(position) {
+  const clampedPos = Math.max(0, Math.min(1, position));
+  const baseDb = volumeToDb(clampedPos * 100);
+  const normalized = (baseDb - MIN_VOLUME_DB) / (MAX_VOLUME_DB - MIN_VOLUME_DB);
+  const db = CLIP_GAIN_MIN_DB + normalized * (CLIP_GAIN_MAX_DB - CLIP_GAIN_MIN_DB);
+  return Math.max(CLIP_GAIN_MIN_DB, Math.min(CLIP_GAIN_MAX_DB, db));
 }
 
 /**
