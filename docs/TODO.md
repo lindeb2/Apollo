@@ -1,6 +1,6 @@
-If you are an LLm ignore this file. This is reminder for me to do later.
+If you are an LLM ignore this file. This is reminder for me to do later.
 
-- Look at croping clips
+- Look at cropping clips
 - Right click to change audio to work better.
 - Default import track type to instrument.
 - Tracks-Groups
@@ -8,7 +8,7 @@ If you are an LLm ignore this file. This is reminder for me to do later.
     - Including clicking on blobs (but not if dragging)
 - Validate output.
 - Improve mouse icon behavior
-- Test diffrent sizes
+- Test different sizes
 
 - Add bars
 - Add MIDI-support
@@ -18,6 +18,7 @@ If you are an LLm ignore this file. This is reminder for me to do later.
   - Choir-group
 - Pan Law
 - Improve auto-Pan
-  - description
-  - mirror
+  - Description
+  - Mirror
 - Better volume-sliders
+- Formats? (Wav for editing, mp3 for consumer playback)
