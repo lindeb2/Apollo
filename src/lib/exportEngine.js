@@ -1,249 +1,431 @@
-import { 
-  volumeToGain, 
-  dbToGain, 
-  equalPowerPan, 
-  msToSeconds, 
+import {
+  volumeToGain,
+  dbToGain,
+  msToSeconds,
   sanitizeFilename,
-  getChoirPanMatrix 
 } from '../utils/audio';
-import { SAMPLE_RATE, TRACK_ROLES } from '../types/project';
-import { getMediaBlob } from './db';
+import {
+  SAMPLE_RATE,
+  TRACK_ROLES,
+  DEFAULT_EXPORT_SETTINGS,
+  normalizeExportSettings,
+} from '../types/project';
+import { applyChoirAutoPanToProject, normalizeAutoPanSettings } from '../utils/choirAutoPan';
 
-/**
- * Export Engine
- * Renders project to WAV files using OfflineAudioContext
- * Implements all 7 export presets with exact specifications
- */
-
-/**
- * Export preset configurations
- */
-const EXPORT_PRESETS = {
+export const EXPORT_PRESETS = {
+  TUTTI: 'tutti',
+  ACAPELLA: 'acapella',
+  NO_LEAD: 'no_lead',
+  NO_CHOIR: 'no_choir',
   INSTRUMENTAL: 'instrumental',
-  ALL: 'all',
-  LEAD: 'lead',
-  LEADS_SEPARATE: 'leads_separate',
-  ONLY_WHOLE_CHOIR: 'only_whole_choir',
-  SEPARATE_CHOIR_PARTS: 'separate_choir_parts',
-  SEPARATE_CHOIR_PARTS_OMITTED: 'separate_choir_parts_omitted',
+  LEAD_ONLY: 'lead_only',
+  CHOIR_ONLY: 'choir_only',
+  INSTRUMENT_PARTS: 'instrument_parts',
+  LEAD_PARTS: 'lead_parts',
+  CHOIR_PARTS: 'choir_parts',
+  INSTRUMENT_PARTS_OMITTED: 'instrument_parts_omitted',
+  LEAD_PARTS_OMITTED: 'lead_parts_omitted',
+  CHOIR_PARTS_OMITTED: 'choir_parts_omitted',
 };
 
-/**
- * Main export function
- * Returns array of { filename, blob } objects
- */
-export async function exportProject(project, preset, audioBuffers) {
-  console.log(`Starting export: ${preset}`);
+export const EXPORT_PRESET_DEFINITIONS = [
+  { id: EXPORT_PRESETS.TUTTI, label: 'Tutti', description: 'All tracks, no adjustments' },
+  { id: EXPORT_PRESETS.ACAPELLA, label: 'Acapella', description: 'Lead + choir' },
+  { id: EXPORT_PRESETS.NO_LEAD, label: 'No Lead', description: 'Instrument + choir' },
+  { id: EXPORT_PRESETS.NO_CHOIR, label: 'No Choir', description: 'Instrument + lead' },
+  { id: EXPORT_PRESETS.INSTRUMENTAL, label: 'Instrumental', description: 'Instrument only' },
+  { id: EXPORT_PRESETS.LEAD_ONLY, label: 'Lead Only', description: 'Lead only' },
+  { id: EXPORT_PRESETS.CHOIR_ONLY, label: 'Choir Only', description: 'Choir only' },
+  { id: EXPORT_PRESETS.INSTRUMENT_PARTS, label: 'Instruments Parts', description: 'Practice mix per instrument track' },
+  { id: EXPORT_PRESETS.LEAD_PARTS, label: 'Leads Parts', description: 'Practice mix per lead track' },
+  { id: EXPORT_PRESETS.CHOIR_PARTS, label: 'Choir Parts', description: 'Practice mix per choir track' },
+  { id: EXPORT_PRESETS.INSTRUMENT_PARTS_OMITTED, label: 'Instrument Parts Omitted', description: 'One mix per instrument omitted' },
+  { id: EXPORT_PRESETS.LEAD_PARTS_OMITTED, label: 'Lead Parts Omitted', description: 'One mix per lead omitted' },
+  { id: EXPORT_PRESETS.CHOIR_PARTS_OMITTED, label: 'Choir Parts Omitted', description: 'One mix per choir omitted (remaining choir auto-pan)' },
+];
 
-  switch (preset) {
-    case EXPORT_PRESETS.INSTRUMENTAL:
-      return [await exportInstrumental(project, audioBuffers)];
-    
-    case EXPORT_PRESETS.ALL:
-      return [await exportAll(project, audioBuffers)];
-    
-    case EXPORT_PRESETS.LEAD:
-      return [await exportLead(project, audioBuffers)];
-    
-    case EXPORT_PRESETS.LEADS_SEPARATE:
-      return await exportLeadsSeparate(project, audioBuffers);
-    
-    case EXPORT_PRESETS.ONLY_WHOLE_CHOIR:
-      return [await exportOnlyWholeChoir(project, audioBuffers)];
-    
-    case EXPORT_PRESETS.SEPARATE_CHOIR_PARTS:
-      return await exportSeparateChoirParts(project, audioBuffers);
-    
-    case EXPORT_PRESETS.SEPARATE_CHOIR_PARTS_OMITTED:
-      return await exportSeparateChoirPartsOmitted(project, audioBuffers);
-    
-    default:
-      throw new Error(`Unknown export preset: ${preset}`);
+const VALID_PRESETS = new Set(EXPORT_PRESET_DEFINITIONS.map((preset) => preset.id));
+
+function isInstrumentTrack(track) {
+  return track.role === TRACK_ROLES.INSTRUMENT;
+}
+
+function isLeadTrack(track) {
+  return track.role === TRACK_ROLES.LEAD;
+}
+
+function isChoirTrack(track) {
+  return typeof track.role === 'string' && track.role.startsWith('choir-part-');
+}
+
+function clampPan(pan) {
+  return Math.max(-100, Math.min(100, Number(pan) || 0));
+}
+
+function remapPanValue(value, oldMin, oldMax, newMin, newMax) {
+  if (oldMax === oldMin) return (newMin + newMax) / 2;
+  return newMin + ((value - oldMin) / (oldMax - oldMin)) * (newMax - newMin);
+}
+
+function remapPansToSide(trackIds, basePanByTrackId, direction, transformedPanRange) {
+  if (!trackIds.length) return {};
+
+  const range = Math.max(0, Math.min(100, Number(transformedPanRange) || 0));
+  const oldValues = trackIds.map((trackId) => clampPan(basePanByTrackId[trackId]));
+  const oldMin = Math.min(...oldValues);
+  const oldMax = Math.max(...oldValues);
+  const newMin = direction === 'left' ? -range : 0;
+  const newMax = direction === 'left' ? 0 : range;
+  const fixedValue = direction === 'left' ? newMin : newMax;
+
+  const mapped = {};
+  for (const trackId of trackIds) {
+    if (oldMax === oldMin) {
+      mapped[trackId] = fixedValue;
+      continue;
+    }
+    mapped[trackId] = clampPan(
+      remapPanValue(clampPan(basePanByTrackId[trackId]), oldMin, oldMax, newMin, newMax)
+    );
   }
+  return mapped;
 }
 
-/**
- * Preset 1: Instrumental
- * Instrument tracks only
- */
-async function exportInstrumental(project, audioBuffers) {
-  const tracks = project.tracks.filter(t => t.role === TRACK_ROLES.INSTRUMENT);
-  
-  const filename = sanitizeFilename(`${project.projectName}_instrumental`) + '.wav';
-  const blob = await renderTracks(project, tracks, audioBuffers, {});
-  
-  return { filename, blob };
+function buildPracticePanMap({
+  tracks,
+  targetTrackId,
+  basePanByTrackId,
+  transformedPanRange,
+}) {
+  const trackIds = tracks.map((track) => track.id);
+  const rightIds = trackIds.filter((trackId) => trackId === targetTrackId);
+  const leftIds = trackIds.filter((trackId) => trackId !== targetTrackId);
+
+  return {
+    ...remapPansToSide(leftIds, basePanByTrackId, 'left', transformedPanRange),
+    ...remapPansToSide(rightIds, basePanByTrackId, 'right', transformedPanRange),
+  };
 }
 
-/**
- * Preset 2: All
- * All tracks; leads +3 dB
- */
-async function exportAll(project, audioBuffers) {
-  const gainAdjustments = {};
-  
-  for (const track of project.tracks) {
-    if (track.role === TRACK_ROLES.LEAD) {
-      gainAdjustments[track.id] = dbToGain(3); // +3 dB
+function buildPracticeGainMap({ tracks, targetTrackId, gainDb, attenuationDb }) {
+  const gainMap = {};
+  for (const track of tracks) {
+    if (track.id === targetTrackId) {
+      gainMap[track.id] = dbToGain(gainDb);
+    } else {
+      gainMap[track.id] = dbToGain(-attenuationDb);
     }
   }
-  
-  const filename = sanitizeFilename(`${project.projectName}_all`) + '.wav';
-  const blob = await renderTracks(project, project.tracks, audioBuffers, gainAdjustments);
-  
-  return { filename, blob };
+  return gainMap;
 }
 
-/**
- * Preset 3: Lead
- * Lead + instrumental
- */
-async function exportLead(project, audioBuffers) {
-  const tracks = project.tracks.filter(t => 
-    t.role === TRACK_ROLES.LEAD || t.role === TRACK_ROLES.INSTRUMENT
-  );
-  
-  const filename = sanitizeFilename(`${project.projectName}_lead`) + '.wav';
-  const blob = await renderTracks(project, tracks, audioBuffers, {});
-  
-  return { filename, blob };
+function getAutoPannedChoirPanMap(project, choirTracks) {
+  if (!choirTracks.length) return {};
+
+  const tempProject = {
+    ...project,
+    autoPan: normalizeAutoPanSettings({
+      ...project.autoPan,
+      enabled: true,
+    }),
+    tracks: choirTracks.map((track) => ({ ...track })),
+  };
+
+  const result = applyChoirAutoPanToProject(tempProject, { enabled: true });
+  const panMap = {};
+  for (const track of result.project.tracks) {
+    panMap[track.id] = clampPan(track.pan);
+  }
+  return panMap;
 }
 
-/**
- * Preset 4: Leads Separate
- * One WAV per lead; target +6 dB, others -3 dB, instrumental included
- */
-async function exportLeadsSeparate(project, audioBuffers) {
-  const leadTracks = project.tracks.filter(t => t.role === TRACK_ROLES.LEAD);
-  const instrumentTracks = project.tracks.filter(t => t.role === TRACK_ROLES.INSTRUMENT);
-  const choirTracks = project.tracks.filter(t => 
-    t.role.startsWith('choir-part-')
-  );
-  
-  const results = [];
-  
-  for (const targetLead of leadTracks) {
-    const gainAdjustments = {};
-    const panAdjustments = {};
-    
-    // Target lead: +6 dB
-    gainAdjustments[targetLead.id] = dbToGain(6);
-    
-    // Other leads: -3 dB
-    for (const lead of leadTracks) {
-      if (lead.id !== targetLead.id) {
-        gainAdjustments[lead.id] = dbToGain(-3);
+function createFileName(projectBase, suffix = '') {
+  return `${sanitizeFilename(`${projectBase}${suffix}`)}.wav`;
+}
+
+function withExportLayout(files) {
+  const hasPracticeNormal = files.some((file) => file.branch === 'normal');
+  const hasPracticeOmitted = files.some((file) => file.branch === 'omitted');
+
+  return files.map((file) => {
+    const segments = [];
+    if (file.branch === 'normal') {
+      segments.push('Practice');
+      if (hasPracticeNormal && hasPracticeOmitted) {
+        segments.push('Normal');
+      }
+      if (file.subgroup && file.subgroupCount > 1) {
+        segments.push(file.subgroup);
+      }
+    } else if (file.branch === 'omitted') {
+      segments.push('Practice');
+      if (hasPracticeNormal && hasPracticeOmitted) {
+        segments.push('Omitted');
+      }
+      if (file.subgroup && file.subgroupCount > 1) {
+        segments.push(file.subgroup);
       }
     }
-    
-    // Choir: -3 dB
-    for (const choir of choirTracks) {
-      gainAdjustments[choir.id] = dbToGain(-3);
-    }
-    
-    // Include all tracks
-    const tracks = [...leadTracks, ...choirTracks, ...instrumentTracks];
-    
-    const filename = sanitizeFilename(`${project.projectName}_lead_${targetLead.name}`) + '.wav';
-    const blob = await renderTracks(project, tracks, audioBuffers, gainAdjustments, panAdjustments);
-    
-    results.push({ filename, blob });
+
+    return {
+      filename: file.filename,
+      relativePath: segments.length ? `${segments.join('/')}/${file.filename}` : file.filename,
+      blob: file.blob,
+      presetId: file.presetId,
+    };
+  });
+}
+
+/**
+ * Main export function.
+ * Returns array of `{ filename, relativePath, blob, presetId }`.
+ */
+export async function exportProject(project, selectedPresets, audioBuffers, exportSettingsOverride = null) {
+  const presetIds = Array.isArray(selectedPresets)
+    ? [...new Set(selectedPresets.filter((id) => VALID_PRESETS.has(id)))]
+    : (VALID_PRESETS.has(selectedPresets) ? [selectedPresets] : []);
+
+  if (!presetIds.length) {
+    throw new Error('No export presets selected.');
   }
-  
-  return results;
-}
 
-/**
- * Preset 5: Only Whole Choir
- * Choir tracks only
- */
-async function exportOnlyWholeChoir(project, audioBuffers) {
-  const tracks = project.tracks.filter(t => t.role.startsWith('choir-part-'));
-  
-  const filename = sanitizeFilename(`${project.projectName}_choir`) + '.wav';
-  const blob = await renderTracks(project, tracks, audioBuffers, {});
-  
-  return { filename, blob };
-}
+  const exportSettings = normalizeExportSettings({
+    ...DEFAULT_EXPORT_SETTINGS,
+    ...(project.exportSettings || {}),
+    ...(exportSettingsOverride || {}),
+  });
 
-/**
- * Preset 6: Separate Choir Parts (practice)
- * Target +6 dB / +30 pan, Others -6 dB / -30 pan, Instruments -3 dB
- */
-async function exportSeparateChoirParts(project, audioBuffers) {
-  const choirTracks = project.tracks.filter(t => t.role.startsWith('choir-part-'));
-  const instrumentTracks = project.tracks.filter(t => t.role === TRACK_ROLES.INSTRUMENT);
-  
-  // Determine choir panning matrix
-  const numChoirs = choirTracks.length;
-  const panMatrix = getChoirPanMatrix(numChoirs);
-  
-  const results = [];
-  
-  for (let i = 0; i < choirTracks.length; i++) {
-    const targetChoir = choirTracks[i];
-    const gainAdjustments = {};
-    const panAdjustments = {};
-    
-    // Target choir: +6 dB, +30 pan
-    gainAdjustments[targetChoir.id] = dbToGain(6);
-    panAdjustments[targetChoir.id] = 30;
-    
-    // Other choirs: -6 dB, -30 pan
-    for (let j = 0; j < choirTracks.length; j++) {
-      if (i !== j) {
-        const choir = choirTracks[j];
-        gainAdjustments[choir.id] = dbToGain(-6);
-        panAdjustments[choir.id] = -30;
+  const allTracks = project.tracks || [];
+  const instrumentTracks = allTracks.filter(isInstrumentTrack);
+  const leadTracks = allTracks.filter(isLeadTrack);
+  const choirTracks = allTracks.filter(isChoirTrack);
+  const projectBase = project.projectName || 'project';
+  const files = [];
+
+  for (const presetId of presetIds) {
+    if (presetId === EXPORT_PRESETS.TUTTI) {
+      files.push({
+        presetId,
+        branch: null,
+        subgroup: null,
+        subgroupCount: 0,
+        filename: createFileName(projectBase),
+        blob: await renderTracks(project, allTracks, audioBuffers),
+      });
+      continue;
+    }
+
+    if (presetId === EXPORT_PRESETS.ACAPELLA) {
+      const tracks = allTracks.filter((track) => isLeadTrack(track) || isChoirTrack(track));
+      files.push({
+        presetId,
+        branch: null,
+        subgroup: null,
+        subgroupCount: 0,
+        filename: createFileName(projectBase, '_Acapella'),
+        blob: await renderTracks(project, tracks, audioBuffers),
+      });
+      continue;
+    }
+
+    if (presetId === EXPORT_PRESETS.NO_LEAD) {
+      const tracks = allTracks.filter((track) => isInstrumentTrack(track) || isChoirTrack(track));
+      files.push({
+        presetId,
+        branch: null,
+        subgroup: null,
+        subgroupCount: 0,
+        filename: createFileName(projectBase, '_NoLead'),
+        blob: await renderTracks(project, tracks, audioBuffers),
+      });
+      continue;
+    }
+
+    if (presetId === EXPORT_PRESETS.NO_CHOIR) {
+      const tracks = allTracks.filter((track) => isInstrumentTrack(track) || isLeadTrack(track));
+      files.push({
+        presetId,
+        branch: null,
+        subgroup: null,
+        subgroupCount: 0,
+        filename: createFileName(projectBase, '_NoChoir'),
+        blob: await renderTracks(project, tracks, audioBuffers),
+      });
+      continue;
+    }
+
+    if (presetId === EXPORT_PRESETS.INSTRUMENTAL) {
+      files.push({
+        presetId,
+        branch: null,
+        subgroup: null,
+        subgroupCount: 0,
+        filename: createFileName(projectBase, '_Instrumental'),
+        blob: await renderTracks(project, instrumentTracks, audioBuffers),
+      });
+      continue;
+    }
+
+    if (presetId === EXPORT_PRESETS.LEAD_ONLY) {
+      files.push({
+        presetId,
+        branch: null,
+        subgroup: null,
+        subgroupCount: 0,
+        filename: createFileName(projectBase, '_Leads'),
+        blob: await renderTracks(project, leadTracks, audioBuffers),
+      });
+      continue;
+    }
+
+    if (presetId === EXPORT_PRESETS.CHOIR_ONLY) {
+      files.push({
+        presetId,
+        branch: null,
+        subgroup: null,
+        subgroupCount: 0,
+        filename: createFileName(projectBase, '_Choir'),
+        blob: await renderTracks(project, choirTracks, audioBuffers),
+      });
+      continue;
+    }
+
+    if (presetId === EXPORT_PRESETS.INSTRUMENT_PARTS) {
+      for (const targetTrack of instrumentTracks) {
+        const basePanByTrackId = Object.fromEntries(allTracks.map((track) => [track.id, clampPan(track.pan)]));
+        const panAdjustments = buildPracticePanMap({
+          tracks: allTracks,
+          targetTrackId: targetTrack.id,
+          basePanByTrackId,
+          transformedPanRange: exportSettings.transformedPanRange,
+        });
+        const gainAdjustments = buildPracticeGainMap({
+          tracks: allTracks,
+          targetTrackId: targetTrack.id,
+          gainDb: exportSettings.gainDb,
+          attenuationDb: exportSettings.attenuationDb,
+        });
+        files.push({
+          presetId,
+          branch: 'normal',
+          subgroup: 'Instruments',
+          subgroupCount: instrumentTracks.length,
+          filename: createFileName(projectBase, `_${targetTrack.name}`),
+          blob: await renderTracks(project, allTracks, audioBuffers, gainAdjustments, panAdjustments),
+        });
+      }
+      continue;
+    }
+
+    if (presetId === EXPORT_PRESETS.LEAD_PARTS) {
+      for (const targetTrack of leadTracks) {
+        const basePanByTrackId = Object.fromEntries(allTracks.map((track) => [track.id, clampPan(track.pan)]));
+        const panAdjustments = buildPracticePanMap({
+          tracks: allTracks,
+          targetTrackId: targetTrack.id,
+          basePanByTrackId,
+          transformedPanRange: exportSettings.transformedPanRange,
+        });
+        const gainAdjustments = buildPracticeGainMap({
+          tracks: allTracks,
+          targetTrackId: targetTrack.id,
+          gainDb: exportSettings.gainDb,
+          attenuationDb: exportSettings.attenuationDb,
+        });
+        files.push({
+          presetId,
+          branch: 'normal',
+          subgroup: 'Leads',
+          subgroupCount: leadTracks.length,
+          filename: createFileName(projectBase, `_${targetTrack.name}`),
+          blob: await renderTracks(project, allTracks, audioBuffers, gainAdjustments, panAdjustments),
+        });
+      }
+      continue;
+    }
+
+    if (presetId === EXPORT_PRESETS.CHOIR_PARTS) {
+      for (const targetTrack of choirTracks) {
+        const otherChoirTracks = choirTracks.filter((track) => track.id !== targetTrack.id);
+        const autoPannedChoirMap = getAutoPannedChoirPanMap(project, otherChoirTracks);
+        const basePanByTrackId = Object.fromEntries(allTracks.map((track) => [track.id, clampPan(track.pan)]));
+        Object.assign(basePanByTrackId, autoPannedChoirMap);
+
+        const panAdjustments = buildPracticePanMap({
+          tracks: allTracks,
+          targetTrackId: targetTrack.id,
+          basePanByTrackId,
+          transformedPanRange: exportSettings.transformedPanRange,
+        });
+        const gainAdjustments = buildPracticeGainMap({
+          tracks: allTracks,
+          targetTrackId: targetTrack.id,
+          gainDb: exportSettings.gainDb,
+          attenuationDb: exportSettings.attenuationDb,
+        });
+        files.push({
+          presetId,
+          branch: 'normal',
+          subgroup: 'Choir',
+          subgroupCount: choirTracks.length,
+          filename: createFileName(projectBase, `_${targetTrack.name}`),
+          blob: await renderTracks(project, allTracks, audioBuffers, gainAdjustments, panAdjustments),
+        });
+      }
+      continue;
+    }
+
+    if (presetId === EXPORT_PRESETS.INSTRUMENT_PARTS_OMITTED) {
+      for (const omittedTrack of instrumentTracks) {
+        const tracks = allTracks.filter((track) => track.id !== omittedTrack.id);
+        files.push({
+          presetId,
+          branch: 'omitted',
+          subgroup: 'Instruments',
+          subgroupCount: instrumentTracks.length,
+          filename: createFileName(projectBase, `_${omittedTrack.name}_Omitted`),
+          blob: await renderTracks(project, tracks, audioBuffers),
+        });
+      }
+      continue;
+    }
+
+    if (presetId === EXPORT_PRESETS.LEAD_PARTS_OMITTED) {
+      for (const omittedTrack of leadTracks) {
+        const tracks = allTracks.filter((track) => track.id !== omittedTrack.id);
+        files.push({
+          presetId,
+          branch: 'omitted',
+          subgroup: 'Leads',
+          subgroupCount: leadTracks.length,
+          filename: createFileName(projectBase, `_${omittedTrack.name}_Omitted`),
+          blob: await renderTracks(project, tracks, audioBuffers),
+        });
+      }
+      continue;
+    }
+
+    if (presetId === EXPORT_PRESETS.CHOIR_PARTS_OMITTED) {
+      for (const omittedTrack of choirTracks) {
+        const tracks = allTracks.filter((track) => track.id !== omittedTrack.id);
+        const remainingChoirTracks = choirTracks.filter((track) => track.id !== omittedTrack.id);
+        const autoPannedChoirMap = getAutoPannedChoirPanMap(project, remainingChoirTracks);
+        files.push({
+          presetId,
+          branch: 'omitted',
+          subgroup: 'Choir',
+          subgroupCount: choirTracks.length,
+          filename: createFileName(projectBase, `_${omittedTrack.name}_Omitted`),
+          blob: await renderTracks(project, tracks, audioBuffers, {}, autoPannedChoirMap),
+        });
       }
     }
-    
-    // Instruments: -3 dB
-    for (const instr of instrumentTracks) {
-      gainAdjustments[instr.id] = dbToGain(-3);
-    }
-    
-    const tracks = [...choirTracks, ...instrumentTracks];
-    
-    const filename = sanitizeFilename(`${project.projectName}_choir_${targetChoir.name}`) + '.wav';
-    const blob = await renderTracks(project, tracks, audioBuffers, gainAdjustments, panAdjustments);
-    
-    results.push({ filename, blob });
   }
-  
-  return results;
+
+  return withExportLayout(files);
 }
 
-/**
- * Preset 7: Separate Choir Parts Omitted
- * Target muted, others normal
- */
-async function exportSeparateChoirPartsOmitted(project, audioBuffers) {
-  const choirTracks = project.tracks.filter(t => t.role.startsWith('choir-part-'));
-  const instrumentTracks = project.tracks.filter(t => t.role === TRACK_ROLES.INSTRUMENT);
-  
-  const results = [];
-  
-  for (const omittedChoir of choirTracks) {
-    // Filter out the omitted choir
-    const includedChoirs = choirTracks.filter(c => c.id !== omittedChoir.id);
-    const tracks = [...includedChoirs, ...instrumentTracks];
-    
-    const filename = sanitizeFilename(`${project.projectName}_choir_omit_${omittedChoir.name}`) + '.wav';
-    const blob = await renderTracks(project, tracks, audioBuffers, {}, {});
-    
-    results.push({ filename, blob });
-  }
-  
-  return results;
-}
-
-/**
- * Core rendering function
- * Renders tracks to WAV using OfflineAudioContext
- */
 async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {}, panAdjustments = {}) {
-  // Calculate total duration
   let maxDurationMs = 0;
   for (const track of tracks) {
     for (const clip of track.clips) {
@@ -251,145 +433,100 @@ async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {},
       maxDurationMs = Math.max(maxDurationMs, clipEnd);
     }
   }
-  
-  const durationSeconds = Math.ceil(msToSeconds(maxDurationMs)) + 1; // Add 1 second buffer
+
+  const durationSeconds = Math.ceil(msToSeconds(maxDurationMs)) + 1;
   const length = durationSeconds * SAMPLE_RATE;
-  
-  // Create offline context
   const offlineContext = new OfflineAudioContext(2, length, SAMPLE_RATE);
-  
-  // Master gain (from project)
+
   const masterGain = offlineContext.createGain();
   masterGain.gain.value = volumeToGain(project.masterVolume);
   masterGain.connect(offlineContext.destination);
-  
-  // Render each track
+
   for (const track of tracks) {
-    // Skip muted tracks
     if (track.muted) continue;
-    
-    // Calculate track gain
+
     const baseGain = volumeToGain(track.volume);
     const adjustmentGain = gainAdjustments[track.id] || 1.0;
     const totalGain = baseGain * adjustmentGain;
-    
-    // Calculate track pan
-    const basePan = track.pan;
-    const adjustmentPan = panAdjustments[track.id] || 0;
-    const totalPan = Math.max(-100, Math.min(100, basePan + adjustmentPan));
-    
-    // Render each clip
+    const totalPan = clampPan(
+      panAdjustments[track.id] !== undefined ? panAdjustments[track.id] : track.pan
+    );
+
     for (const clip of track.clips) {
       if (clip.muted) continue;
-      
+
       const audioBuffer = audioBuffers.get(clip.blobId);
-      if (!audioBuffer) {
-        console.warn(`Audio buffer not found for clip ${clip.id}`);
-        continue;
-      }
-      
-      // Create source
+      if (!audioBuffer) continue;
+
       const source = offlineContext.createBufferSource();
       source.buffer = audioBuffer;
-      
-      // Create gain node
+
       const gainNode = offlineContext.createGain();
-      const clipGain = dbToGain(clip.gainDb);
-      gainNode.gain.value = totalGain * clipGain;
-      
-      // Create pan node
+      gainNode.gain.value = totalGain * dbToGain(clip.gainDb);
+
       const panNode = offlineContext.createStereoPanner();
       panNode.pan.value = totalPan / 100;
-      
-      // Connect
+
       source.connect(gainNode);
       gainNode.connect(panNode);
       panNode.connect(masterGain);
-      
-      // Schedule
-      const startTime = msToSeconds(clip.timelineStartMs);
-      const offset = msToSeconds(clip.cropStartMs);
-      const duration = msToSeconds(clip.cropEndMs - clip.cropStartMs);
-      
-      source.start(startTime, offset, duration);
+
+      source.start(
+        msToSeconds(clip.timelineStartMs),
+        msToSeconds(clip.cropStartMs),
+        msToSeconds(clip.cropEndMs - clip.cropStartMs)
+      );
     }
   }
-  
-  // Render
-  console.log(`Rendering ${durationSeconds}s at ${SAMPLE_RATE}Hz...`);
+
   const renderedBuffer = await offlineContext.startRendering();
-  console.log('Rendering complete');
-  
-  // Convert to WAV blob
-  const wavBlob = audioBufferToWav(renderedBuffer);
-  
-  return wavBlob;
+  return audioBufferToWav(renderedBuffer);
 }
 
-/**
- * Convert AudioBuffer to 16-bit PCM WAV Blob
- * No limiter, no normalization, no dithering (per spec)
- */
 function audioBufferToWav(audioBuffer) {
   const numberOfChannels = audioBuffer.numberOfChannels;
   const length = audioBuffer.length;
   const sampleRate = audioBuffer.sampleRate;
-  const bytesPerSample = 2; // 16-bit
-  
+  const bytesPerSample = 2;
   const dataSize = numberOfChannels * length * bytesPerSample;
   const bufferSize = 44 + dataSize;
-  
   const buffer = new ArrayBuffer(bufferSize);
   const view = new DataView(buffer);
-  
   let offset = 0;
-  
-  // RIFF chunk
+
   writeString(view, offset, 'RIFF'); offset += 4;
   view.setUint32(offset, bufferSize - 8, true); offset += 4;
   writeString(view, offset, 'WAVE'); offset += 4;
-  
-  // fmt chunk
   writeString(view, offset, 'fmt '); offset += 4;
   view.setUint32(offset, 16, true); offset += 4;
-  view.setUint16(offset, 1, true); offset += 2; // PCM
+  view.setUint16(offset, 1, true); offset += 2;
   view.setUint16(offset, numberOfChannels, true); offset += 2;
   view.setUint32(offset, sampleRate, true); offset += 4;
   view.setUint32(offset, sampleRate * numberOfChannels * bytesPerSample, true); offset += 4;
   view.setUint16(offset, numberOfChannels * bytesPerSample, true); offset += 2;
   view.setUint16(offset, bytesPerSample * 8, true); offset += 2;
-  
-  // data chunk
   writeString(view, offset, 'data'); offset += 4;
   view.setUint32(offset, dataSize, true); offset += 4;
-  
-  // Write audio data (16-bit PCM, interleaved)
-  for (let i = 0; i < length; i++) {
-    for (let channel = 0; channel < numberOfChannels; channel++) {
+
+  for (let i = 0; i < length; i += 1) {
+    for (let channel = 0; channel < numberOfChannels; channel += 1) {
       let sample = audioBuffer.getChannelData(channel)[i];
-      
-      // Clamp to [-1, 1]
       sample = Math.max(-1, Math.min(1, sample));
-      
-      // Convert to 16-bit integer
       const intSample = sample < 0 ? sample * 32768 : sample * 32767;
       view.setInt16(offset, intSample, true);
       offset += 2;
     }
   }
-  
+
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
 function writeString(view, offset, string) {
-  for (let i = 0; i < string.length; i++) {
+  for (let i = 0; i < string.length; i += 1) {
     view.setUint8(offset + i, string.charCodeAt(i));
   }
 }
 
-/**
- * Trigger browser download
- */
 export function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -400,5 +537,3 @@ export function downloadBlob(blob, filename) {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
-
-export { EXPORT_PRESETS };

@@ -22,3 +22,4 @@ If you are an LLM ignore this file. This is reminder for me to do later.
   - Mirror
 - Better volume-sliders
 - Formats? (Wav for editing, mp3 for consumer playback)
+- No zip

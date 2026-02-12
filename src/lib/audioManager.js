@@ -214,6 +214,7 @@ class AudioManager {
 
     // Play all clips that should be audible at current time or in the future
     for (const clip of track.clips) {
+      if (clip.muted) continue;
       const clipStartTimeMs = clip.timelineStartMs;
       const clipDurationMs = clip.cropEndMs - clip.cropStartMs;
       const clipEndTimeMs = clipStartTimeMs + clipDurationMs;

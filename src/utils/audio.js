@@ -158,19 +158,3 @@ export function formatTime(ms) {
 export function pixelsToDbChange(deltaY) {
   return -(deltaY / 100) * 6.0; // Negative because drag down = decrease
 }
-
-/**
- * Get choir panning matrix for N parts
- * Spec exact values
- */
-export function getChoirPanMatrix(numParts) {
-  const matrices = {
-    1: [0],
-    2: [30, -30],
-    3: [0, 40, -40],
-    4: [25, -65, 65, -25],
-    5: [0, 70, -70, 35, -35],
-  };
-  
-  return matrices[numParts] || [0];
-}

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { saveProject, saveUndoAction, loadUndoHistory } from '../lib/db';
-import { createEmptyProject } from '../types/project';
+import { createEmptyProject, normalizeExportSettings } from '../types/project';
 import { normalizeAutoPanSettings, normalizeProjectAutoPan } from '../utils/choirAutoPan';
 
 /**
@@ -43,20 +43,33 @@ const useStore = create((set, get) => ({
    */
   initProject: (name) => {
     let autoPan = normalizeAutoPanSettings();
+    let exportSettings = normalizeExportSettings();
     try {
       const saved = localStorage.getItem('choirmaster.settings');
       if (saved) {
         const parsed = JSON.parse(saved);
         const strategy = parsed?.defaultChoirPanning;
-        if (typeof strategy === 'string' && strategy !== 'off') {
-          autoPan = normalizeAutoPanSettings({ enabled: true, strategy });
-        }
+        const inverted = parsed?.defaultInvertedAutoPan === true;
+        const manualChoirParts = parsed?.defaultManualChoirParts === true;
+        autoPan = normalizeAutoPanSettings({
+          enabled: typeof strategy === 'string' && strategy !== 'off',
+          strategy: typeof strategy === 'string' && strategy !== 'off'
+            ? strategy
+            : autoPan.strategy,
+          inverted,
+          manualChoirParts,
+        });
+        exportSettings = normalizeExportSettings({
+          gainDb: parsed?.defaultExportGainDb,
+          attenuationDb: parsed?.defaultExportAttenuationDb,
+          transformedPanRange: parsed?.defaultExportPanRange,
+        });
       }
     } catch {
       // Ignore invalid settings
     }
 
-    const project = createEmptyProject(name, autoPan);
+    const project = createEmptyProject(name, autoPan, exportSettings);
     set({
       project,
       currentProjectId: project.projectId,
@@ -73,7 +86,10 @@ const useStore = create((set, get) => ({
    * Load existing project
    */
   loadProject: async (projectData) => {
-    const normalizedProject = normalizeProjectAutoPan(projectData);
+    const normalizedProject = normalizeProjectAutoPan({
+      ...projectData,
+      exportSettings: normalizeExportSettings(projectData.exportSettings),
+    });
     // Load undo history
     const undoStack = await loadUndoHistory(projectData.projectId);
     const { selectedTrackByProjectId } = get();
@@ -291,6 +307,16 @@ const useStore = create((set, get) => ({
             ...track,
             clips: [...track.clips, updates],
           };
+        } else if (action === 'split') {
+          const leftClip = updates?.left;
+          const rightClip = updates?.right;
+          if (!leftClip || !rightClip) return track;
+          return {
+            ...track,
+            clips: track.clips
+              .filter(c => c.id !== clipId)
+              .concat([leftClip, rightClip]),
+          };
         } else if (action === 'delete') {
           // Delete clip
           return {
@@ -307,7 +333,7 @@ const useStore = create((set, get) => ({
           };
         }
       }),
-    }), action === 'add' ? 'Add clip' : action === 'delete' ? 'Delete clip' : 'Update clip');
+    }), action === 'add' ? 'Add clip' : action === 'delete' ? 'Delete clip' : action === 'split' ? 'Split clip' : 'Update clip');
   },
   
   /**

@@ -9,7 +9,6 @@ import {
   normalizedToPan,
   equalPowerPan,
   pixelsToDbChange,
-  getChoirPanMatrix,
   sanitizeFilename,
   msToSeconds,
   secondsToMs,
@@ -97,33 +96,6 @@ describe('Audio Utilities - Gain Drag', () => {
     expect(pixelsToDbChange(100)).toBeCloseTo(-6.0, 5); // Drag down = decrease
     expect(pixelsToDbChange(0)).toBe(0);
     expect(pixelsToDbChange(-50)).toBeCloseTo(3.0, 5);
-  });
-});
-
-describe('Audio Utilities - Choir Panning Matrix', () => {
-  it('should return correct pan matrix for 1 part', () => {
-    expect(getChoirPanMatrix(1)).toEqual([0]);
-  });
-
-  it('should return correct pan matrix for 2 parts', () => {
-    expect(getChoirPanMatrix(2)).toEqual([30, -30]);
-  });
-
-  it('should return correct pan matrix for 3 parts', () => {
-    expect(getChoirPanMatrix(3)).toEqual([0, 40, -40]);
-  });
-
-  it('should return correct pan matrix for 4 parts', () => {
-    expect(getChoirPanMatrix(4)).toEqual([25, -65, 65, -25]);
-  });
-
-  it('should return correct pan matrix for 5 parts', () => {
-    expect(getChoirPanMatrix(5)).toEqual([0, 70, -70, 35, -35]);
-  });
-
-  it('should default to center for invalid part counts', () => {
-    expect(getChoirPanMatrix(0)).toEqual([0]);
-    expect(getChoirPanMatrix(6)).toEqual([0]);
   });
 });
 

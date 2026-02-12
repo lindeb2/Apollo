@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect } from 'react';
+import { VolumeX } from 'lucide-react';
 import {
   formatTime,
   msToSeconds,
@@ -278,6 +279,13 @@ function Timeline({
     onSelectTrack(trackId);
   };
 
+  const handleClipRightClick = (e, clip, track) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (track.locked) return;
+    onUpdateClip(track.id, clip.id, { muted: !clip.muted }, 'update');
+  };
+
   const handleClipMouseDown = (e, clip, track) => {
     if (track.locked) return;
     if (e.button === 2) {
@@ -308,6 +316,7 @@ function Timeline({
       dragType = 'crop-end';
     } else if (e.button === 2) {
       dragType = 'gain';
+      rightClickDragRef.current = false;
     }
 
     setDragState({
@@ -379,6 +388,9 @@ function Timeline({
         updates.cropEndMs = constrainedCropEndMs;
 
       } else if (dragState.type === 'gain') {
+        if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+          rightClickDragRef.current = true;
+        }
         const gainDragPixels = 300;
         const distance = Math.min(1, Math.abs(deltaY) / gainDragPixels);
         const shaped = distance * distance * distance;
@@ -398,6 +410,7 @@ function Timeline({
 
     const handleMouseUp = () => {
       setDragState(null);
+      rightClickDragRef.current = false;
     };
 
     window.addEventListener('mousemove', handleMouseMove);
@@ -438,6 +451,102 @@ function Timeline({
         e.preventDefault();
         onUpdateClip(selectedTrackId, selectedClipId, null, 'delete');
         setSelectedClipId(null);
+        return;
+      }
+
+      if (e.code === 'KeyT' && (e.ctrlKey || e.metaKey) && selectedClip && selectedTrackId) {
+        e.preventDefault();
+        const track = project.tracks.find(t => t.id === selectedTrackId);
+        if (!track || track.locked) return;
+
+        const clipStartMs = selectedClip.timelineStartMs;
+        const clipDurationMs = selectedClip.cropEndMs - selectedClip.cropStartMs;
+        const clipEndMs = clipStartMs + clipDurationMs;
+
+        if (currentTimeMs <= clipStartMs || currentTimeMs >= clipEndMs) return;
+
+        const splitOffsetMs = currentTimeMs - clipStartMs;
+        const splitCropMs = selectedClip.cropStartMs + splitOffsetMs;
+
+        const leftClip = {
+          ...selectedClip,
+          id: crypto.randomUUID(),
+          timelineStartMs: clipStartMs,
+          cropStartMs: selectedClip.cropStartMs,
+          cropEndMs: splitCropMs,
+        };
+
+        const rightClip = {
+          ...selectedClip,
+          id: crypto.randomUUID(),
+          timelineStartMs: currentTimeMs,
+          cropStartMs: splitCropMs,
+          cropEndMs: selectedClip.cropEndMs,
+        };
+
+        onUpdateClip(selectedTrackId, selectedClipId, { left: leftClip, right: rightClip }, 'split');
+        setSelectedClipId(rightClip.id);
+        return;
+      }
+
+      if (e.code === 'KeyM' && selectedTrackId) {
+        e.preventDefault();
+        const track = project.tracks.find(t => t.id === selectedTrackId);
+        if (!track) return;
+        onSelectTrack(selectedTrackId);
+        updateProject((proj) => ({
+          ...proj,
+          tracks: proj.tracks.map(t =>
+            t.id === selectedTrackId ? { ...t, muted: !t.muted } : t
+          ),
+        }), 'Toggle mute');
+        return;
+      }
+
+      if (e.code === 'KeyS' && selectedTrackId) {
+        e.preventDefault();
+        const track = project.tracks.find(t => t.id === selectedTrackId);
+        if (!track) return;
+        onSelectTrack(selectedTrackId);
+        updateProject((proj) => ({
+          ...proj,
+          tracks: proj.tracks.map(t =>
+            t.id === selectedTrackId ? { ...t, soloed: !t.soloed } : t
+          ),
+        }), 'Toggle solo');
+        return;
+      }
+
+      if (e.code === 'KeyL' && selectedTrackId) {
+        e.preventDefault();
+        const track = project.tracks.find(t => t.id === selectedTrackId);
+        if (!track) return;
+        onSelectTrack(selectedTrackId);
+        updateProject((proj) => ({
+          ...proj,
+          tracks: proj.tracks.map(t =>
+            t.id === selectedTrackId ? { ...t, locked: !t.locked } : t
+          ),
+        }), 'Toggle lock');
+        return;
+      }
+
+      if (e.code === 'ArrowUp' || e.code === 'ArrowDown') {
+        e.preventDefault();
+        const tracks = project.tracks;
+        if (!tracks.length) return;
+        const currentIndex = tracks.findIndex(t => t.id === selectedTrackId);
+        const nextIndex =
+          currentIndex === -1
+            ? 0
+            : Math.min(
+                tracks.length - 1,
+                Math.max(0, currentIndex + (e.code === 'ArrowDown' ? 1 : -1))
+              );
+        const nextTrackId = tracks[nextIndex]?.id;
+        if (nextTrackId) {
+          onSelectTrack(nextTrackId);
+        }
         return;
       }
 
@@ -1088,6 +1197,7 @@ function Timeline({
                           }}
                           onClick={(e) => handleClipClick(e, clip.id, track.id)}
                           onMouseDown={(e) => handleClipMouseDown(e, clip, track)}
+                          onContextMenu={(e) => handleClipRightClick(e, clip, track)}
                         >
                           {/* Middle area with move cursor */}
                           {!track.locked && (
@@ -1113,17 +1223,17 @@ function Timeline({
                             />
                           )}
 
-                          {/* Clip Gain Label - hidden for locked tracks to save space */}
-                          {!track.locked && Math.abs(clip.gainDb) >= 0.1 && labelFits && (
+                          {/* Clip Gain/Mute Label - hidden for locked tracks to save space */}
+                          {!track.locked && labelFits && (clip.muted || Math.abs(clip.gainDb) >= 0.1) && (
                             <div className="absolute top-1 left-0 right-0 text-xs font-medium pointer-events-none">
                               <span
-                                className="absolute text-yellow-400 whitespace-nowrap overflow-hidden text-ellipsis"
+                                className="absolute text-yellow-400 whitespace-nowrap overflow-hidden text-ellipsis inline-flex items-center"
                                 style={{
                                   left: `clamp(${labelPadding}px, calc(var(--scroll-left) - var(--clip-left) + ${labelPadding}px), calc(var(--clip-width) - ${labelPadding}px))`,
                                   maxWidth: `calc(var(--clip-width) - ${labelPadding * 2}px)`,
                                 }}
                               >
-                                {gainLabelText}
+                                {clip.muted ? <VolumeX size={12} /> : Math.abs(clip.gainDb) >= 0.1 ? gainLabelText : null}
                               </span>
                             </div>
                           )}

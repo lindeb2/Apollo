@@ -18,6 +18,29 @@ export const TRACK_ROLES = {
 };
 
 export const SAMPLE_RATE = 44100;
+export const DEFAULT_EXPORT_SETTINGS = {
+  gainDb: 4,
+  attenuationDb: 4,
+  transformedPanRange: 100,
+};
+
+export function normalizeExportSettings(settings = {}) {
+  const next = {
+    ...DEFAULT_EXPORT_SETTINGS,
+    ...settings,
+  };
+  const gainDb = Number(next.gainDb);
+  const attenuationDb = Number(next.attenuationDb);
+  const transformedPanRange = Number(next.transformedPanRange);
+  next.gainDb = Number.isFinite(gainDb) ? Math.max(0, Math.min(24, gainDb)) : DEFAULT_EXPORT_SETTINGS.gainDb;
+  next.attenuationDb = Number.isFinite(attenuationDb)
+    ? Math.max(0, Math.min(24, attenuationDb))
+    : DEFAULT_EXPORT_SETTINGS.attenuationDb;
+  next.transformedPanRange = Number.isFinite(transformedPanRange)
+    ? Math.max(0, Math.min(100, transformedPanRange))
+    : DEFAULT_EXPORT_SETTINGS.transformedPanRange;
+  return next;
+}
 
 /**
  * @typedef {Object} Clip
@@ -63,8 +86,14 @@ export const SAMPLE_RATE = 44100;
  * @property {Object} autoPan - Auto-pan configuration
  * @property {boolean} autoPan.enabled - Auto-pan enabled
  * @property {string} autoPan.strategy - Auto-pan strategy id
+ * @property {boolean} autoPan.inverted - Invert pan direction
+ * @property {boolean} autoPan.manualChoirParts - Use manual choir part selection
  * @property {number} autoPan.rangeLimit - Max pan range
  * @property {number} autoPan.spreadK - Spread factor
+ * @property {Object} exportSettings - Export configuration
+ * @property {number} exportSettings.gainDb - Practice target gain boost in dB
+ * @property {number} exportSettings.attenuationDb - Practice non-target attenuation in dB
+ * @property {number} exportSettings.transformedPanRange - Pan remap output range (0-100)
  * @property {Track[]} tracks - Array of tracks
  * @property {Loop} loop - Loop configuration
  * @property {number} undoStackSize - Max undo stack size (100)
@@ -73,7 +102,7 @@ export const SAMPLE_RATE = 44100;
 /**
  * Create a new empty project
  */
-export function createEmptyProject(name = 'Untitled Project', autoPan = null) {
+export function createEmptyProject(name = 'Untitled Project', autoPan = null, exportSettings = null) {
   return {
     version: '1.0.0',
     projectId: crypto.randomUUID(),
@@ -81,6 +110,7 @@ export function createEmptyProject(name = 'Untitled Project', autoPan = null) {
     sampleRate: SAMPLE_RATE,
     masterVolume: dbToVolume(0),
     autoPan: autoPan ?? { ...DEFAULT_AUTO_PAN_SETTINGS },
+    exportSettings: normalizeExportSettings(exportSettings || {}),
     tracks: [],
     loop: { enabled: false, startMs: 0, endMs: 0 },
     undoStackSize: 100,
@@ -108,7 +138,7 @@ export function createTrack(name, role = TRACK_ROLES.OTHER, locked = false) {
     role,
     icon: defaultIconByRole[role] || 'wave',
     locked,
-    volume: 100,
+    volume: dbToVolume(0),
     pan: 0,
     muted: false,
     soloed: false,

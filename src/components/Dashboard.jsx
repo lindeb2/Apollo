@@ -23,6 +23,11 @@ function Dashboard({ onOpenProject, onNewProject }) {
     outputDeviceId: '',
     recordingOffsetMs: 0,
     defaultChoirPanning: 'off',
+    defaultInvertedAutoPan: false,
+    defaultManualChoirParts: false,
+    defaultExportGainDb: 4,
+    defaultExportAttenuationDb: 4,
+    defaultExportPanRange: 100,
   });
   const hasHydratedSettingsRef = useRef(false);
 
@@ -47,6 +52,26 @@ function Dashboard({ onOpenProject, onNewProject }) {
           typeof parsed.defaultChoirPanning === 'string'
             ? parsed.defaultChoirPanning
             : prev.defaultChoirPanning,
+        defaultInvertedAutoPan:
+          typeof parsed.defaultInvertedAutoPan === 'boolean'
+            ? parsed.defaultInvertedAutoPan
+            : prev.defaultInvertedAutoPan,
+        defaultManualChoirParts:
+          typeof parsed.defaultManualChoirParts === 'boolean'
+            ? parsed.defaultManualChoirParts
+            : prev.defaultManualChoirParts,
+        defaultExportGainDb:
+          typeof parsed.defaultExportGainDb === 'number'
+            ? parsed.defaultExportGainDb
+            : prev.defaultExportGainDb,
+        defaultExportAttenuationDb:
+          typeof parsed.defaultExportAttenuationDb === 'number'
+            ? parsed.defaultExportAttenuationDb
+            : prev.defaultExportAttenuationDb,
+        defaultExportPanRange:
+          typeof parsed.defaultExportPanRange === 'number'
+            ? parsed.defaultExportPanRange
+            : prev.defaultExportPanRange,
       }));
     } catch {
       // Ignore invalid settings
@@ -445,6 +470,18 @@ function Dashboard({ onOpenProject, onNewProject }) {
                     }
                   />
                 </div>
+                <button
+                  className="text-xs text-gray-400 hover:text-gray-200"
+                  onClick={refreshAudioDevices}
+                >
+                  Refresh device list
+                </button>
+              </div>
+
+              <div className="mt-6 mb-3 text-xs uppercase tracking-wide text-gray-400">
+                Default New Project Settings
+              </div>
+              <div className="space-y-4">
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">
                     Default choir auto-pan (new projects)
@@ -466,12 +503,76 @@ function Dashboard({ onOpenProject, onNewProject }) {
                     ))}
                   </select>
                 </div>
-                <button
-                  className="text-xs text-gray-400 hover:text-gray-200"
-                  onClick={refreshAudioDevices}
-                >
-                  Refresh device list
-                </button>
+                <label className="flex items-center gap-2 text-sm text-gray-300 select-none">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-gray-600 bg-gray-900"
+                    checked={audioSettings.defaultInvertedAutoPan}
+                    onChange={(e) =>
+                      setAudioSettings((prev) => ({
+                        ...prev,
+                        defaultInvertedAutoPan: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span>Inverted Auto Pan</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-300 select-none">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-gray-600 bg-gray-900"
+                    checked={audioSettings.defaultManualChoirParts}
+                    onChange={(e) =>
+                      setAudioSettings((prev) => ({
+                        ...prev,
+                        defaultManualChoirParts: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span>Manually select choir parts</span>
+                </label>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">dB gain</label>
+                  <input
+                    type="number"
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={audioSettings.defaultExportGainDb}
+                    onChange={(e) =>
+                      setAudioSettings((prev) => ({
+                        ...prev,
+                        defaultExportGainDb: Number(e.target.value),
+                      }))
+                    }
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">dB attenuation</label>
+                  <input
+                    type="number"
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={audioSettings.defaultExportAttenuationDb}
+                    onChange={(e) =>
+                      setAudioSettings((prev) => ({
+                        ...prev,
+                        defaultExportAttenuationDb: Number(e.target.value),
+                      }))
+                    }
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">transformed pan range</label>
+                  <input
+                    type="number"
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={audioSettings.defaultExportPanRange}
+                    onChange={(e) =>
+                      setAudioSettings((prev) => ({
+                        ...prev,
+                        defaultExportPanRange: Number(e.target.value),
+                      }))
+                    }
+                  />
+                </div>
               </div>
             </div>
             <div className="border-t border-gray-700 px-4 py-3 flex justify-end">

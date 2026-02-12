@@ -39,8 +39,8 @@ function useKeyboardShortcuts({
         onRecord?.();
       }
 
-      // L - Toggle Loop
-      if (e.code === 'KeyL' && !e.ctrlKey && !e.metaKey) {
+      // C - Toggle Loop
+      if (e.code === 'KeyC' && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
         onToggleLoop?.();
       }
@@ -60,8 +60,8 @@ function useKeyboardShortcuts({
         onRedo?.();
       }
 
-      // Delete - Delete selected track
-      if (e.code === 'Delete' && !e.ctrlKey && !e.metaKey) {
+      // Ctrl/Cmd + Backspace - Delete selected track
+      if (e.code === 'Backspace' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         onDeleteTrack?.();
       }

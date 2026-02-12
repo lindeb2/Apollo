@@ -17,6 +17,8 @@ export const AUTO_PAN_STRATEGIES = [
 export const DEFAULT_AUTO_PAN_SETTINGS = {
   enabled: false,
   strategy: 'balanced-highest-middle',
+  inverted: false,
+  manualChoirParts: false,
   rangeLimit: 100,
   spreadK: 2,
 };
@@ -35,6 +37,8 @@ export function normalizeAutoPanSettings(settings = {}) {
   next.spreadK = Number.isFinite(next.spreadK)
     ? next.spreadK
     : DEFAULT_AUTO_PAN_SETTINGS.spreadK;
+  next.inverted = Boolean(next.inverted);
+  next.manualChoirParts = Boolean(next.manualChoirParts);
   return next;
 }
 
@@ -279,40 +283,64 @@ export function applyChoirAutoPanToProject(project, settingsOverride = {}) {
   }
 
   const choirTracks = project.tracks.filter((track) => track.role?.startsWith('choir-part-'));
-  const partNumbers = Array.from(
-    new Set(
-      choirTracks
-        .map((track) => getChoirPartNumber(track.role))
-        .filter((value) => Number.isFinite(value))
-    )
-  ).sort((a, b) => a - b);
 
-  if (partNumbers.length === 0) {
+  if (choirTracks.length === 0) {
     return {
       project: { ...project, autoPan: nextSettings },
       panUpdates: null,
     };
   }
 
-  const n = partNumbers.length;
+  const n = nextSettings.manualChoirParts
+    ? Array.from(
+      new Set(
+        choirTracks
+          .map((track) => getChoirPartNumber(track.role))
+          .filter((value) => Number.isFinite(value))
+      )
+    ).length
+    : choirTracks.length;
+
+  if (n === 0) {
+    return {
+      project: { ...project, autoPan: nextSettings },
+      panUpdates: null,
+    };
+  }
+
   const order = solveOrder(n, nextSettings.strategy);
   const pans = getChoirPanPositions(n, nextSettings.rangeLimit, nextSettings.spreadK);
-
-  const partIndexByNumber = new Map(partNumbers.map((value, idx) => [value, idx + 1]));
   const panByPartIndex = {};
   order.forEach((partIndex, positionIndex) => {
     panByPartIndex[partIndex] = pans[positionIndex];
   });
 
   const panUpdates = {};
+  const partNumbers = nextSettings.manualChoirParts
+    ? Array.from(
+      new Set(
+        choirTracks
+          .map((track) => getChoirPartNumber(track.role))
+          .filter((value) => Number.isFinite(value))
+      )
+    ).sort((a, b) => a - b)
+    : null;
+  const partIndexByNumber = partNumbers
+    ? new Map(partNumbers.map((value, idx) => [value, idx + 1]))
+    : null;
+  const partIndexByTrackId = !nextSettings.manualChoirParts
+    ? new Map(choirTracks.map((track, idx) => [track.id, idx + 1]))
+    : null;
+
   const nextTracks = project.tracks.map((track) => {
     if (!track.role?.startsWith('choir-part-')) return track;
-    const partNumber = getChoirPartNumber(track.role);
-    const partIndex = partIndexByNumber.get(partNumber);
+    const partIndex = nextSettings.manualChoirParts
+      ? partIndexByNumber?.get(getChoirPartNumber(track.role))
+      : partIndexByTrackId?.get(track.id);
     if (!partIndex) return track;
     const nextPanRaw = panByPartIndex[partIndex];
     if (!Number.isFinite(nextPanRaw)) return track;
-    const nextPan = Math.max(-100, Math.min(100, nextPanRaw));
+    const nextPan = Math.max(-100, Math.min(100, nextSettings.inverted ? -nextPanRaw : nextPanRaw));
     panUpdates[track.id] = nextPan;
     return {
       ...track,

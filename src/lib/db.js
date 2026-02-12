@@ -7,6 +7,7 @@ import Dexie from 'dexie';
  * - projects: Full project metadata and state
  * - media: Audio blob storage with metadata
  * - undo: Undo/redo history (last 100 actions per project)
+ * - exportDirs: Last-used export directory handles
  */
 class ChoirMasterDB extends Dexie {
   constructor() {
@@ -28,9 +29,17 @@ class ChoirMasterDB extends Dexie {
       undo: '[projectId+actionIndex], projectId, actionIndex, timestamp',
     });
 
+    this.version(2).stores({
+      projects: 'projectId, projectName, lastModified',
+      media: 'blobId, fileName, sampleRate, durationMs, channels, createdAt',
+      undo: '[projectId+actionIndex], projectId, actionIndex, timestamp',
+      exportDirs: 'id, updatedAt',
+    });
+
     this.projects = this.table('projects');
     this.media = this.table('media');
     this.undo = this.table('undo');
+    this.exportDirs = this.table('exportDirs');
   }
 }
 
@@ -190,6 +199,25 @@ export function getRecentProjects() {
   } catch {
     return [];
   }
+}
+
+/**
+ * Save directory handle for export location.
+ */
+export async function saveExportDirectoryHandle(id, handle) {
+  await db.exportDirs.put({
+    id,
+    handle,
+    updatedAt: Date.now(),
+  });
+}
+
+/**
+ * Load directory handle for export location.
+ */
+export async function loadExportDirectoryHandle(id) {
+  const row = await db.exportDirs.get(id);
+  return row?.handle || null;
 }
 
 /**

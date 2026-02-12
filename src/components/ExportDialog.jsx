@@ -1,43 +1,179 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Download, X, FileArchive, FileJson } from 'lucide-react';
-import { EXPORT_PRESETS, exportProject, downloadBlob } from '../lib/exportEngine';
+import {
+  EXPORT_PRESETS,
+  EXPORT_PRESET_DEFINITIONS,
+  exportProject,
+} from '../lib/exportEngine';
 import { exportAsJSON, exportAsZIP, downloadFile } from '../lib/projectPortability';
+import { loadExportDirectoryHandle, saveExportDirectoryHandle } from '../lib/db';
+
+const AUDIO_EXPORT_SECTIONS = [
+  {
+    title: 'Root',
+    presetIds: [EXPORT_PRESETS.TUTTI],
+  },
+  {
+    title: 'Root / One Group Omitted',
+    presetIds: [EXPORT_PRESETS.ACAPELLA, EXPORT_PRESETS.NO_LEAD, EXPORT_PRESETS.NO_CHOIR],
+  },
+  {
+    title: 'Root / Separated Groups',
+    presetIds: [EXPORT_PRESETS.INSTRUMENTAL, EXPORT_PRESETS.LEAD_ONLY, EXPORT_PRESETS.CHOIR_ONLY],
+  },
+  {
+    title: 'Root / Practice / Normal',
+    presetIds: [EXPORT_PRESETS.INSTRUMENT_PARTS, EXPORT_PRESETS.LEAD_PARTS, EXPORT_PRESETS.CHOIR_PARTS],
+  },
+  {
+    title: 'Root / Practice / Omitted',
+    presetIds: [EXPORT_PRESETS.INSTRUMENT_PARTS_OMITTED, EXPORT_PRESETS.LEAD_PARTS_OMITTED, EXPORT_PRESETS.CHOIR_PARTS_OMITTED],
+  },
+];
+
+const PRESET_BY_ID = Object.fromEntries(
+  EXPORT_PRESET_DEFINITIONS.map((preset) => [preset.id, preset])
+);
+
+async function hasWritePermission(handle) {
+  if (!handle) return false;
+  if (!handle.queryPermission) return true;
+  try {
+    const permission = await handle.queryPermission({ mode: 'readwrite' });
+    if (permission === 'granted') return true;
+    if (permission === 'prompt') {
+      return (await handle.requestPermission({ mode: 'readwrite' })) === 'granted';
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+async function getExportStartHandle(projectId) {
+  try {
+    const projectHandle = await loadExportDirectoryHandle(`project:${projectId}`);
+    if (await hasWritePermission(projectHandle)) {
+      return projectHandle;
+    }
+    const appHandle = await loadExportDirectoryHandle('global');
+    if (await hasWritePermission(appHandle)) {
+      return appHandle;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function pickExportDirectory(projectId) {
+  if (!window.showDirectoryPicker) {
+    throw new Error('Directory export is not supported in this browser.');
+  }
+
+  const startHandle = await getExportStartHandle(projectId);
+  let directoryHandle = null;
+  try {
+    directoryHandle = startHandle
+      ? await window.showDirectoryPicker({ mode: 'readwrite', startIn: startHandle })
+      : await window.showDirectoryPicker({ mode: 'readwrite' });
+  } catch (error) {
+    if (startHandle && (error?.name === 'TypeError' || error?.name === 'NotFoundError')) {
+      directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    } else {
+      throw error;
+    }
+  }
+
+  try {
+    await saveExportDirectoryHandle(`project:${projectId}`, directoryHandle);
+    await saveExportDirectoryHandle('global', directoryHandle);
+  } catch {
+    // Some environments cannot persist file handles; export still works.
+  }
+  return directoryHandle;
+}
+
+async function writeFileToDirectory(rootDirectoryHandle, relativePath, blob) {
+  const segments = relativePath.split('/').filter(Boolean);
+  const filename = segments.pop();
+  let directory = rootDirectoryHandle;
+  for (const segment of segments) {
+    directory = await directory.getDirectoryHandle(segment, { create: true });
+  }
+  const fileHandle = await directory.getFileHandle(filename, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+}
 
 function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState('');
-  const [selectedPreset, setSelectedPreset] = useState(EXPORT_PRESETS.ALL);
+  const [selectedPresetIds, setSelectedPresetIds] = useState([EXPORT_PRESETS.TUTTI]);
 
-  const presets = [
-    { id: EXPORT_PRESETS.INSTRUMENTAL, label: 'Instrumental', description: 'Instrument tracks only' },
-    { id: EXPORT_PRESETS.ALL, label: 'All Tracks', description: 'All tracks (leads +3dB)' },
-    { id: EXPORT_PRESETS.LEAD, label: 'Lead', description: 'Lead + instrumental' },
-    { id: EXPORT_PRESETS.LEADS_SEPARATE, label: 'Leads Separate', description: 'One WAV per lead (target +6dB, others -3dB)' },
-    { id: EXPORT_PRESETS.ONLY_WHOLE_CHOIR, label: 'Choir Only', description: 'Choir tracks only' },
-    { id: EXPORT_PRESETS.SEPARATE_CHOIR_PARTS, label: 'Choir Parts (Practice)', description: 'Target +6dB/+30pan, others -6dB/-30pan, instrumental -3dB' },
-    { id: EXPORT_PRESETS.SEPARATE_CHOIR_PARTS_OMITTED, label: 'Choir Parts (Omitted)', description: 'One file per choir part, target muted' },
-  ];
+  const allPresetIds = useMemo(
+    () => AUDIO_EXPORT_SECTIONS.flatMap((section) => section.presetIds),
+    []
+  );
+
+  const allSelected = selectedPresetIds.length === allPresetIds.length;
+
+  const togglePreset = (presetId) => {
+    setSelectedPresetIds((prev) => (
+      prev.includes(presetId)
+        ? prev.filter((id) => id !== presetId)
+        : [...prev, presetId]
+    ));
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedPresetIds((prev) => (prev.length === allPresetIds.length ? [] : [...allPresetIds]));
+  };
 
   const handleExportAudio = async () => {
+    if (!selectedPresetIds.length) {
+      alert('Select at least one audio export option.');
+      return;
+    }
+
     setIsExporting(true);
     setProgress('Rendering audio...');
 
     try {
-      const files = await exportProject(project, selectedPreset, audioBuffers);
+      const files = await exportProject(
+        project,
+        selectedPresetIds,
+        audioBuffers,
+        project.exportSettings
+      );
 
-      setProgress(`Downloading ${files.length} file${files.length > 1 ? 's' : ''}...`);
+      if (!files.length) {
+        throw new Error('No files produced by selected export options.');
+      }
 
-      for (const { filename, blob } of files) {
-        downloadBlob(blob, filename);
-        await new Promise(resolve => setTimeout(resolve, 500)); // Delay between downloads
+      setProgress('Pick export folder...');
+      const directoryHandle = await pickExportDirectory(project.projectId);
+
+      let written = 0;
+      for (const file of files) {
+        await writeFileToDirectory(directoryHandle, file.relativePath, file.blob);
+        written += 1;
+        setProgress(`Exported ${written}/${files.length}`);
       }
 
       setProgress('Export complete!');
       setTimeout(() => {
+        setIsExporting(false);
+        setProgress('');
         onClose();
-      }, 1500);
-
+      }, 900);
     } catch (error) {
+      if (error?.name === 'AbortError') {
+        setIsExporting(false);
+        setProgress('');
+        return;
+      }
       console.error('Export failed:', error);
       alert('Export failed: ' + error.message);
       setIsExporting(false);
@@ -61,16 +197,13 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
 
     try {
       const { blob, filename } = await exportAsZIP(project, mediaMap);
-      
       setProgress('Downloading...');
       downloadFile(blob, filename);
-
       setProgress('Export complete!');
       setTimeout(() => {
         setIsExporting(false);
         setProgress('');
-      }, 1500);
-
+      }, 900);
     } catch (error) {
       console.error('Export project ZIP failed:', error);
       alert('Export failed: ' + error.message);
@@ -81,8 +214,7 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 rounded-lg max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-        {/* Header */}
+      <div className="bg-gray-800 rounded-lg max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col">
         <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
           <h2 className="text-xl font-semibold">Export</h2>
           <button
@@ -94,51 +226,65 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
           </button>
         </div>
 
-        {/* Content */}
         <div className="flex-1 overflow-auto p-6">
-          {/* Audio Export */}
           <div className="mb-6">
             <h3 className="text-lg font-semibold mb-3">Export Audio (WAV)</h3>
-            <div className="space-y-2">
-              {presets.map(preset => (
-                <label
-                  key={preset.id}
-                  className={`block bg-gray-900 rounded-lg p-3 cursor-pointer transition-colors ${
-                    selectedPreset === preset.id
-                      ? 'ring-2 ring-blue-500'
-                      : 'hover:bg-gray-850'
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="preset"
-                    value={preset.id}
-                    checked={selectedPreset === preset.id}
-                    onChange={(e) => setSelectedPreset(e.target.value)}
-                    className="mr-3"
-                  />
-                  <span className="font-medium">{preset.label}</span>
-                  <p className="text-sm text-gray-400 ml-6">{preset.description}</p>
-                </label>
+            <label className="flex items-center gap-2 bg-gray-900 rounded-lg p-3 mb-3">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={toggleSelectAll}
+                disabled={isExporting}
+              />
+              <span className="font-medium">Select all</span>
+            </label>
+
+            <div className="space-y-3">
+              {AUDIO_EXPORT_SECTIONS.map((section) => (
+                <div key={section.title} className="bg-gray-900 rounded-lg p-3">
+                  <div className="text-sm font-semibold text-gray-300 mb-2">{section.title}</div>
+                  <div className="space-y-2">
+                    {section.presetIds.map((presetId) => {
+                      const preset = PRESET_BY_ID[presetId];
+                      if (!preset) return null;
+                      return (
+                        <label key={preset.id} className="flex items-start gap-2">
+                          <input
+                            type="checkbox"
+                            checked={selectedPresetIds.includes(preset.id)}
+                            onChange={() => togglePreset(preset.id)}
+                            disabled={isExporting}
+                          />
+                          <span>
+                            <span className="font-medium">{preset.label}</span>
+                            <span className="text-sm text-gray-400 block">{preset.description}</span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
               ))}
             </div>
 
             <button
               onClick={handleExportAudio}
-              disabled={isExporting}
+              disabled={isExporting || selectedPresetIds.length === 0}
               className="mt-4 w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
             >
               <Download size={20} />
-              <span>{isExporting ? progress : 'Export Audio'}</span>
+              <span>
+                {isExporting
+                  ? progress
+                  : `Export Audio (${selectedPresetIds.length} selected)`}
+              </span>
             </button>
           </div>
 
-          {/* Project Export */}
           <div className="border-t border-gray-700 pt-6">
             <h3 className="text-lg font-semibold mb-3">Export Project</h3>
-            
+
             <div className="space-y-3">
-              {/* JSON Export */}
               <div className="bg-gray-900 rounded-lg p-4">
                 <div className="flex items-start gap-3">
                   <FileJson size={24} className="text-blue-500 flex-shrink-0 mt-1" />
@@ -158,7 +304,6 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
                 </div>
               </div>
 
-              {/* ZIP Export */}
               <div className="bg-gray-900 rounded-lg p-4">
                 <div className="flex items-start gap-3">
                   <FileArchive size={24} className="text-green-500 flex-shrink-0 mt-1" />
@@ -179,15 +324,8 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
               </div>
             </div>
           </div>
-
-          {/* Format Info */}
-          <div className="mt-6 p-4 bg-gray-900 rounded-lg text-sm text-gray-400">
-            <p className="mb-2"><strong>Audio Export Format:</strong> WAV, 44.1kHz, 16-bit PCM</p>
-            <p><strong>Processing:</strong> No limiter, no normalization, no dithering</p>
-          </div>
         </div>
 
-        {/* Footer */}
         <div className="px-6 py-4 border-t border-gray-700 flex justify-end">
           <button
             onClick={onClose}

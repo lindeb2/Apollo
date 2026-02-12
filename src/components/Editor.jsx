@@ -1,16 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Upload, Play, Pause, Square, Volume2, Circle, Download, SkipBack, SkipForward, Plus } from 'lucide-react';
+import { ArrowLeft, Upload, Play, Pause, Square, Volume2, Circle, Download, SkipBack, SkipForward, Settings } from 'lucide-react';
 import useStore from '../store/useStore';
 import { audioManager } from '../lib/audioManager';
 import { recordingManager } from '../lib/recordingManager';
 import { storeMediaBlob, getMediaBlob } from '../lib/db';
-import { createTrack, createClip } from '../types/project';
+import { createTrack, createClip, normalizeExportSettings } from '../types/project';
 import FileImport from './FileImport';
 import TrackList from './TrackList';
 import Timeline from './Timeline';
 import ExportDialog from './ExportDialog';
 import { dbToVolume, volumeToDb } from '../utils/audio';
-import { applyChoirAutoPanToProject } from '../utils/choirAutoPan';
+import { AUTO_PAN_STRATEGIES, applyChoirAutoPanToProject } from '../utils/choirAutoPan';
 import useKeyboardShortcuts from '../utils/useKeyboardShortcuts';
 import { processRecordingOverwrites } from '../utils/clipCollision';
 
@@ -36,6 +36,14 @@ function Editor({ onBackToDashboard }) {
 
   const [showFileImport, setShowFileImport] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [audioInputs, setAudioInputs] = useState([]);
+  const [audioOutputs, setAudioOutputs] = useState([]);
+  const [audioSettings, setAudioSettings] = useState({
+    inputDeviceId: '',
+    outputDeviceId: '',
+    recordingOffsetMs: 0,
+  });
   const [masterVolume, setMasterVolume] = useState(100);
   const [masterEditTooltip, setMasterEditTooltip] = useState(null);
   const [masterDragTooltip, setMasterDragTooltip] = useState(null);
@@ -50,6 +58,7 @@ function Editor({ onBackToDashboard }) {
   const previousTimeRef = useRef(0);
   const recordingStartTimeRef = useRef(0);
   const projectRef = useRef(project);
+  const hasHydratedSettingsRef = useRef(false);
   const isHandlingLoopWrapRef = useRef(false);
   
   // Refs for scroll synchronization
@@ -81,13 +90,52 @@ function Editor({ onBackToDashboard }) {
     if (!saved) return;
     try {
       const parsed = JSON.parse(saved);
-      if (typeof parsed?.recordingOffsetMs === 'number') {
-        setRecordingOffsetMs(Math.max(0, parsed.recordingOffsetMs));
-      }
+      setAudioSettings((prev) => ({
+        ...prev,
+        ...parsed,
+        recordingOffsetMs:
+          typeof parsed.recordingOffsetMs === 'number'
+            ? parsed.recordingOffsetMs
+            : prev.recordingOffsetMs,
+      }));
     } catch {
       // Ignore invalid settings
     }
-  }, [project?.projectId]);
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydratedSettingsRef.current) {
+      hasHydratedSettingsRef.current = true;
+    } else {
+      let existing = {};
+      try {
+        existing = JSON.parse(localStorage.getItem('choirmaster.settings') || '{}');
+      } catch {
+        existing = {};
+      }
+      localStorage.setItem('choirmaster.settings', JSON.stringify({
+        ...existing,
+        ...audioSettings,
+      }));
+    }
+    setRecordingOffsetMs(Math.max(0, Number(audioSettings.recordingOffsetMs) || 0));
+  }, [audioSettings]);
+
+  const refreshAudioDevices = async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    let devices = await navigator.mediaDevices.enumerateDevices();
+    const hasLabels = devices.some((device) => device.label);
+    if (!hasLabels) {
+      try {
+        await navigator.mediaDevices.getUserMedia({ audio: true });
+        devices = await navigator.mediaDevices.enumerateDevices();
+      } catch {
+        // Keep unlabeled devices
+      }
+    }
+    setAudioInputs(devices.filter((device) => device.kind === 'audioinput'));
+    setAudioOutputs(devices.filter((device) => device.kind === 'audiooutput'));
+  };
 
   useEffect(() => {
     if (!project) return;
@@ -697,7 +745,7 @@ function Editor({ onBackToDashboard }) {
         audioManager.mediaCache.set(blobId, audioBuffer);
 
         const trackName = file.name.replace(/\.[^/.]+$/, '');
-        const track = createTrack(trackName, role, true);
+        const track = createTrack(trackName, role, false);
 
         const durationMs = audioBuffer.duration * 1000;
         const clip = createClip(blobId, 0, durationMs);
@@ -741,6 +789,8 @@ function Editor({ onBackToDashboard }) {
   const handleUpdateTrack = (trackId, updates) => {
     let panUpdates = null;
     updateProject((proj) => {
+      const previousTrack = proj.tracks.find((track) => track.id === trackId);
+      const wasChoirTrack = previousTrack?.role?.startsWith('choir-part-');
       const nextTracks = proj.tracks.map((track) =>
         track.id === trackId ? { ...track, ...updates } : track
       );
@@ -749,7 +799,15 @@ function Editor({ onBackToDashboard }) {
         tracks: nextTracks,
       };
 
-      if (updates.role !== undefined && proj.autoPan?.enabled) {
+      if (updates.pan !== undefined && wasChoirTrack && proj.autoPan?.enabled) {
+        nextProject = {
+          ...nextProject,
+          autoPan: {
+            ...nextProject.autoPan,
+            enabled: false,
+          },
+        };
+      } else if (updates.role !== undefined && proj.autoPan?.enabled) {
         const result = applyChoirAutoPanToProject(nextProject);
         panUpdates = result.panUpdates;
         nextProject = result.project;
@@ -775,16 +833,79 @@ function Editor({ onBackToDashboard }) {
   };
 
   const handleSetAutoPanStrategy = (strategyId) => {
+    applyProjectAutoPanSettings(
+      strategyId === 'off'
+        ? { enabled: false }
+        : { enabled: true, strategy: strategyId },
+      'Update choir auto-pan'
+    );
+  };
+
+  const applyProjectAutoPanSettings = (settingsUpdate, description) => {
     let panUpdates = null;
     updateProject((proj) => {
-      const settingsUpdate =
-        strategyId === 'off'
-          ? { enabled: false }
-          : { enabled: true, strategy: strategyId };
       const result = applyChoirAutoPanToProject(proj, settingsUpdate);
       panUpdates = result.panUpdates;
       return result.project;
-    }, 'Update choir auto-pan');
+    }, description);
+
+    if (isPlaying && panUpdates) {
+      Object.entries(panUpdates).forEach(([id, pan]) => {
+        audioManager.updateTrackPan(id, pan);
+      });
+    }
+  };
+
+  const handleToggleAutoPanInverted = () => {
+    applyProjectAutoPanSettings(
+      {
+        inverted: !project?.autoPan?.inverted,
+      },
+      'Toggle inverted auto-pan'
+    );
+  };
+
+  const handleSetAutoPanManualChoirParts = (enabled) => {
+    applyProjectAutoPanSettings(
+      { manualChoirParts: enabled },
+      'Update choir part selection mode'
+    );
+  };
+
+  const handleUpdateExportSettings = (updates) => {
+    updateProject((proj) => ({
+      ...proj,
+      exportSettings: normalizeExportSettings({
+        ...(proj.exportSettings || {}),
+        ...updates,
+      }),
+    }), 'Update export settings');
+  };
+
+  const handleReorderTrack = (trackId, insertIndex) => {
+    let panUpdates = null;
+    updateProject((proj) => {
+      const fromIndex = proj.tracks.findIndex((track) => track.id === trackId);
+      if (fromIndex < 0 || insertIndex < 0 || insertIndex >= proj.tracks.length) {
+        return proj;
+      }
+      const nextTracks = [...proj.tracks];
+      const [moved] = nextTracks.splice(fromIndex, 1);
+      nextTracks.splice(insertIndex, 0, moved);
+
+      let nextProject = {
+        ...proj,
+        tracks: nextTracks,
+      };
+
+      if (proj.autoPan?.enabled && !proj.autoPan?.manualChoirParts) {
+        const result = applyChoirAutoPanToProject(nextProject);
+        panUpdates = result.panUpdates;
+        nextProject = result.project;
+      }
+
+      return nextProject;
+    }, 'Reorder tracks');
 
     if (isPlaying && panUpdates) {
       Object.entries(panUpdates).forEach(([id, pan]) => {
@@ -802,6 +923,7 @@ function Editor({ onBackToDashboard }) {
     e.preventDefault();
     if (masterEditTooltip) setMasterEditTooltip(null);
     const rect = e.currentTarget.getBoundingClientRect();
+    setMasterDragTooltip(masterVolume);
     masterDragRef.current = {
       startX: e.clientX,
       startValue: masterVolume,
@@ -912,7 +1034,7 @@ function Editor({ onBackToDashboard }) {
   };
 
   useKeyboardShortcuts({
-    enabled: false,
+    enabled: true,
     onPlayPause: handlePlay,
     onRecord: handleRecord,
     onToggleLoop: handleToggleLoop,
@@ -943,15 +1065,24 @@ function Editor({ onBackToDashboard }) {
     <div className="h-full flex flex-col">
       {/* Header */}
       <div className="bg-gray-800 border-b border-gray-700 px-4 py-3">
-        <div className="flex items-center justify-between gap-6">
-          {/* Group 1: Back button and project name */}
-          <div className="flex items-center gap-4 min-w-0 flex-shrink">
+        <div className="grid grid-cols-[384px_minmax(0,1fr)] items-center">
+          <div className="flex items-center gap-3 min-w-0 pr-4">
             <button
               onClick={onBackToDashboard}
               className="text-gray-400 hover:text-white transition-colors flex-shrink-0"
               title="Back to Dashboard"
             >
               <ArrowLeft size={20} />
+            </button>
+            <button
+              onClick={() => {
+                setSettingsOpen(true);
+                refreshAudioDevices();
+              }}
+              className="text-gray-400 hover:text-white transition-colors flex-shrink-0"
+              title="Settings"
+            >
+              <Settings size={18} />
             </button>
             {isEditingProjectName ? (
               <input
@@ -981,158 +1112,159 @@ function Editor({ onBackToDashboard }) {
             )}
           </div>
 
-          {/* Group 2: Transport controls */}
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <button
-              onClick={handleSkipBackward}
-              disabled={hasNoTracks}
-              className="p-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white rounded transition-colors"
-              title="Skip to previous clip boundary"
-            >
-              <SkipBack size={18} />
-            </button>
+          <div className="relative min-w-0">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={handleSkipBackward}
+                  disabled={hasNoTracks}
+                  className="p-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white rounded transition-colors"
+                  title="Skip to previous clip boundary"
+                >
+                  <SkipBack size={18} />
+                </button>
 
-            <button
-              onClick={handleSkipForward}
-              disabled={hasNoTracks}
-              className="p-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white rounded transition-colors"
-              title="Skip to next clip boundary"
-            >
-              <SkipForward size={18} />
-            </button>
+                <button
+                  onClick={handleSkipForward}
+                  disabled={hasNoTracks}
+                  className="p-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white rounded transition-colors"
+                  title="Skip to next clip boundary"
+                >
+                  <SkipForward size={18} />
+                </button>
 
-            <button
-              onClick={handleStop}
-              disabled={hasNoTracks}
-              className="p-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white rounded transition-colors"
-              title="Stop"
-            >
-              <Square size={18} />
-            </button>
+                <button
+                  onClick={handleStop}
+                  disabled={hasNoTracks}
+                  className="p-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white rounded transition-colors"
+                  title="Stop"
+                >
+                  <Square size={18} />
+                </button>
 
-            <button
-              onClick={handlePlay}
-              disabled={hasNoTracks}
-              className="p-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded transition-colors"
-              title={isPlaying ? 'Pause' : 'Play'}
-            >
-              {isPlaying ? <Pause size={18} /> : <Play size={18} />}
-            </button>
+                <button
+                  onClick={handlePlay}
+                  disabled={hasNoTracks}
+                  className="p-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded transition-colors"
+                  title={isPlaying ? 'Pause' : 'Play'}
+                >
+                  {isPlaying ? <Pause size={18} /> : <Play size={18} />}
+                </button>
 
-            <button
-              onClick={handleRecord}
-              disabled={hasNoTracks || !selectedTrackId}
-              className={`p-2 ${
-                isRecording
-                  ? 'bg-red-600 hover:bg-red-700 animate-pulse'
-                  : 'bg-red-600 hover:bg-red-700'
-              } disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded transition-colors`}
-              title={isRecording ? 'Stop Recording' : 'Record'}
-            >
-              <Circle size={18} fill={isRecording ? 'currentColor' : 'none'} />
-            </button>
-          </div>
+                <button
+                  onClick={handleRecord}
+                  disabled={hasNoTracks || !selectedTrackId}
+                  className={`p-2 ${
+                    isRecording
+                      ? 'bg-red-600 hover:bg-red-700 animate-pulse'
+                      : 'bg-red-600 hover:bg-red-700'
+                  } disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded transition-colors`}
+                  title={isRecording ? 'Stop Recording' : 'Record'}
+                >
+                  <Circle size={18} fill={isRecording ? 'currentColor' : 'none'} />
+                </button>
+              </div>
 
-          {/* Group 3: Time display */}
-          <div className="flex-shrink-0">
-            <div className="text-xl font-mono bg-gray-900 px-3 py-1 rounded">
-              {formatTime(currentTimeMs)}
-            </div>
-          </div>
-
-          {/* Group 4: Volume, Import, Export */}
-          <div className="flex items-center gap-4 flex-shrink-0">
-            <div className="flex items-center gap-2">
-              <Volume2 size={18} className="text-gray-400" />
-              <div className="relative">
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  step="1"
-                  value={masterVolume}
-                  readOnly
-                  onMouseDown={handleMasterVolumeMouseDown}
-                  onDoubleClick={handleMasterVolumeDoubleClick}
-                  className="w-28 volume-slider cursor-pointer block"
-                  title="Master Volume (double-click for numeric input)"
-                />
-                {masterDragTooltip !== null && (
-                  <div
-                    className="absolute top-full left-1/2 -translate-x-1/2 w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
-                    style={{ marginTop: '1px' }}
-                  >
-                    {masterDragTooltip <= 0 ? '-∞' : volumeToDb(masterDragTooltip).toFixed(1)}
-                  </div>
-                )}
-                {masterEditTooltip && (
-                  <input
-                    type="text"
-                    value={masterEditTooltip.text}
-                    onChange={(e) => setMasterEditTooltip({ text: e.target.value })}
-                  onFocus={(e) => e.target.select()}
-                  onBlur={() => {
-                    const text = masterEditTooltip.text.trim();
-                    if (!text) {
-                      applyMasterVolume(dbToVolume(0));
-                    } else {
-                      const normalized = text.toLowerCase();
-                      if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
-                        applyMasterVolume(0);
-                      } else {
-                        const parsed = parseFloat(text);
-                        if (!Number.isNaN(parsed)) {
-                          applyMasterVolume(dbToVolume(Math.min(6, Math.max(-60, parsed))));
-                        }
-                      }
-                    }
-                    setMasterEditTooltip(null);
-                  }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
+              <div className="flex items-center gap-4 flex-shrink-0">
+                <div className="flex items-center gap-2">
+                  <Volume2 size={18} className="text-gray-400" />
+                  <div className="relative">
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={masterVolume}
+                      readOnly
+                      onMouseDown={handleMasterVolumeMouseDown}
+                      onDoubleClick={handleMasterVolumeDoubleClick}
+                      className="w-28 volume-slider cursor-pointer block"
+                      title="Master Volume (double-click for numeric input)"
+                    />
+                    {masterDragTooltip !== null && (
+                      <div
+                        className="absolute top-full left-1/2 -translate-x-1/2 w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
+                        style={{ marginTop: '1px' }}
+                      >
+                        {masterDragTooltip <= 0 ? '-∞' : volumeToDb(masterDragTooltip).toFixed(1)}
+                      </div>
+                    )}
+                    {masterEditTooltip && (
+                      <input
+                        type="text"
+                        value={masterEditTooltip.text}
+                        onChange={(e) => setMasterEditTooltip({ text: e.target.value })}
+                      onFocus={(e) => e.target.select()}
+                      onBlur={() => {
                         const text = masterEditTooltip.text.trim();
-                      if (!text) {
-                        applyMasterVolume(dbToVolume(0));
-                      } else {
-                        const normalized = text.toLowerCase();
-                        if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
-                          applyMasterVolume(0);
+                        if (!text) {
+                          applyMasterVolume(dbToVolume(0));
                         } else {
-                          const parsed = parseFloat(text);
-                          if (!Number.isNaN(parsed)) {
-                            applyMasterVolume(dbToVolume(Math.min(6, Math.max(-60, parsed))));
+                          const normalized = text.toLowerCase();
+                          if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
+                            applyMasterVolume(0);
+                          } else {
+                            const parsed = parseFloat(text);
+                            if (!Number.isNaN(parsed)) {
+                              applyMasterVolume(dbToVolume(Math.min(6, Math.max(-60, parsed))));
+                            }
                           }
                         }
-                      }
                         setMasterEditTooltip(null);
-                      } else if (e.key === 'Escape') {
-                        setMasterEditTooltip(null);
-                      }
-                    }}
-                    className="absolute top-full left-1/2 -translate-x-1/2 w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
-                    style={{ marginTop: '1px' }}
-                    autoFocus
-                  />
-                )}
+                      }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            const text = masterEditTooltip.text.trim();
+                          if (!text) {
+                            applyMasterVolume(dbToVolume(0));
+                          } else {
+                            const normalized = text.toLowerCase();
+                            if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
+                              applyMasterVolume(0);
+                            } else {
+                              const parsed = parseFloat(text);
+                              if (!Number.isNaN(parsed)) {
+                                applyMasterVolume(dbToVolume(Math.min(6, Math.max(-60, parsed))));
+                              }
+                            }
+                          }
+                            setMasterEditTooltip(null);
+                          } else if (e.key === 'Escape') {
+                            setMasterEditTooltip(null);
+                          }
+                        }}
+                        className="absolute top-full left-1/2 -translate-x-1/2 w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
+                        style={{ marginTop: '1px' }}
+                        autoFocus
+                      />
+                    )}
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setShowFileImport(true)}
+                  className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded transition-colors"
+                >
+                  <Upload size={16} />
+                  <span className="text-sm">Import</span>
+                </button>
+
+                <button
+                  onClick={() => setShowExportDialog(true)}
+                  disabled={hasNoTracks}
+                  className="flex items-center gap-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-3 py-2 rounded transition-colors"
+                >
+                  <Download size={16} />
+                  <span className="text-sm">Export</span>
+                </button>
               </div>
             </div>
 
-            <button
-              onClick={() => setShowFileImport(true)}
-              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded transition-colors"
-            >
-              <Upload size={16} />
-              <span className="text-sm">Import</span>
-            </button>
-
-            <button
-              onClick={() => setShowExportDialog(true)}
-              disabled={hasNoTracks}
-              className="flex items-center gap-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-3 py-2 rounded transition-colors"
-            >
-              <Download size={16} />
-              <span className="text-sm">Export</span>
-            </button>
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+              <div className="pointer-events-auto text-xl font-mono bg-gray-900 px-3 py-1 rounded">
+                {formatTime(currentTimeMs)}
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1150,7 +1282,7 @@ function Editor({ onBackToDashboard }) {
           onSelectTrack={selectTrack}
           onSeek={handleSeek}
           updateProject={updateProject}
-          shortcutsEnabled={false}
+          shortcutsEnabled={true}
           deleteClipShortcutEnabled
           sharedVerticalScroll
           scrollContainerRef={timelineScrollRef}
@@ -1193,6 +1325,10 @@ function Editor({ onBackToDashboard }) {
                       onAddTrack={handleAddEmptyTrack}
                       onDeleteTrack={handleDeleteTrackById}
                       onSetAutoPanStrategy={handleSetAutoPanStrategy}
+                      onToggleAutoPanInverted={handleToggleAutoPanInverted}
+                      autoPanInverted={Boolean(project.autoPan?.inverted)}
+                      autoPanManualChoirParts={Boolean(project.autoPan?.manualChoirParts)}
+                      onReorderTrack={handleReorderTrack}
                       emptyContextMenu={trackListContextMenu}
                       onClearEmptyContextMenu={() => setTrackListContextMenu(null)}
                     />
@@ -1231,6 +1367,160 @@ function Editor({ onBackToDashboard }) {
           mediaMap={mediaMap}
           onClose={() => setShowExportDialog(false)}
         />
+      )}
+
+      {settingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-lg rounded-lg border border-gray-700 bg-gray-800 shadow-xl">
+            <div className="flex items-center justify-between border-b border-gray-700 px-4 py-3">
+              <div className="text-sm font-semibold">Settings</div>
+              <button
+                className="text-gray-400 hover:text-gray-200"
+                onClick={() => setSettingsOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="px-4 py-3">
+              <div className="mb-3 text-xs uppercase tracking-wide text-gray-400">Audio</div>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Input device</label>
+                  <select
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={audioSettings.inputDeviceId}
+                    onChange={(e) =>
+                      setAudioSettings((prev) => ({ ...prev, inputDeviceId: e.target.value }))
+                    }
+                  >
+                    <option value="">Default</option>
+                    {audioInputs.map((device) => (
+                      <option key={device.deviceId} value={device.deviceId}>
+                        {device.label || `Input ${device.deviceId.slice(0, 6)}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Output device</label>
+                  <select
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={audioSettings.outputDeviceId}
+                    onChange={(e) =>
+                      setAudioSettings((prev) => ({ ...prev, outputDeviceId: e.target.value }))
+                    }
+                  >
+                    <option value="">Default</option>
+                    {audioOutputs.map((device) => (
+                      <option key={device.deviceId} value={device.deviceId}>
+                        {device.label || `Output ${device.deviceId.slice(0, 6)}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Recording offset (ms)</label>
+                  <input
+                    type="number"
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={audioSettings.recordingOffsetMs}
+                    onChange={(e) =>
+                      setAudioSettings((prev) => ({
+                        ...prev,
+                        recordingOffsetMs: Number(e.target.value),
+                      }))
+                    }
+                  />
+                </div>
+                <button
+                  className="text-xs text-gray-400 hover:text-gray-200"
+                  onClick={refreshAudioDevices}
+                >
+                  Refresh device list
+                </button>
+              </div>
+
+              <div className="mt-6 mb-3 text-xs uppercase tracking-wide text-gray-400">
+                Project Settings
+              </div>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">
+                    Choir auto-pan
+                  </label>
+                  <select
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={project?.autoPan?.enabled ? project.autoPan?.strategy : 'off'}
+                    onChange={(e) => handleSetAutoPanStrategy(e.target.value)}
+                  >
+                    <option value="off">Off</option>
+                    {AUTO_PAN_STRATEGIES.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <label className="flex items-center gap-2 text-sm text-gray-300 select-none">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-gray-600 bg-gray-900"
+                    checked={Boolean(project?.autoPan?.inverted)}
+                    onChange={(e) => applyProjectAutoPanSettings(
+                      { inverted: e.target.checked },
+                      'Update inverted auto-pan'
+                    )}
+                  />
+                  <span>Inverted Auto Pan</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-300 select-none">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-gray-600 bg-gray-900"
+                    checked={Boolean(project?.autoPan?.manualChoirParts)}
+                    onChange={(e) => handleSetAutoPanManualChoirParts(e.target.checked)}
+                  />
+                  <span>Manually select choir parts</span>
+                </label>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">dB gain</label>
+                  <input
+                    type="number"
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={project?.exportSettings?.gainDb ?? 4}
+                    onChange={(e) => handleUpdateExportSettings({ gainDb: Number(e.target.value) })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">dB attenuation</label>
+                  <input
+                    type="number"
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={project?.exportSettings?.attenuationDb ?? 4}
+                    onChange={(e) => handleUpdateExportSettings({ attenuationDb: Number(e.target.value) })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">transformed pan range</label>
+                  <input
+                    type="number"
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={project?.exportSettings?.transformedPanRange ?? 100}
+                    onChange={(e) => handleUpdateExportSettings({ transformedPanRange: Number(e.target.value) })}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="border-t border-gray-700 px-4 py-3 flex justify-end">
+              <button
+                className="bg-gray-700 hover:bg-gray-600 text-white rounded px-3 py-2 text-sm"
+                onClick={() => setSettingsOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
