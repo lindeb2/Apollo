@@ -70,6 +70,7 @@ function Timeline({
   const [rulerDragState, setRulerDragState] = useState(null);
   const [loopMarkerDragState, setLoopMarkerDragState] = useState(null);
   const prevProjectDurationRef = useRef(null);
+  const shouldCenterOnPlayheadAfterZoomRef = useRef(false);
   const [containerWidth, setContainerWidth] = useState(TIMELINE_VIEWPORT_WIDTH);
   const [globalPeakAmplitude, setGlobalPeakAmplitude] = useState(1.0);
   const [loadedClipIds, setLoadedClipIds] = useState(new Set());
@@ -192,6 +193,11 @@ function Timeline({
     if (minZoomDurationMs <= maxZoomDurationMs) return maxZoomDurationMs;
     return maxZoomDurationMs * Math.pow(minZoomDurationMs / maxZoomDurationMs, value);
   };
+
+  const applyZoomDuration = (nextVisibleDurationMs) => {
+    shouldCenterOnPlayheadAfterZoomRef.current = true;
+    setVisibleDurationMs(nextVisibleDurationMs);
+  };
   
   const formatVisibleDuration = (durationMs) => {
     const seconds = durationMs / 1000;
@@ -218,6 +224,25 @@ function Timeline({
   };
   
   const rulerIntervalMs = calculateRulerInterval();
+
+  useEffect(() => {
+    if (!shouldCenterOnPlayheadAfterZoomRef.current) return;
+    const tracksElement = tracksScrollRef.current;
+    if (!tracksElement) return;
+
+    const maxScrollLeft = Math.max(0, timelineWidthPx - containerWidth);
+    const targetScrollLeft = Math.max(
+      0,
+      Math.min(maxScrollLeft, (currentTimeMs * pixelsPerMs) - (containerWidth / 2))
+    );
+
+    tracksElement.scrollLeft = targetScrollLeft;
+    if (rulerScrollRef.current) {
+      rulerScrollRef.current.scrollLeft = targetScrollLeft;
+    }
+    setScrollLeft(targetScrollLeft);
+    shouldCenterOnPlayheadAfterZoomRef.current = false;
+  }, [pixelsPerMs, timelineWidthPx, containerWidth, currentTimeMs]);
   
   const formatRulerTime = (ms, intervalMs) => {
     if (intervalMs < 1000) {
@@ -828,13 +853,13 @@ function Timeline({
         const newSliderValue = Math.max(0, Math.min(1, zoomSliderValue + delta));
         
         if (newSliderValue >= 0.99) {
-          setVisibleDurationMs(null);
+          applyZoomDuration(null);
         } else {
           const newDuration = convertSliderToDuration(newSliderValue);
           if (newDuration >= minZoomDurationMs * 0.95) {
-            setVisibleDurationMs(null);
+            applyZoomDuration(null);
           } else {
-            setVisibleDurationMs(newDuration);
+            applyZoomDuration(newDuration);
           }
         }
       }
@@ -887,19 +912,19 @@ function Timeline({
   const handleZoomIn = () => {
     const newSliderValue = Math.max(0, zoomSliderValue - 0.1);
     const newDuration = sliderValueToDuration(newSliderValue);
-    setVisibleDurationMs(newDuration);
+    applyZoomDuration(newDuration);
   };
   
   const handleZoomOut = () => {
     const newSliderValue = Math.min(1, zoomSliderValue + 0.1);
     if (newSliderValue >= 0.99) {
-      setVisibleDurationMs(null);
+      applyZoomDuration(null);
     } else {
       const newDuration = sliderValueToDuration(newSliderValue);
       if (newDuration >= minZoomDurationMs * 0.95) {
-        setVisibleDurationMs(null);
+        applyZoomDuration(null);
       } else {
-        setVisibleDurationMs(newDuration);
+        applyZoomDuration(newDuration);
       }
     }
   };
@@ -907,13 +932,13 @@ function Timeline({
   const handleSliderChange = (e) => {
     const value = parseFloat(e.target.value);
     if (value >= 0.99) {
-      setVisibleDurationMs(null);
+      applyZoomDuration(null);
     } else {
       const newDuration = sliderValueToDuration(value);
       if (newDuration >= minZoomDurationMs * 0.95) {
-        setVisibleDurationMs(null);
+        applyZoomDuration(null);
       } else {
-        setVisibleDurationMs(newDuration);
+        applyZoomDuration(newDuration);
       }
     }
   };

@@ -138,9 +138,13 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
     }
 
     setIsExporting(true);
-    setProgress('Rendering audio...');
+    setProgress('Pick export folder...');
 
     try {
+      // Must be called directly from the click gesture (Windows requires this).
+      const directoryHandle = await pickExportDirectory(project.projectId);
+
+      setProgress('Rendering audio...');
       const files = await exportProject(
         project,
         selectedPresetIds,
@@ -151,9 +155,6 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
       if (!files.length) {
         throw new Error('No files produced by selected export options.');
       }
-
-      setProgress('Pick export folder...');
-      const directoryHandle = await pickExportDirectory(project.projectId);
 
       let written = 0;
       for (const file of files) {
