@@ -6,15 +6,10 @@ name = "ChoirMaster"
 script = "npm install"
 
 [[actions]]
-name = "Init"
-icon = "tool"
-command = "npm install"
-
-[[actions]]
 name = "Run"
 icon = "run"
 command = '''
-npm run dev
+npm --workspaces=false run dev
 o
 '''
 

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Upload, FileAudio, X } from 'lucide-react';
 import { TRACK_ROLES } from '../types/project';
 
-function FileImport({ onImport, onClose }) {
+function FileImport({ onImport, onClose, manualChoirPartsEnabled = false }) {
   const [files, setFiles] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
   const [roles, setRoles] = useState({});
@@ -42,7 +42,7 @@ function FileImport({ onImport, onClose }) {
     const newRoles = { ...roles };
     for (const file of newFiles) {
       if (!newRoles[file.name]) {
-        newRoles[file.name] = TRACK_ROLES.OTHER;
+        newRoles[file.name] = TRACK_ROLES.INSTRUMENT;
       }
     }
     setRoles(newRoles);
@@ -84,14 +84,20 @@ function FileImport({ onImport, onClose }) {
     }
   };
 
+  const choirRoleOptions = manualChoirPartsEnabled
+    ? [
+      { value: TRACK_ROLES.CHOIR_PART_1, label: 'Choir Part 1' },
+      { value: TRACK_ROLES.CHOIR_PART_2, label: 'Choir Part 2' },
+      { value: TRACK_ROLES.CHOIR_PART_3, label: 'Choir Part 3' },
+      { value: TRACK_ROLES.CHOIR_PART_4, label: 'Choir Part 4' },
+      { value: TRACK_ROLES.CHOIR_PART_5, label: 'Choir Part 5' },
+    ]
+    : [{ value: TRACK_ROLES.CHOIR_PART_1, label: 'Choir Part' }];
+
   const roleOptions = [
     { value: TRACK_ROLES.INSTRUMENT, label: 'Instrument' },
     { value: TRACK_ROLES.LEAD, label: 'Lead' },
-    { value: TRACK_ROLES.CHOIR_PART_1, label: 'Choir Part 1' },
-    { value: TRACK_ROLES.CHOIR_PART_2, label: 'Choir Part 2' },
-    { value: TRACK_ROLES.CHOIR_PART_3, label: 'Choir Part 3' },
-    { value: TRACK_ROLES.CHOIR_PART_4, label: 'Choir Part 4' },
-    { value: TRACK_ROLES.CHOIR_PART_5, label: 'Choir Part 5' },
+    ...choirRoleOptions,
     { value: TRACK_ROLES.OTHER, label: 'Other' },
   ];
 

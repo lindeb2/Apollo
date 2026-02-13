@@ -4,7 +4,7 @@ import useStore from '../store/useStore';
 import { audioManager } from '../lib/audioManager';
 import { recordingManager } from '../lib/recordingManager';
 import { storeMediaBlob, getMediaBlob } from '../lib/db';
-import { createTrack, createClip, normalizeExportSettings } from '../types/project';
+import { createTrack, createClip, normalizeExportSettings, TRACK_ROLES } from '../types/project';
 import FileImport from './FileImport';
 import TrackList from './TrackList';
 import Timeline from './Timeline';
@@ -745,7 +745,7 @@ function Editor({ onBackToDashboard }) {
         audioManager.mediaCache.set(blobId, audioBuffer);
 
         const trackName = file.name.replace(/\.[^/.]+$/, '');
-        const track = createTrack(trackName, role, false);
+        const track = createTrack(trackName, role || TRACK_ROLES.INSTRUMENT, false);
 
         const durationMs = audioBuffer.duration * 1000;
         const clip = createClip(blobId, 0, durationMs);
@@ -1356,6 +1356,7 @@ function Editor({ onBackToDashboard }) {
       {showFileImport && (
         <FileImport
           onImport={handleFileImport}
+          manualChoirPartsEnabled={Boolean(project?.autoPan?.manualChoirParts)}
           onClose={() => setShowFileImport(false)}
         />
       )}
