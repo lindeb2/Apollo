@@ -9,7 +9,6 @@ import {
   normalizedToPan,
   equalPowerPan,
   pixelsToDbChange,
-  sanitizeFilename,
   msToSeconds,
   secondsToMs,
 } from '../utils/audio';
@@ -110,26 +109,5 @@ describe('Audio Utilities - Time Conversion', () => {
     expect(secondsToMs(1)).toBe(1000);
     expect(secondsToMs(0.5)).toBe(500);
     expect(secondsToMs(2.5)).toBe(2500);
-  });
-});
-
-describe('Audio Utilities - Filename Sanitization', () => {
-  it('should sanitize filenames per spec', () => {
-    // Spec: ASCII only, lowercase, spaces → '_'
-    expect(sanitizeFilename('Hello World')).toBe('hello_world');
-    expect(sanitizeFilename('Choir Part 1')).toBe('choir_part_1');
-    expect(sanitizeFilename('Test@#$File')).toBe('test_file');
-    expect(sanitizeFilename('UPPERCASE')).toBe('uppercase');
-  });
-
-  it('should handle multiple consecutive spaces/special chars', () => {
-    expect(sanitizeFilename('test   multiple   spaces')).toBe('test_multiple_spaces');
-    expect(sanitizeFilename('test___underscores___')).toBe('test_underscores');
-  });
-
-  it('should trim leading/trailing underscores', () => {
-    expect(sanitizeFilename('_test_')).toBe('test');
-    expect(sanitizeFilename('___leading')).toBe('leading');
-    expect(sanitizeFilename('trailing___')).toBe('trailing');
   });
 });

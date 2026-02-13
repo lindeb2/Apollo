@@ -13,6 +13,7 @@ import { dbToVolume, volumeToDb } from '../utils/audio';
 import { AUTO_PAN_STRATEGIES, applyChoirAutoPanToProject } from '../utils/choirAutoPan';
 import useKeyboardShortcuts from '../utils/useKeyboardShortcuts';
 import { processRecordingOverwrites } from '../utils/clipCollision';
+import { normalizeProjectName } from '../utils/naming';
 
 function Editor({ onBackToDashboard }) {
   const {
@@ -941,7 +942,7 @@ function Editor({ onBackToDashboard }) {
   };
 
   const commitProjectName = () => {
-    const nextName = projectNameDraft.trim();
+    const nextName = normalizeProjectName(projectNameDraft);
     if (!nextName || nextName === project.projectName) {
       setProjectNameDraft(project.projectName);
       setIsEditingProjectName(false);

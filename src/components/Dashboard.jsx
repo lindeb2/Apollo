@@ -6,6 +6,7 @@ import { audioManager } from '../lib/audioManager';
 import { storeMediaBlob } from '../lib/db';
 import { formatTime } from '../utils/audio';
 import { AUTO_PAN_STRATEGIES } from '../utils/choirAutoPan';
+import { normalizeProjectName } from '../utils/naming';
 
 function Dashboard({ onOpenProject, onNewProject }) {
   const [projects, setProjects] = useState([]);
@@ -103,8 +104,9 @@ function Dashboard({ onOpenProject, onNewProject }) {
   };
 
   const handleCreateProject = () => {
-    if (!newProjectName.trim()) return;
-    onNewProject(newProjectName.trim());
+    const normalizedName = normalizeProjectName(newProjectName);
+    if (!normalizedName) return;
+    onNewProject(normalizedName);
     setNewProjectName('');
     setShowNewProjectDialog(false);
   };
@@ -213,7 +215,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
       setEditingProjectName('');
       return;
     }
-    const trimmed = editingProjectName.trim();
+    const trimmed = normalizeProjectName(editingProjectName);
     if (trimmed && trimmed !== project.projectName) {
       const updated = { ...project, projectName: trimmed, lastModified: Date.now() };
       await saveProject(updated);
@@ -290,7 +292,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
                 <button
                   onClick={handleCreateProject}
                   className="flex-1 bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 transition-colors"
-                  disabled={!newProjectName.trim()}
+                  disabled={!normalizeProjectName(newProjectName)}
                 >
                   Create
                 </button>

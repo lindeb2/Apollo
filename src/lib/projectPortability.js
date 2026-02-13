@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import { exportProjectJSON, importProjectJSON } from './db';
-import { sanitizeFilename } from '../utils/audio';
+import { normalizeProjectName } from '../utils/naming';
 
 /**
  * Project Import/Export
@@ -13,7 +13,8 @@ import { sanitizeFilename } from '../utils/audio';
  */
 export async function exportAsJSON(project) {
   const json = exportProjectJSON(project);
-  const filename = sanitizeFilename(project.projectName) + '_project.json';
+  const base = normalizeProjectName(project.projectName) || 'project';
+  const filename = `${base}_project.json`;
   
   const blob = new Blob([json], { type: 'application/json' });
   return { blob, filename };
@@ -57,7 +58,8 @@ export async function exportAsZIP(project, mediaMap) {
     compressionOptions: { level: 6 },
   });
   
-  const filename = sanitizeFilename(project.projectName) + '_project.zip';
+  const base = normalizeProjectName(project.projectName) || 'project';
+  const filename = `${base}_project.zip`;
   
   return { blob: zipBlob, filename };
 }

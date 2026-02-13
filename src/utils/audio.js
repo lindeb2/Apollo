@@ -114,18 +114,6 @@ export function equalPowerPan(pan) {
 }
 
 /**
- * Sanitize filename for export
- * Spec: ASCII only, lowercase, spaces → '_'
- */
-export function sanitizeFilename(name) {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_|_$/g, '');
-}
-
-/**
  * Convert milliseconds to seconds
  */
 export function msToSeconds(ms) {

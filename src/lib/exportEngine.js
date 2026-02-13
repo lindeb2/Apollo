@@ -2,7 +2,6 @@ import {
   volumeToGain,
   dbToGain,
   msToSeconds,
-  sanitizeFilename,
 } from '../utils/audio';
 import {
   SAMPLE_RATE,
@@ -140,7 +139,7 @@ function getAutoPannedChoirPanMap(project, choirTracks) {
 }
 
 function createFileName(projectBase, suffix = '') {
-  return `${sanitizeFilename(`${projectBase}${suffix}`)}.wav`;
+  return `${projectBase}${suffix}.wav`;
 }
 
 function withExportLayout(files) {
@@ -180,7 +179,13 @@ function withExportLayout(files) {
  * Main export function.
  * Returns array of `{ filename, relativePath, blob, presetId }`.
  */
-export async function exportProject(project, selectedPresets, audioBuffers, exportSettingsOverride = null) {
+export async function exportProject(
+  project,
+  selectedPresets,
+  audioBuffers,
+  exportSettingsOverride = null,
+  exportBaseName = null
+) {
   const presetIds = Array.isArray(selectedPresets)
     ? [...new Set(selectedPresets.filter((id) => VALID_PRESETS.has(id)))]
     : (VALID_PRESETS.has(selectedPresets) ? [selectedPresets] : []);
@@ -199,7 +204,7 @@ export async function exportProject(project, selectedPresets, audioBuffers, expo
   const instrumentTracks = allTracks.filter(isInstrumentTrack);
   const leadTracks = allTracks.filter(isLeadTrack);
   const choirTracks = allTracks.filter(isChoirTrack);
-  const projectBase = project.projectName || 'project';
+  const projectBase = exportBaseName || project.projectName || 'project';
   const files = [];
 
   for (const presetId of presetIds) {
@@ -422,7 +427,21 @@ export async function exportProject(project, selectedPresets, audioBuffers, expo
     }
   }
 
-  return withExportLayout(files);
+  const laidOutFiles = withExportLayout(files);
+  if (laidOutFiles.length === 1) {
+    const single = laidOutFiles[0];
+    const filename = `${projectBase}.wav`;
+    const segments = single.relativePath.split('/').filter(Boolean);
+    if (segments.length) {
+      segments[segments.length - 1] = filename;
+    }
+    return [{
+      ...single,
+      filename,
+      relativePath: segments.length ? segments.join('/') : filename,
+    }];
+  }
+  return laidOutFiles;
 }
 
 async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {}, panAdjustments = {}) {

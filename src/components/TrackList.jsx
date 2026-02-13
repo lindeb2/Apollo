@@ -3,6 +3,7 @@ import { Lock, Unlock, Volume2, VolumeX, Headphones, Mic, Music, Users, Waves, C
 import { TRACK_ROLES } from '../types/project';
 import { dbToVolume, volumeToDb } from '../utils/audio';
 import { AUTO_PAN_STRATEGIES } from '../utils/choirAutoPan';
+import { normalizeTrackName } from '../utils/naming';
 
 const TRACK_HEIGHT = 100;
 const LOCKED_TRACK_HEIGHT = 70;
@@ -341,8 +342,9 @@ function TrackList({
   };
 
   const handleNameChange = (trackId, newName) => {
-    if (newName.trim()) {
-      onUpdateTrack(trackId, { name: newName.trim() });
+    const normalizedName = normalizeTrackName(newName);
+    if (normalizedName) {
+      onUpdateTrack(trackId, { name: normalizedName });
     }
     setEditingName(null);
   };

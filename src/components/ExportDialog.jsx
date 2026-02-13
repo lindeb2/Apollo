@@ -7,6 +7,7 @@ import {
 } from '../lib/exportEngine';
 import { exportAsJSON, exportAsZIP, downloadFile } from '../lib/projectPortability';
 import { loadExportDirectoryHandle, saveExportDirectoryHandle } from '../lib/db';
+import { hasInvalidExportNameChars, normalizeExportName } from '../utils/naming';
 
 const AUDIO_EXPORT_SECTIONS = [
   {
@@ -111,6 +112,7 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
   const [isExporting, setIsExporting] = useState(false);
   const [progress, setProgress] = useState('');
   const [selectedPresetIds, setSelectedPresetIds] = useState([EXPORT_PRESETS.TUTTI]);
+  const [exportBaseName, setExportBaseName] = useState(project.projectName || 'project');
 
   const allPresetIds = useMemo(
     () => AUDIO_EXPORT_SECTIONS.flatMap((section) => section.presetIds),
@@ -136,6 +138,15 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
       alert('Select at least one audio export option.');
       return;
     }
+    const normalizedExportName = normalizeExportName(exportBaseName);
+    if (!normalizedExportName) {
+      alert('Export name cannot be empty.');
+      return;
+    }
+    if (hasInvalidExportNameChars(normalizedExportName)) {
+      alert('Export name cannot contain: \\ / : * ? " < > |');
+      return;
+    }
 
     setIsExporting(true);
     setProgress('Pick export folder...');
@@ -149,7 +160,8 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
         project,
         selectedPresetIds,
         audioBuffers,
-        project.exportSettings
+        project.exportSettings,
+        normalizedExportName
       );
 
       if (!files.length) {
@@ -230,6 +242,17 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
         <div className="flex-1 overflow-auto p-6">
           <div className="mb-6">
             <h3 className="text-lg font-semibold mb-3">Export Audio (WAV)</h3>
+            <div className="mb-3">
+              <label className="block text-xs text-gray-400 mb-1">Export name</label>
+              <input
+                type="text"
+                value={exportBaseName}
+                onChange={(e) => setExportBaseName(e.target.value)}
+                className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                placeholder="Export base name"
+                disabled={isExporting}
+              />
+            </div>
             <label className="flex items-center gap-2 bg-gray-900 rounded-lg p-3 mb-3">
               <input
                 type="checkbox"
