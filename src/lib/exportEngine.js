@@ -61,6 +61,12 @@ function clampPan(pan) {
   return Math.max(-100, Math.min(100, Number(pan) || 0));
 }
 
+function getLeftRemapMax(transformedPanRange) {
+  const control = Math.max(0, Math.min(200, Number(transformedPanRange) || 0));
+  // 0 -> -100 (hard left), 100 -> 0 (left half), 200 -> 100 (identity)
+  return control - 100;
+}
+
 function remapPanValue(value, oldMin, oldMax, newMin, newMax) {
   if (oldMax === oldMin) return (newMin + newMax) / 2;
   return newMin + ((value - oldMin) / (oldMax - oldMin)) * (newMax - newMin);
@@ -69,12 +75,13 @@ function remapPanValue(value, oldMin, oldMax, newMin, newMax) {
 function remapPansToSide(trackIds, basePanByTrackId, direction, transformedPanRange) {
   if (!trackIds.length) return {};
 
-  const range = Math.max(0, Math.min(100, Number(transformedPanRange) || 0));
+  const leftMax = getLeftRemapMax(transformedPanRange);
+  const rightMin = -leftMax;
   const oldValues = trackIds.map((trackId) => clampPan(basePanByTrackId[trackId]));
   const oldMin = Math.min(...oldValues);
   const oldMax = Math.max(...oldValues);
-  const newMin = direction === 'left' ? -range : 0;
-  const newMax = direction === 'left' ? 0 : range;
+  const newMin = direction === 'left' ? -100 : rightMin;
+  const newMax = direction === 'left' ? leftMax : 100;
   const fixedValue = direction === 'left' ? newMin : newMax;
 
   const mapped = {};
@@ -97,13 +104,18 @@ function buildPracticePanMap({
   transformedPanRange,
 }) {
   const trackIds = tracks.map((track) => track.id);
-  const rightIds = trackIds.filter((trackId) => trackId === targetTrackId);
   const leftIds = trackIds.filter((trackId) => trackId !== targetTrackId);
+  const leftMax = getLeftRemapMax(transformedPanRange);
+  const transformedCenterOnLeft = remapPanValue(0, -100, 100, -100, leftMax);
+  const targetPan = clampPan(-transformedCenterOnLeft);
 
-  return {
+  const panMap = {
     ...remapPansToSide(leftIds, basePanByTrackId, 'left', transformedPanRange),
-    ...remapPansToSide(rightIds, basePanByTrackId, 'right', transformedPanRange),
   };
+  if (trackIds.includes(targetTrackId)) {
+    panMap[targetTrackId] = clampPan(targetPan);
+  }
+  return panMap;
 }
 
 function buildPracticeGainMap({ tracks, targetTrackId, gainDb, attenuationDb }) {
@@ -201,9 +213,10 @@ export async function exportProject(
   });
 
   const allTracks = project.tracks || [];
-  const instrumentTracks = allTracks.filter(isInstrumentTrack);
-  const leadTracks = allTracks.filter(isLeadTrack);
-  const choirTracks = allTracks.filter(isChoirTrack);
+  const activeTracks = allTracks.filter((track) => !track.muted);
+  const instrumentTracks = activeTracks.filter(isInstrumentTrack);
+  const leadTracks = activeTracks.filter(isLeadTrack);
+  const choirTracks = activeTracks.filter(isChoirTrack);
   const projectBase = exportBaseName || project.projectName || 'project';
   const files = [];
 
@@ -215,13 +228,13 @@ export async function exportProject(
         subgroup: null,
         subgroupCount: 0,
         filename: createFileName(projectBase),
-        blob: await renderTracks(project, allTracks, audioBuffers),
+        blob: await renderTracks(project, activeTracks, audioBuffers),
       });
       continue;
     }
 
     if (presetId === EXPORT_PRESETS.ACAPELLA) {
-      const tracks = allTracks.filter((track) => isLeadTrack(track) || isChoirTrack(track));
+      const tracks = activeTracks.filter((track) => isLeadTrack(track) || isChoirTrack(track));
       files.push({
         presetId,
         branch: null,
@@ -234,7 +247,7 @@ export async function exportProject(
     }
 
     if (presetId === EXPORT_PRESETS.NO_LEAD) {
-      const tracks = allTracks.filter((track) => isInstrumentTrack(track) || isChoirTrack(track));
+      const tracks = activeTracks.filter((track) => isInstrumentTrack(track) || isChoirTrack(track));
       files.push({
         presetId,
         branch: null,
@@ -247,7 +260,7 @@ export async function exportProject(
     }
 
     if (presetId === EXPORT_PRESETS.NO_CHOIR) {
-      const tracks = allTracks.filter((track) => isInstrumentTrack(track) || isLeadTrack(track));
+      const tracks = activeTracks.filter((track) => isInstrumentTrack(track) || isLeadTrack(track));
       files.push({
         presetId,
         branch: null,
@@ -297,15 +310,15 @@ export async function exportProject(
 
     if (presetId === EXPORT_PRESETS.INSTRUMENT_PARTS) {
       for (const targetTrack of instrumentTracks) {
-        const basePanByTrackId = Object.fromEntries(allTracks.map((track) => [track.id, clampPan(track.pan)]));
+        const basePanByTrackId = Object.fromEntries(activeTracks.map((track) => [track.id, clampPan(track.pan)]));
         const panAdjustments = buildPracticePanMap({
-          tracks: allTracks,
+          tracks: activeTracks,
           targetTrackId: targetTrack.id,
           basePanByTrackId,
           transformedPanRange: exportSettings.transformedPanRange,
         });
         const gainAdjustments = buildPracticeGainMap({
-          tracks: allTracks,
+          tracks: activeTracks,
           targetTrackId: targetTrack.id,
           gainDb: exportSettings.gainDb,
           attenuationDb: exportSettings.attenuationDb,
@@ -316,7 +329,7 @@ export async function exportProject(
           subgroup: 'Instruments',
           subgroupCount: instrumentTracks.length,
           filename: createFileName(projectBase, `_${targetTrack.name}`),
-          blob: await renderTracks(project, allTracks, audioBuffers, gainAdjustments, panAdjustments),
+          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments),
         });
       }
       continue;
@@ -324,15 +337,15 @@ export async function exportProject(
 
     if (presetId === EXPORT_PRESETS.LEAD_PARTS) {
       for (const targetTrack of leadTracks) {
-        const basePanByTrackId = Object.fromEntries(allTracks.map((track) => [track.id, clampPan(track.pan)]));
+        const basePanByTrackId = Object.fromEntries(activeTracks.map((track) => [track.id, clampPan(track.pan)]));
         const panAdjustments = buildPracticePanMap({
-          tracks: allTracks,
+          tracks: activeTracks,
           targetTrackId: targetTrack.id,
           basePanByTrackId,
           transformedPanRange: exportSettings.transformedPanRange,
         });
         const gainAdjustments = buildPracticeGainMap({
-          tracks: allTracks,
+          tracks: activeTracks,
           targetTrackId: targetTrack.id,
           gainDb: exportSettings.gainDb,
           attenuationDb: exportSettings.attenuationDb,
@@ -343,7 +356,7 @@ export async function exportProject(
           subgroup: 'Leads',
           subgroupCount: leadTracks.length,
           filename: createFileName(projectBase, `_${targetTrack.name}`),
-          blob: await renderTracks(project, allTracks, audioBuffers, gainAdjustments, panAdjustments),
+          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments),
         });
       }
       continue;
@@ -353,17 +366,17 @@ export async function exportProject(
       for (const targetTrack of choirTracks) {
         const otherChoirTracks = choirTracks.filter((track) => track.id !== targetTrack.id);
         const autoPannedChoirMap = getAutoPannedChoirPanMap(project, otherChoirTracks);
-        const basePanByTrackId = Object.fromEntries(allTracks.map((track) => [track.id, clampPan(track.pan)]));
+        const basePanByTrackId = Object.fromEntries(activeTracks.map((track) => [track.id, clampPan(track.pan)]));
         Object.assign(basePanByTrackId, autoPannedChoirMap);
 
         const panAdjustments = buildPracticePanMap({
-          tracks: allTracks,
+          tracks: activeTracks,
           targetTrackId: targetTrack.id,
           basePanByTrackId,
           transformedPanRange: exportSettings.transformedPanRange,
         });
         const gainAdjustments = buildPracticeGainMap({
-          tracks: allTracks,
+          tracks: activeTracks,
           targetTrackId: targetTrack.id,
           gainDb: exportSettings.gainDb,
           attenuationDb: exportSettings.attenuationDb,
@@ -374,7 +387,7 @@ export async function exportProject(
           subgroup: 'Choir',
           subgroupCount: choirTracks.length,
           filename: createFileName(projectBase, `_${targetTrack.name}`),
-          blob: await renderTracks(project, allTracks, audioBuffers, gainAdjustments, panAdjustments),
+          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments),
         });
       }
       continue;
@@ -382,7 +395,7 @@ export async function exportProject(
 
     if (presetId === EXPORT_PRESETS.INSTRUMENT_PARTS_OMITTED) {
       for (const omittedTrack of instrumentTracks) {
-        const tracks = allTracks.filter((track) => track.id !== omittedTrack.id);
+        const tracks = activeTracks.filter((track) => track.id !== omittedTrack.id);
         files.push({
           presetId,
           branch: 'omitted',
@@ -397,7 +410,7 @@ export async function exportProject(
 
     if (presetId === EXPORT_PRESETS.LEAD_PARTS_OMITTED) {
       for (const omittedTrack of leadTracks) {
-        const tracks = allTracks.filter((track) => track.id !== omittedTrack.id);
+        const tracks = activeTracks.filter((track) => track.id !== omittedTrack.id);
         files.push({
           presetId,
           branch: 'omitted',
@@ -412,7 +425,7 @@ export async function exportProject(
 
     if (presetId === EXPORT_PRESETS.CHOIR_PARTS_OMITTED) {
       for (const omittedTrack of choirTracks) {
-        const tracks = allTracks.filter((track) => track.id !== omittedTrack.id);
+        const tracks = activeTracks.filter((track) => track.id !== omittedTrack.id);
         const remainingChoirTracks = choirTracks.filter((track) => track.id !== omittedTrack.id);
         const autoPannedChoirMap = getAutoPannedChoirPanMap(project, remainingChoirTracks);
         files.push({

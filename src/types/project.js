@@ -37,7 +37,7 @@ export function normalizeExportSettings(settings = {}) {
     ? Math.max(0, Math.min(24, attenuationDb))
     : DEFAULT_EXPORT_SETTINGS.attenuationDb;
   next.transformedPanRange = Number.isFinite(transformedPanRange)
-    ? Math.max(0, Math.min(100, transformedPanRange))
+    ? Math.max(0, Math.min(200, transformedPanRange))
     : DEFAULT_EXPORT_SETTINGS.transformedPanRange;
   return next;
 }
@@ -93,7 +93,7 @@ export function normalizeExportSettings(settings = {}) {
  * @property {Object} exportSettings - Export configuration
  * @property {number} exportSettings.gainDb - Practice target gain boost in dB
  * @property {number} exportSettings.attenuationDb - Practice non-target attenuation in dB
- * @property {number} exportSettings.transformedPanRange - Pan remap output range (0-100)
+ * @property {number} exportSettings.transformedPanRange - Pan transform range control (0-200)
  * @property {Array} trackTree - Hierarchy nodes for groups/tracks
  * @property {Track[]} tracks - Array of tracks
  * @property {Loop} loop - Loop configuration
