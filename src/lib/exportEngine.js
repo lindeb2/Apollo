@@ -3,6 +3,7 @@ import {
   dbToGain,
   msToSeconds,
 } from '../utils/audio';
+import lamejs from 'lamejs';
 import {
   SAMPLE_RATE,
   TRACK_ROLES,
@@ -150,8 +151,8 @@ function getAutoPannedChoirPanMap(project, choirTracks) {
   return panMap;
 }
 
-function createFileName(projectBase, suffix = '') {
-  return `${projectBase}${suffix}.wav`;
+function createFileName(projectBase, suffix = '', format = 'wav') {
+  return `${projectBase}${suffix}.${format}`;
 }
 
 function withExportLayout(files) {
@@ -196,8 +197,10 @@ export async function exportProject(
   selectedPresets,
   audioBuffers,
   exportSettingsOverride = null,
-  exportBaseName = null
+  exportBaseName = null,
+  format = 'wav'
 ) {
+  const outputFormat = format === 'mp3' ? 'mp3' : 'wav';
   const presetIds = Array.isArray(selectedPresets)
     ? [...new Set(selectedPresets.filter((id) => VALID_PRESETS.has(id)))]
     : (VALID_PRESETS.has(selectedPresets) ? [selectedPresets] : []);
@@ -227,8 +230,8 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase),
-        blob: await renderTracks(project, activeTracks, audioBuffers),
+        filename: createFileName(projectBase, '', outputFormat),
+        blob: await renderTracks(project, activeTracks, audioBuffers, {}, {}, outputFormat),
       });
       continue;
     }
@@ -240,8 +243,8 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, '_Acapella'),
-        blob: await renderTracks(project, tracks, audioBuffers),
+        filename: createFileName(projectBase, '_Acapella', outputFormat),
+        blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat),
       });
       continue;
     }
@@ -253,8 +256,8 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, '_NoLead'),
-        blob: await renderTracks(project, tracks, audioBuffers),
+        filename: createFileName(projectBase, '_NoLead', outputFormat),
+        blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat),
       });
       continue;
     }
@@ -266,8 +269,8 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, '_NoChoir'),
-        blob: await renderTracks(project, tracks, audioBuffers),
+        filename: createFileName(projectBase, '_NoChoir', outputFormat),
+        blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat),
       });
       continue;
     }
@@ -278,8 +281,8 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, '_Instrumental'),
-        blob: await renderTracks(project, instrumentTracks, audioBuffers),
+        filename: createFileName(projectBase, '_Instrumental', outputFormat),
+        blob: await renderTracks(project, instrumentTracks, audioBuffers, {}, {}, outputFormat),
       });
       continue;
     }
@@ -290,8 +293,8 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, '_Leads'),
-        blob: await renderTracks(project, leadTracks, audioBuffers),
+        filename: createFileName(projectBase, '_Leads', outputFormat),
+        blob: await renderTracks(project, leadTracks, audioBuffers, {}, {}, outputFormat),
       });
       continue;
     }
@@ -302,8 +305,8 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, '_Choir'),
-        blob: await renderTracks(project, choirTracks, audioBuffers),
+        filename: createFileName(projectBase, '_Choir', outputFormat),
+        blob: await renderTracks(project, choirTracks, audioBuffers, {}, {}, outputFormat),
       });
       continue;
     }
@@ -328,8 +331,8 @@ export async function exportProject(
           branch: 'normal',
           subgroup: 'Instruments',
           subgroupCount: instrumentTracks.length,
-          filename: createFileName(projectBase, `_${targetTrack.name}`),
-          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments),
+          filename: createFileName(projectBase, `_${targetTrack.name}`, outputFormat),
+          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat),
         });
       }
       continue;
@@ -355,8 +358,8 @@ export async function exportProject(
           branch: 'normal',
           subgroup: 'Leads',
           subgroupCount: leadTracks.length,
-          filename: createFileName(projectBase, `_${targetTrack.name}`),
-          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments),
+          filename: createFileName(projectBase, `_${targetTrack.name}`, outputFormat),
+          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat),
         });
       }
       continue;
@@ -386,8 +389,8 @@ export async function exportProject(
           branch: 'normal',
           subgroup: 'Choir',
           subgroupCount: choirTracks.length,
-          filename: createFileName(projectBase, `_${targetTrack.name}`),
-          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments),
+          filename: createFileName(projectBase, `_${targetTrack.name}`, outputFormat),
+          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat),
         });
       }
       continue;
@@ -401,8 +404,8 @@ export async function exportProject(
           branch: 'omitted',
           subgroup: 'Instruments',
           subgroupCount: instrumentTracks.length,
-          filename: createFileName(projectBase, `_${omittedTrack.name}_Omitted`),
-          blob: await renderTracks(project, tracks, audioBuffers),
+          filename: createFileName(projectBase, `_${omittedTrack.name}_Omitted`, outputFormat),
+          blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat),
         });
       }
       continue;
@@ -416,8 +419,8 @@ export async function exportProject(
           branch: 'omitted',
           subgroup: 'Leads',
           subgroupCount: leadTracks.length,
-          filename: createFileName(projectBase, `_${omittedTrack.name}_Omitted`),
-          blob: await renderTracks(project, tracks, audioBuffers),
+          filename: createFileName(projectBase, `_${omittedTrack.name}_Omitted`, outputFormat),
+          blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat),
         });
       }
       continue;
@@ -433,8 +436,8 @@ export async function exportProject(
           branch: 'omitted',
           subgroup: 'Choir',
           subgroupCount: choirTracks.length,
-          filename: createFileName(projectBase, `_${omittedTrack.name}_Omitted`),
-          blob: await renderTracks(project, tracks, audioBuffers, {}, autoPannedChoirMap),
+          filename: createFileName(projectBase, `_${omittedTrack.name}_Omitted`, outputFormat),
+          blob: await renderTracks(project, tracks, audioBuffers, {}, autoPannedChoirMap, outputFormat),
         });
       }
     }
@@ -443,7 +446,7 @@ export async function exportProject(
   const laidOutFiles = withExportLayout(files);
   if (laidOutFiles.length === 1) {
     const single = laidOutFiles[0];
-    const filename = `${projectBase}.wav`;
+    const filename = `${projectBase}.${outputFormat}`;
     const segments = single.relativePath.split('/').filter(Boolean);
     if (segments.length) {
       segments[segments.length - 1] = filename;
@@ -457,7 +460,7 @@ export async function exportProject(
   return laidOutFiles;
 }
 
-async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {}, panAdjustments = {}) {
+async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {}, panAdjustments = {}, format = 'wav') {
   let maxDurationMs = 0;
   for (const track of tracks) {
     for (const clip of track.clips) {
@@ -512,7 +515,60 @@ async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {},
   }
 
   const renderedBuffer = await offlineContext.startRendering();
-  return audioBufferToWav(renderedBuffer);
+  return audioBufferToBlob(renderedBuffer, format === 'mp3' ? 'mp3' : 'wav');
+}
+
+function audioBufferToBlob(audioBuffer, format = 'wav') {
+  if (format === 'mp3') {
+    return audioBufferToMp3(audioBuffer);
+  }
+  return audioBufferToWav(audioBuffer);
+}
+
+function floatTo16BitPCM(floatArray) {
+  const pcm = new Int16Array(floatArray.length);
+  for (let i = 0; i < floatArray.length; i += 1) {
+    const sample = Math.max(-1, Math.min(1, floatArray[i]));
+    pcm[i] = sample < 0 ? sample * 32768 : sample * 32767;
+  }
+  return pcm;
+}
+
+function audioBufferToMp3(audioBuffer, bitrateKbps = 192) {
+  const channelCount = Math.min(2, audioBuffer.numberOfChannels);
+  const sampleRate = audioBuffer.sampleRate;
+  const encoder = new lamejs.Mp3Encoder(channelCount, sampleRate, bitrateKbps);
+  const blockSize = 1152;
+  const mp3Chunks = [];
+
+  if (channelCount === 1) {
+    const mono = floatTo16BitPCM(audioBuffer.getChannelData(0));
+    for (let i = 0; i < mono.length; i += blockSize) {
+      const mp3buf = encoder.encodeBuffer(mono.subarray(i, i + blockSize));
+      if (mp3buf.length > 0) {
+        mp3Chunks.push(new Uint8Array(mp3buf));
+      }
+    }
+  } else {
+    const left = floatTo16BitPCM(audioBuffer.getChannelData(0));
+    const right = floatTo16BitPCM(audioBuffer.getChannelData(1));
+    for (let i = 0; i < left.length; i += blockSize) {
+      const mp3buf = encoder.encodeBuffer(
+        left.subarray(i, i + blockSize),
+        right.subarray(i, i + blockSize)
+      );
+      if (mp3buf.length > 0) {
+        mp3Chunks.push(new Uint8Array(mp3buf));
+      }
+    }
+  }
+
+  const end = encoder.flush();
+  if (end.length > 0) {
+    mp3Chunks.push(new Uint8Array(end));
+  }
+
+  return new Blob(mp3Chunks, { type: 'audio/mpeg' });
 }
 
 function audioBufferToWav(audioBuffer) {

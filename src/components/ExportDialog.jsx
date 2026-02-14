@@ -86,6 +86,11 @@ async function pickExportDirectory(projectId) {
     }
   }
 
+  const canWrite = await hasWritePermission(directoryHandle);
+  if (!canWrite) {
+    throw new Error('No write permission for selected export folder.');
+  }
+
   try {
     await saveExportDirectoryHandle(`project:${projectId}`, directoryHandle);
     await saveExportDirectoryHandle('global', directoryHandle);
@@ -113,6 +118,7 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
   const [progress, setProgress] = useState('');
   const [selectedPresetIds, setSelectedPresetIds] = useState([EXPORT_PRESETS.TUTTI]);
   const [exportBaseName, setExportBaseName] = useState(project.projectName || 'project');
+  const [audioFormat, setAudioFormat] = useState('wav');
 
   const allPresetIds = useMemo(
     () => AUDIO_EXPORT_SECTIONS.flatMap((section) => section.presetIds),
@@ -161,7 +167,8 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
         selectedPresetIds,
         audioBuffers,
         project.exportSettings,
-        normalizedExportName
+        normalizedExportName,
+        audioFormat
       );
 
       if (!files.length) {
@@ -241,7 +248,7 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
 
         <div className="flex-1 overflow-auto p-6">
           <div className="mb-6">
-            <h3 className="text-lg font-semibold mb-3">Export Audio (WAV)</h3>
+            <h3 className="text-lg font-semibold mb-3">Export Audio</h3>
             <div className="mb-3">
               <label className="block text-xs text-gray-400 mb-1">Export name</label>
               <input
@@ -252,6 +259,18 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
                 placeholder="Export base name"
                 disabled={isExporting}
               />
+            </div>
+            <div className="mb-3">
+              <label className="block text-xs text-gray-400 mb-1">Audio format</label>
+              <select
+                value={audioFormat}
+                onChange={(e) => setAudioFormat(e.target.value === 'mp3' ? 'mp3' : 'wav')}
+                className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                disabled={isExporting}
+              >
+                <option value="wav">WAV</option>
+                <option value="mp3">MP3</option>
+              </select>
             </div>
             <label className="flex items-center gap-2 bg-gray-900 rounded-lg p-3 mb-3">
               <input
@@ -300,7 +319,7 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
               <span>
                 {isExporting
                   ? progress
-                  : `Export Audio (${selectedPresetIds.length} selected)`}
+                  : `Export ${audioFormat.toUpperCase()} (${selectedPresetIds.length} selected)`}
               </span>
             </button>
           </div>

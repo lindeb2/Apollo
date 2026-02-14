@@ -9,15 +9,16 @@
     "test": "vitest"
   },
   "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "zustand": "^4.5.0",
     "dexie": "^4.0.1",
     "dexie-react-hooks": "^1.1.7",
-    "wavesurfer.js": "^7.7.3",
+    "jszip": "^3.10.1",
+    "lamejs": "^1.2.1",
     "lucide-react": "^0.263.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "uuid": "^9.0.1",
-    "jszip": "^3.10.1"
+    "wavesurfer.js": "^7.7.3",
+    "zustand": "^4.5.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.1",
