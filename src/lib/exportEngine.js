@@ -30,10 +30,10 @@ export const EXPORT_PRESETS = {
 
 export const EXPORT_PRESET_DEFINITIONS = [
   { id: EXPORT_PRESETS.TUTTI, label: 'Tutti', description: 'All tracks, no adjustments' },
-  { id: EXPORT_PRESETS.ACAPELLA, label: 'Acapella', description: 'Lead + choir' },
+  { id: EXPORT_PRESETS.ACAPELLA, label: 'No Instruments', description: 'Lead + choir' },
   { id: EXPORT_PRESETS.NO_LEAD, label: 'No Lead', description: 'Instrument + choir' },
   { id: EXPORT_PRESETS.NO_CHOIR, label: 'No Choir', description: 'Instrument + lead' },
-  { id: EXPORT_PRESETS.INSTRUMENTAL, label: 'Instrumental', description: 'Instrument only' },
+  { id: EXPORT_PRESETS.INSTRUMENTAL, label: 'Instruments Only', description: 'Instrument only' },
   { id: EXPORT_PRESETS.LEAD_ONLY, label: 'Lead Only', description: 'Lead only' },
   { id: EXPORT_PRESETS.CHOIR_ONLY, label: 'Choir Only', description: 'Choir only' },
   { id: EXPORT_PRESETS.INSTRUMENT_PARTS, label: 'Instruments Parts', description: 'Practice mix per instrument track' },
@@ -151,8 +151,11 @@ function getAutoPannedChoirPanMap(project, choirTracks) {
   return panMap;
 }
 
-function createFileName(projectBase, suffix = '', format = 'wav') {
-  return `${projectBase}${suffix}.${format}`;
+function createFileName(projectBase, label = '', format = 'wav') {
+  const cleanLabel = (label || '').trim();
+  return cleanLabel
+    ? `${projectBase} - ${cleanLabel}.${format}`
+    : `${projectBase}.${format}`;
 }
 
 function withExportLayout(files) {
@@ -230,7 +233,7 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, '', outputFormat),
+        filename: createFileName(projectBase, 'All', outputFormat),
         blob: await renderTracks(project, activeTracks, audioBuffers, {}, {}, outputFormat),
       });
       continue;
@@ -243,7 +246,7 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, '_Acapella', outputFormat),
+        filename: createFileName(projectBase, 'Lead and Choir', outputFormat),
         blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat),
       });
       continue;
@@ -256,7 +259,7 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, '_NoLead', outputFormat),
+        filename: createFileName(projectBase, 'No Lead', outputFormat),
         blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat),
       });
       continue;
@@ -269,7 +272,7 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, '_NoChoir', outputFormat),
+        filename: createFileName(projectBase, 'No Choir', outputFormat),
         blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat),
       });
       continue;
@@ -281,7 +284,7 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, '_Instrumental', outputFormat),
+        filename: createFileName(projectBase, 'Instruments Only', outputFormat),
         blob: await renderTracks(project, instrumentTracks, audioBuffers, {}, {}, outputFormat),
       });
       continue;
@@ -293,7 +296,7 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, '_Leads', outputFormat),
+        filename: createFileName(projectBase, 'Leads Only', outputFormat),
         blob: await renderTracks(project, leadTracks, audioBuffers, {}, {}, outputFormat),
       });
       continue;
@@ -305,7 +308,7 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, '_Choir', outputFormat),
+        filename: createFileName(projectBase, 'Choir Only', outputFormat),
         blob: await renderTracks(project, choirTracks, audioBuffers, {}, {}, outputFormat),
       });
       continue;
@@ -331,7 +334,7 @@ export async function exportProject(
           branch: 'normal',
           subgroup: 'Instruments',
           subgroupCount: instrumentTracks.length,
-          filename: createFileName(projectBase, `_${targetTrack.name}`, outputFormat),
+          filename: createFileName(projectBase, targetTrack.name, outputFormat),
           blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat),
         });
       }
@@ -358,7 +361,7 @@ export async function exportProject(
           branch: 'normal',
           subgroup: 'Leads',
           subgroupCount: leadTracks.length,
-          filename: createFileName(projectBase, `_${targetTrack.name}`, outputFormat),
+          filename: createFileName(projectBase, targetTrack.name, outputFormat),
           blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat),
         });
       }
@@ -389,7 +392,7 @@ export async function exportProject(
           branch: 'normal',
           subgroup: 'Choir',
           subgroupCount: choirTracks.length,
-          filename: createFileName(projectBase, `_${targetTrack.name}`, outputFormat),
+          filename: createFileName(projectBase, targetTrack.name, outputFormat),
           blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat),
         });
       }
@@ -404,7 +407,7 @@ export async function exportProject(
           branch: 'omitted',
           subgroup: 'Instruments',
           subgroupCount: instrumentTracks.length,
-          filename: createFileName(projectBase, `_${omittedTrack.name}_Omitted`, outputFormat),
+          filename: createFileName(projectBase, `${omittedTrack.name} Omitted`, outputFormat),
           blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat),
         });
       }
@@ -419,7 +422,7 @@ export async function exportProject(
           branch: 'omitted',
           subgroup: 'Leads',
           subgroupCount: leadTracks.length,
-          filename: createFileName(projectBase, `_${omittedTrack.name}_Omitted`, outputFormat),
+          filename: createFileName(projectBase, `${omittedTrack.name} Omitted`, outputFormat),
           blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat),
         });
       }
@@ -436,28 +439,14 @@ export async function exportProject(
           branch: 'omitted',
           subgroup: 'Choir',
           subgroupCount: choirTracks.length,
-          filename: createFileName(projectBase, `_${omittedTrack.name}_Omitted`, outputFormat),
+          filename: createFileName(projectBase, `${omittedTrack.name} Omitted`, outputFormat),
           blob: await renderTracks(project, tracks, audioBuffers, {}, autoPannedChoirMap, outputFormat),
         });
       }
     }
   }
 
-  const laidOutFiles = withExportLayout(files);
-  if (laidOutFiles.length === 1) {
-    const single = laidOutFiles[0];
-    const filename = `${projectBase}.${outputFormat}`;
-    const segments = single.relativePath.split('/').filter(Boolean);
-    if (segments.length) {
-      segments[segments.length - 1] = filename;
-    }
-    return [{
-      ...single,
-      filename,
-      relativePath: segments.length ? segments.join('/') : filename,
-    }];
-  }
-  return laidOutFiles;
+  return withExportLayout(files);
 }
 
 async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {}, panAdjustments = {}, format = 'wav') {
