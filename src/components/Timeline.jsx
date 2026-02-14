@@ -10,6 +10,7 @@ import {
 import { audioManager } from '../lib/audioManager';
 import Waveform from './Waveform';
 import { calculateGlobalPeakAmplitude } from '../utils/waveformUtils';
+import { getTrackHeight } from '../utils/trackTree';
 import { 
   constrainClipMove, 
   constrainCropStart, 
@@ -18,20 +19,15 @@ import {
   findSafePosition 
 } from '../utils/clipCollision';
 
-const TRACK_HEIGHT = 100;
-const LOCKED_TRACK_HEIGHT = 70;
 const TIMELINE_VIEWPORT_WIDTH = 1920; // Default viewport width (updated dynamically)
 const MIN_VISIBLE_DURATION_MS = 8000; // Minimum duration to show when zoomed out
 const MAX_ZOOM_VISIBLE_MS = 100; // At max zoom, show 100ms across viewport
 
-// Helper to get track height based on locked state
-const getTrackHeight = (track) => track.locked ? LOCKED_TRACK_HEIGHT : TRACK_HEIGHT;
-
-// Helper to calculate cumulative Y position for a track
-const getTrackYPosition = (tracks, trackIndex) => {
+// Helper to calculate cumulative Y position for a row index
+const getTrackYPosition = (rows, rowIndex) => {
   let yPosition = 0;
-  for (let i = 0; i < trackIndex; i++) {
-    yPosition += getTrackHeight(tracks[i]);
+  for (let i = 0; i < rowIndex; i++) {
+    yPosition += rows[i].height;
   }
   return yPosition;
 };
@@ -42,6 +38,7 @@ const getTrackYPosition = (tracks, trackIndex) => {
  */
 function Timeline({ 
   project, 
+  rows = [],
   currentTimeMs, 
   isPlaying,
   isRecording,
@@ -69,6 +66,7 @@ function Timeline({
   const [clipboardClip, setClipboardClip] = useState(null);
   const [rulerDragState, setRulerDragState] = useState(null);
   const [loopMarkerDragState, setLoopMarkerDragState] = useState(null);
+  const rightClickDragRef = useRef(false);
   const prevProjectDurationRef = useRef(null);
   const shouldCenterOnPlayheadAfterZoomRef = useRef(false);
   const [containerWidth, setContainerWidth] = useState(TIMELINE_VIEWPORT_WIDTH);
@@ -141,8 +139,18 @@ function Timeline({
     return () => clearInterval(interval);
   }, [project, loadedClipIds]);
 
-  // Calculate total timeline height based on all track heights
-  const totalTimelineHeight = project.tracks.reduce((sum, track) => sum + getTrackHeight(track), 0);
+  const timelineRows = rows && rows.length
+    ? rows
+    : (project.tracks || []).map((track) => ({
+      kind: 'track',
+      trackId: track.id,
+      track,
+      depth: 0,
+      height: getTrackHeight(track),
+    }));
+
+  // Calculate total timeline height based on rendered rows
+  const totalTimelineHeight = timelineRows.reduce((sum, row) => sum + row.height, 0);
 
   // Calculate total timeline duration (in ms) based on furthest clip endpoint
   const rawProjectDurationMs = project.tracks.reduce((max, track) => {
@@ -308,6 +316,10 @@ function Timeline({
     e.preventDefault();
     e.stopPropagation();
     if (track.locked) return;
+    if (rightClickDragRef.current) {
+      rightClickDragRef.current = false;
+      return;
+    }
     onUpdateClip(track.id, clip.id, { muted: !clip.muted }, 'update');
   };
 
@@ -435,7 +447,6 @@ function Timeline({
 
     const handleMouseUp = () => {
       setDragState(null);
-      rightClickDragRef.current = false;
     };
 
     window.addEventListener('mousemove', handleMouseMove);
@@ -558,17 +569,19 @@ function Timeline({
 
       if (e.code === 'ArrowUp' || e.code === 'ArrowDown') {
         e.preventDefault();
-        const tracks = project.tracks;
-        if (!tracks.length) return;
-        const currentIndex = tracks.findIndex(t => t.id === selectedTrackId);
+        const visibleTrackIds = timelineRows
+          .filter((row) => row.kind === 'track')
+          .map((row) => row.trackId);
+        if (!visibleTrackIds.length) return;
+        const currentIndex = visibleTrackIds.findIndex((id) => id === selectedTrackId);
         const nextIndex =
           currentIndex === -1
             ? 0
             : Math.min(
-                tracks.length - 1,
+                visibleTrackIds.length - 1,
                 Math.max(0, currentIndex + (e.code === 'ArrowDown' ? 1 : -1))
               );
-        const nextTrackId = tracks[nextIndex]?.id;
+        const nextTrackId = visibleTrackIds[nextIndex];
         if (nextTrackId) {
           onSelectTrack(nextTrackId);
         }
@@ -631,7 +644,7 @@ function Timeline({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [shortcutsEnabled, deleteClipShortcutEnabled, selectedClipId, selectedTrackId, clipboardClip, currentTimeMs, project.tracks, onUpdateClip]);
+  }, [shortcutsEnabled, deleteClipShortcutEnabled, selectedClipId, selectedTrackId, clipboardClip, currentTimeMs, project.tracks, onUpdateClip, timelineRows]);
 
   const handleContextMenu = (e) => {
     e.preventDefault();
@@ -1162,29 +1175,43 @@ function Timeline({
                   left: `${currentTimeMs * pixelsPerMs}px`,
                 }}
               />
-              {project.tracks.map((track, trackIndex) => {
-                const trackHeight = getTrackHeight(track);
-                const trackY = getTrackYPosition(project.tracks, trackIndex);
+              {timelineRows.map((row, rowIndex) => {
+                const trackY = getTrackYPosition(timelineRows, rowIndex);
+                if (row.kind === 'group') {
+                  return (
+                    <div
+                      key={row.nodeId}
+                      className="border-b border-gray-700 bg-gray-900/80"
+                      style={{
+                        height: `${row.height}px`,
+                        top: `${trackY}px`,
+                        position: 'absolute',
+                        width: '100%',
+                      }}
+                    />
+                  );
+                }
+
+                const track = row.track;
+                const trackHeight = row.height;
 
                 return (
                   <div
                     key={track.id}
                     className={`border-b border-gray-700 relative ${track.locked ? 'bg-gray-850' : ''}`}
-                    style={{ 
+                    style={{
                       height: `${trackHeight}px`,
                       top: `${trackY}px`,
                       position: 'absolute',
                       width: '100%'
                     }}
                   >
-                    {/* Locked track label */}
-                  {track.locked && (
-                    <div className="absolute inset-y-0 left-3 right-3 flex items-center text-4xl text-gray-200 font-semibold pointer-events-none z-10">
-                      <span className="sticky left-3">{track.name}</span>
-                    </div>
-                  )}
+                    {track.locked && (
+                      <div className="absolute inset-y-0 left-3 right-3 flex items-center text-4xl text-gray-200 font-semibold pointer-events-none z-10">
+                        <span className="sticky left-3">{track.name}</span>
+                      </div>
+                    )}
 
-                    {/* Clips */}
                     {track.clips.map(clip => {
                       const clipDurationMs = clip.cropEndMs - clip.cropStartMs;
                       const clipWidthPx = clipDurationMs * pixelsPerMs;
@@ -1207,8 +1234,8 @@ function Timeline({
                           className={`absolute rounded overflow-hidden ${
                             track.locked ? 'cursor-not-allowed opacity-50' : ''
                           } ${
-                            selectedClipId === clip.id 
-                              ? 'ring-2 ring-blue-500' 
+                            selectedClipId === clip.id
+                              ? 'ring-2 ring-blue-500'
                               : 'hover:ring-2 hover:ring-gray-500'
                           }`}
                           style={{
@@ -1224,17 +1251,15 @@ function Timeline({
                           onMouseDown={(e) => handleClipMouseDown(e, clip, track)}
                           onContextMenu={(e) => handleClipRightClick(e, clip, track)}
                         >
-                          {/* Middle area with move cursor */}
                           {!track.locked && (
-                            <div 
+                            <div
                               className="absolute inset-0 cursor-move"
-                              style={{ 
+                              style={{
                                 pointerEvents: 'none',
                                 zIndex: 1,
                               }}
                             />
                           )}
-                          {/* Waveform - now shown for locked tracks too */}
                           {audioBuffer && (
                             <Waveform
                               audioBuffer={audioBuffer}
@@ -1248,7 +1273,6 @@ function Timeline({
                             />
                           )}
 
-                          {/* Clip Gain/Mute Label - hidden for locked tracks to save space */}
                           {!track.locked && labelFits && (clip.muted || Math.abs(clip.gainDb) >= 0.1) && (
                             <div className="absolute top-1 left-0 right-0 text-xs font-medium pointer-events-none">
                               <span
@@ -1263,20 +1287,19 @@ function Timeline({
                             </div>
                           )}
 
-                          {/* Resize Handles - wider invisible hover zones with visible indicators */}
                           {!track.locked && (
                             <>
-                              <div 
+                              <div
                                 className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize group"
-                                style={{ 
+                                style={{
                                   zIndex: 10,
                                 }}
                               >
                                 <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-400 opacity-0 group-hover:opacity-70 transition-opacity"></div>
                               </div>
-                              <div 
+                              <div
                                 className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize group"
-                                style={{ 
+                                style={{
                                   zIndex: 10,
                                 }}
                               >
@@ -1288,7 +1311,6 @@ function Timeline({
                       );
                     })}
 
-                    {/* Recording Clip - show in real-time during recording */}
                     {isRecording && recordingSegments && recordingSegments.length > 0 && selectedTrackId === track.id && (() => {
                       const currentSegment = recordingSegments[recordingSegments.length - 1];
                       const recordingStartMs = currentSegment.startTimeMs;

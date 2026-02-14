@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { saveProject, saveUndoAction, loadUndoHistory } from '../lib/db';
 import { createEmptyProject, normalizeExportSettings } from '../types/project';
 import { normalizeAutoPanSettings, normalizeProjectAutoPan } from '../utils/choirAutoPan';
+import { normalizeTrackTree, reorderTracksByTree } from '../utils/trackTree';
 
 /**
  * ChoirMaster Zustand Store
@@ -69,7 +70,7 @@ const useStore = create((set, get) => ({
       // Ignore invalid settings
     }
 
-    const project = createEmptyProject(name, autoPan, exportSettings);
+    const project = normalizeTrackTree(createEmptyProject(name, autoPan, exportSettings));
     set({
       project,
       currentProjectId: project.projectId,
@@ -86,10 +87,10 @@ const useStore = create((set, get) => ({
    * Load existing project
    */
   loadProject: async (projectData) => {
-    const normalizedProject = normalizeProjectAutoPan({
+    const normalizedProject = reorderTracksByTree(normalizeTrackTree(normalizeProjectAutoPan({
       ...projectData,
       exportSettings: normalizeExportSettings(projectData.exportSettings),
-    });
+    })));
     // Load undo history
     const undoStack = await loadUndoHistory(projectData.projectId);
     const { selectedTrackByProjectId } = get();

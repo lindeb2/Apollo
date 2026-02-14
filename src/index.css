@@ -11,6 +11,11 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+body.row-drag-cursor,
+body.row-drag-cursor * {
+  cursor: grabbing !important;
+}
+
 * {
   box-sizing: border-box;
 }

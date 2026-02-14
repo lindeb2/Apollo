@@ -14,6 +14,20 @@ import { AUTO_PAN_STRATEGIES, applyChoirAutoPanToProject } from '../utils/choirA
 import useKeyboardShortcuts from '../utils/useKeyboardShortcuts';
 import { processRecordingOverwrites } from '../utils/clipCollision';
 import { normalizeProjectName } from '../utils/naming';
+import {
+  attachTrackNode,
+  createGroupNode,
+  deleteGroupPromoteChildren,
+  getTrackNodeByTrackId,
+  getVisibleTimelineRows,
+  getVisibleTrackIds,
+  moveTrackTreeNode,
+  normalizeTrackTree,
+  removeTrackNode,
+  renameGroupNode,
+  reorderTracksByTree,
+  toggleGroupCollapsed,
+} from '../utils/trackTree';
 
 function Editor({ onBackToDashboard }) {
   const {
@@ -140,16 +154,17 @@ function Editor({ onBackToDashboard }) {
 
   useEffect(() => {
     if (!project) return;
-    if (!project.tracks || project.tracks.length === 0) {
+    const visibleTrackIds = getVisibleTrackIds(project);
+    if (!project.tracks || project.tracks.length === 0 || visibleTrackIds.length === 0) {
       if (selectedTrackId !== null) {
         selectTrack(null);
       }
       return;
     }
 
-    const hasSelected = project.tracks.some(track => track.id === selectedTrackId);
+    const hasSelected = visibleTrackIds.includes(selectedTrackId);
     if (!hasSelected) {
-      selectTrack(project.tracks[0].id);
+      selectTrack(visibleTrackIds[0]);
     }
   }, [project, selectedTrackId, selectTrack]);
 
@@ -395,6 +410,11 @@ function Editor({ onBackToDashboard }) {
     );
   }
 
+  const treeProject = normalizeTrackTree(project);
+  const timelineRows = getVisibleTimelineRows(treeProject);
+  const visibleTrackIds = timelineRows
+    .filter((row) => row.kind === 'track')
+    .map((row) => row.trackId);
   const hasNoTracks = !project.tracks || project.tracks.length === 0;
 
   useEffect(() => {
@@ -762,10 +782,17 @@ function Editor({ onBackToDashboard }) {
       }
     }
 
-    updateProject((proj) => ({
-      ...proj,
-      tracks: [...proj.tracks, ...newTracks],
-    }), 'Import audio files');
+    updateProject((proj) => {
+      let nextProject = {
+        ...proj,
+        tracks: [...proj.tracks, ...newTracks],
+      };
+      nextProject = normalizeTrackTree(nextProject);
+      for (const track of newTracks) {
+        nextProject = attachTrackNode(nextProject, track.id);
+      }
+      return reorderTracksByTree(nextProject);
+    }, 'Import audio files');
 
     console.log(`Import complete: ${newTracks.length} tracks added`);
   };
@@ -886,20 +913,27 @@ function Editor({ onBackToDashboard }) {
   const handleReorderTrack = (trackId, insertIndex) => {
     let panUpdates = null;
     updateProject((proj) => {
-      const fromIndex = proj.tracks.findIndex((track) => track.id === trackId);
-      if (fromIndex < 0 || insertIndex < 0 || insertIndex >= proj.tracks.length) {
+      const rowTracks = getVisibleTimelineRows(proj)
+        .filter((row) => row.kind === 'track')
+        .map((row) => row.trackId);
+      const fromIndex = rowTracks.findIndex((id) => id === trackId);
+      if (fromIndex < 0 || insertIndex < 0 || insertIndex >= rowTracks.length) {
         return proj;
       }
-      const nextTracks = [...proj.tracks];
-      const [moved] = nextTracks.splice(fromIndex, 1);
-      nextTracks.splice(insertIndex, 0, moved);
+      const movingNode = getTrackNodeByTrackId(proj, trackId);
+      const targetTrackId = rowTracks[insertIndex];
+      const targetNode = getTrackNodeByTrackId(proj, targetTrackId);
+      if (!movingNode || !targetNode) return proj;
 
-      let nextProject = {
-        ...proj,
-        tracks: nextTracks,
-      };
+      let nextProject = moveTrackTreeNode(
+        proj,
+        movingNode.id,
+        targetNode.id,
+        insertIndex < fromIndex ? 'before' : 'after'
+      );
+      nextProject = reorderTracksByTree(nextProject);
 
-      if (proj.autoPan?.enabled && !proj.autoPan?.manualChoirParts) {
+      if (nextProject.autoPan?.enabled && !nextProject.autoPan?.manualChoirParts) {
         const result = applyChoirAutoPanToProject(nextProject);
         panUpdates = result.panUpdates;
         nextProject = result.project;
@@ -913,6 +947,42 @@ function Editor({ onBackToDashboard }) {
         audioManager.updateTrackPan(id, pan);
       });
     }
+  };
+
+  const handleMoveNode = (nodeId, targetNodeId, placement) => {
+    let panUpdates = null;
+    updateProject((proj) => {
+      let nextProject = moveTrackTreeNode(proj, nodeId, targetNodeId, placement);
+      nextProject = reorderTracksByTree(nextProject);
+      if (nextProject.autoPan?.enabled && !nextProject.autoPan?.manualChoirParts) {
+        const result = applyChoirAutoPanToProject(nextProject);
+        panUpdates = result.panUpdates;
+        nextProject = result.project;
+      }
+      return nextProject;
+    }, 'Move track node');
+
+    if (isPlaying && panUpdates) {
+      Object.entries(panUpdates).forEach(([id, pan]) => {
+        audioManager.updateTrackPan(id, pan);
+      });
+    }
+  };
+
+  const handleCreateGroup = (name = 'Group', parentId = null) => {
+    updateProject((proj) => createGroupNode(proj, name, parentId, null), 'Create group');
+  };
+
+  const handleRenameGroup = (groupNodeId, name) => {
+    updateProject((proj) => renameGroupNode(proj, groupNodeId, name), 'Rename group');
+  };
+
+  const handleDeleteGroup = (groupNodeId) => {
+    updateProject((proj) => deleteGroupPromoteChildren(proj, groupNodeId), 'Delete group');
+  };
+
+  const handleToggleGroupCollapse = (groupNodeId) => {
+    updateProject((proj) => toggleGroupCollapsed(proj, groupNodeId), 'Toggle group collapse');
   };
 
   const handleMasterVolumeDoubleClick = () => {
@@ -956,15 +1026,51 @@ function Editor({ onBackToDashboard }) {
     setIsEditingProjectName(false);
   };
 
-  const handleAddEmptyTrack = () => {
+  const handleAddEmptyTrack = (options = null) => {
     const trackNumber = project.tracks.length + 1;
     const trackName = `Track ${trackNumber}`;
     const newTrack = createTrack(trackName, 'other', false);
+
+    let preferredParentId = null;
+    let preferredInsertIndex = null;
+    let afterNodeId = null;
+
+    if (typeof options === 'string' || options === null) {
+      preferredParentId = options;
+    } else if (typeof options === 'object') {
+      preferredParentId = options.parentId ?? null;
+      preferredInsertIndex = Number.isInteger(options.insertIndex) ? options.insertIndex : null;
+      afterNodeId = typeof options.afterNodeId === 'string' ? options.afterNodeId : null;
+    }
     
-    updateProject((proj) => ({
-      ...proj,
-      tracks: [...proj.tracks, newTrack],
-    }), 'Add empty track');
+    updateProject((proj) => {
+      let nextProject = {
+        ...proj,
+        tracks: [...proj.tracks, newTrack],
+      };
+
+      let targetParentId = preferredParentId;
+      let targetInsertIndex = preferredInsertIndex;
+
+      if (afterNodeId) {
+        const treeProject = normalizeTrackTree(nextProject);
+        const afterNode = treeProject.trackTree.find((node) => node.id === afterNodeId);
+        if (afterNode) {
+          const parentId = afterNode.parentId ?? null;
+          const siblings = treeProject.trackTree
+            .filter((node) => (node.parentId ?? null) === parentId)
+            .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+          const afterIndex = siblings.findIndex((node) => node.id === afterNode.id);
+          if (afterIndex >= 0) {
+            targetParentId = parentId;
+            targetInsertIndex = afterIndex + 1;
+          }
+        }
+      }
+
+      nextProject = attachTrackNode(nextProject, newTrack.id, targetParentId, targetInsertIndex);
+      return reorderTracksByTree(nextProject);
+    }, 'Add empty track');
     
     // Select the new track
     selectTrack(newTrack.id);
@@ -980,6 +1086,11 @@ function Editor({ onBackToDashboard }) {
       return; // Track not found
     }
     const wasChoir = track.role?.startsWith('choir-part-');
+    const wasSelected = selectedTrackId === trackId;
+    const deletedTrackVisibleIndex = visibleTrackIds.indexOf(trackId);
+    const nextTrackToSelect = deletedTrackVisibleIndex > 0
+      ? visibleTrackIds[deletedTrackVisibleIndex - 1]
+      : (deletedTrackVisibleIndex === 0 ? (visibleTrackIds[1] || null) : null);
 
     // Check if track has clips
     const hasClips = track.clips && track.clips.length > 0;
@@ -1002,6 +1113,8 @@ function Editor({ onBackToDashboard }) {
         ...proj,
         tracks: proj.tracks.filter(t => t.id !== trackId),
       };
+      nextProject = removeTrackNode(nextProject, trackId);
+      nextProject = reorderTracksByTree(nextProject);
 
       if (wasChoir && proj.autoPan?.enabled) {
         const result = applyChoirAutoPanToProject(nextProject);
@@ -1017,10 +1130,31 @@ function Editor({ onBackToDashboard }) {
         audioManager.updateTrackPan(id, pan);
       });
     }
+
+    if (wasSelected) {
+      selectTrack(nextTrackToSelect);
+    }
   };
 
   const handleDeleteTrack = () => {
     handleDeleteTrackById(selectedTrackId);
+  };
+
+  const handleAddTrackFromSelected = () => {
+    if (!selectedTrackId) {
+      handleAddEmptyTrack();
+      return;
+    }
+    const normalized = normalizeTrackTree(project);
+    const selectedNode = getTrackNodeByTrackId(normalized, selectedTrackId);
+    if (!selectedNode) {
+      handleAddEmptyTrack();
+      return;
+    }
+    handleAddEmptyTrack({
+      parentId: selectedNode.parentId ?? null,
+      afterNodeId: selectedNode.id,
+    });
   };
 
   const handleToggleLoop = () => {
@@ -1042,6 +1176,7 @@ function Editor({ onBackToDashboard }) {
     onUndo: undo,
     onRedo: redo,
     onDeleteTrack: handleDeleteTrack,
+    onAddTrack: handleAddTrackFromSelected,
   });
 
   useEffect(() => {
@@ -1273,7 +1408,8 @@ function Editor({ onBackToDashboard }) {
       {/* Main Content */}
       <div className="flex-1 overflow-hidden" style={{ minWidth: 0 }}>
         <Timeline
-          project={project}
+          project={treeProject}
+          rows={timelineRows}
           currentTimeMs={currentTimeMs}
           isPlaying={isPlaying}
           isRecording={isRecording}
@@ -1319,7 +1455,8 @@ function Editor({ onBackToDashboard }) {
                     }}
                   >
                     <TrackList
-                      tracks={project.tracks}
+                      tracks={treeProject.tracks}
+                      rows={timelineRows}
                       onUpdateTrack={handleUpdateTrack}
                       onSelectTrack={selectTrack}
                       selectedTrackId={selectedTrackId}
@@ -1327,9 +1464,14 @@ function Editor({ onBackToDashboard }) {
                       onDeleteTrack={handleDeleteTrackById}
                       onSetAutoPanStrategy={handleSetAutoPanStrategy}
                       onToggleAutoPanInverted={handleToggleAutoPanInverted}
-                      autoPanInverted={Boolean(project.autoPan?.inverted)}
-                      autoPanManualChoirParts={Boolean(project.autoPan?.manualChoirParts)}
+                      autoPanInverted={Boolean(treeProject.autoPan?.inverted)}
+                      autoPanManualChoirParts={Boolean(treeProject.autoPan?.manualChoirParts)}
                       onReorderTrack={handleReorderTrack}
+                      onMoveNode={handleMoveNode}
+                      onCreateGroup={handleCreateGroup}
+                      onRenameGroup={handleRenameGroup}
+                      onDeleteGroup={handleDeleteGroup}
+                      onToggleGroupCollapse={handleToggleGroupCollapse}
                       emptyContextMenu={trackListContextMenu}
                       onClearEmptyContextMenu={() => setTrackListContextMenu(null)}
                     />

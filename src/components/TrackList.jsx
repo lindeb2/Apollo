@@ -1,5 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
-import { Lock, Unlock, Volume2, VolumeX, Headphones, Mic, Music, Users, Waves, ChevronRight } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ChevronDown,
+  ChevronRight,
+  Headphones,
+  Lock,
+  Mic,
+  Music,
+  Unlock,
+  Users,
+  Volume2,
+  VolumeX,
+  Waves,
+} from 'lucide-react';
 import { TRACK_ROLES } from '../types/project';
 import { dbToVolume, volumeToDb } from '../utils/audio';
 import { AUTO_PAN_STRATEGIES } from '../utils/choirAutoPan';
@@ -10,6 +22,7 @@ const LOCKED_TRACK_HEIGHT = 70;
 
 function TrackList({
   tracks,
+  rows,
   onUpdateTrack,
   onSelectTrack,
   selectedTrackId,
@@ -20,37 +33,96 @@ function TrackList({
   autoPanInverted = false,
   autoPanManualChoirParts = false,
   onReorderTrack,
+  onMoveNode,
+  onCreateGroup,
+  onRenameGroup,
+  onDeleteGroup,
+  onToggleGroupCollapse,
   emptyContextMenu,
   onClearEmptyContextMenu,
 }) {
   const listRef = useRef(null);
-  const [editingName, setEditingName] = useState(null);
   const dragRef = useRef(null);
   const reorderDragRef = useRef(null);
   const suppressClickRef = useRef(false);
+
+  const [editingName, setEditingName] = useState(null);
   const [dragTooltip, setDragTooltip] = useState(null);
   const [editTooltip, setEditTooltip] = useState(null);
-  const [draggingTrackId, setDraggingTrackId] = useState(null);
+  const [draggingNodeId, setDraggingNodeId] = useState(null);
+  const [rowDragPreview, setRowDragPreview] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
+
   const [typeMenuOpen, setTypeMenuOpen] = useState(false);
   const [typeMenuPos, setTypeMenuPos] = useState({ x: 0, y: 0 });
   const [choirMenuOpen, setChoirMenuOpen] = useState(false);
   const [choirMenuPos, setChoirMenuPos] = useState({ x: 0, y: 0 });
   const [autoPanMenuOpen, setAutoPanMenuOpen] = useState(false);
   const [autoPanMenuPos, setAutoPanMenuPos] = useState({ x: 0, y: 0 });
+
   const [isTypeTriggerHover, setIsTypeTriggerHover] = useState(false);
   const [isTypeMenuHover, setIsTypeMenuHover] = useState(false);
   const [isChoirTriggerHover, setIsChoirTriggerHover] = useState(false);
   const [isChoirMenuHover, setIsChoirMenuHover] = useState(false);
   const [isAutoPanTriggerHover, setIsAutoPanTriggerHover] = useState(false);
   const [isAutoPanMenuHover, setIsAutoPanMenuHover] = useState(false);
-  const iconOptions = [
+
+  const trackMap = useMemo(() => new Map((tracks || []).map((track) => [track.id, track])), [tracks]);
+  const visibleRows = useMemo(() => {
+    if (Array.isArray(rows) && rows.length > 0) {
+      return rows;
+    }
+    return (tracks || []).map((track) => ({
+      kind: 'track',
+      nodeId: track.id,
+      trackId: track.id,
+      track,
+      depth: 0,
+      height: track.locked ? LOCKED_TRACK_HEIGHT : TRACK_HEIGHT,
+    }));
+  }, [rows, tracks]);
+
+  const iconOptions = useMemo(() => [
     { key: 'mic', Icon: Mic },
     { key: 'music', Icon: Music },
     { key: 'users', Icon: Users },
     { key: 'wave', Icon: Waves },
-  ];
-  
+  ], []);
+
+  const menuItemClass = 'w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap';
+
+  const setGlobalDragCursor = (active) => {
+    document.body.classList.toggle('row-drag-cursor', active);
+    document.body.style.userSelect = active ? 'none' : '';
+  };
+
+  const getInsertIndex = (rowMeta, fromIndex, pointerY) => {
+    let insertIndex = rowMeta.length;
+    for (let i = 0; i < rowMeta.length; i += 1) {
+      if (pointerY < rowMeta[i].mid) {
+        insertIndex = i;
+        break;
+      }
+    }
+    if (insertIndex > fromIndex) {
+      insertIndex -= 1;
+    }
+    return Math.max(0, Math.min(rowMeta.length - 1, insertIndex));
+  };
+
+  const getRowDragOffsetY = (rowIndex, rowNodeId) => {
+    if (!rowDragPreview?.moved) return 0;
+    const { nodeId, fromIndex, insertIndex, rowHeight, deltaY } = rowDragPreview;
+    if (rowNodeId === nodeId) return deltaY;
+    if (insertIndex < fromIndex && rowIndex >= insertIndex && rowIndex < fromIndex) {
+      return rowHeight;
+    }
+    if (insertIndex > fromIndex && rowIndex > fromIndex && rowIndex <= insertIndex) {
+      return -rowHeight;
+    }
+    return 0;
+  };
+
   useEffect(() => {
     if (!contextMenu || contextMenu.type !== 'track') {
       setTypeMenuOpen(false);
@@ -77,40 +149,70 @@ function TrackList({
     setAutoPanMenuOpen(autoOpen);
   }, [isAutoPanTriggerHover, isAutoPanMenuHover]);
 
+  useEffect(() => {
+    const handleMove = (e) => {
+      handleDragMove(e);
+      handleRowReorderMove(e);
+    };
+    const handleUp = () => {
+      endDrag();
+      handleRowReorderEnd();
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+      setGlobalDragCursor(false);
+    };
+  }, []);
+
+  useEffect(() => {
+    const closeMenu = () => setContextMenu(null);
+    window.addEventListener('click', closeMenu);
+    return () => window.removeEventListener('click', closeMenu);
+  }, []);
+
+  useEffect(() => {
+    if (!emptyContextMenu) return;
+    setContextMenu(emptyContextMenu);
+    onClearEmptyContextMenu?.();
+  }, [emptyContextMenu, onClearEmptyContextMenu]);
+
   const openTypeMenu = (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    setTypeMenuPos({ x: rect.right, y: rect.top - 1 });
+    setTypeMenuPos({ x: rect.right + 1, y: rect.top - 1 });
     setIsTypeTriggerHover(true);
   };
 
   const openChoirMenu = (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    setChoirMenuPos({ x: rect.right, y: rect.top - 1 });
+    setChoirMenuPos({ x: rect.right + 1, y: rect.top - 1 });
     setIsChoirTriggerHover(true);
   };
 
   const openAutoPanMenu = (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    setAutoPanMenuPos({ x: rect.right, y: rect.top - 1 });
+    setAutoPanMenuPos({ x: rect.right + 1, y: rect.top - 1 });
     setIsAutoPanTriggerHover(true);
   };
 
   const getDefaultIconKey = (role) => {
     if (role === TRACK_ROLES.INSTRUMENT) return 'music';
     if (role === TRACK_ROLES.LEAD) return 'mic';
-    if (role.startsWith('choir-part')) return 'users';
+    if (role?.startsWith('choir-part')) return 'users';
     return 'wave';
   };
 
   const getIconForTrack = (track) => {
     const iconKey = track.icon || getDefaultIconKey(track.role);
-    const option = iconOptions.find(opt => opt.key === iconKey);
+    const option = iconOptions.find((opt) => opt.key === iconKey);
     return option || iconOptions[0];
   };
 
   const cycleIcon = (track) => {
     const iconKey = track.icon || getDefaultIconKey(track.role);
-    const currentIndex = iconOptions.findIndex(opt => opt.key === iconKey);
+    const currentIndex = iconOptions.findIndex((opt) => opt.key === iconKey);
     const nextIndex = (currentIndex + 1) % iconOptions.length;
     onUpdateTrack(track.id, { icon: iconOptions[nextIndex].key });
   };
@@ -127,9 +229,8 @@ function TrackList({
     e.preventDefault();
     e.stopPropagation();
     if (editTooltip) setEditTooltip(null);
-    const startValue = type === 'volume'
-      ? tracks.find(t => t.id === trackId)?.volume ?? 0
-      : tracks.find(t => t.id === trackId)?.pan ?? 0;
+    const track = trackMap.get(trackId);
+    const startValue = type === 'volume' ? track?.volume ?? 0 : track?.pan ?? 0;
     const rect = e.currentTarget.getBoundingClientRect();
     setDragTooltip({
       trackId,
@@ -148,32 +249,52 @@ function TrackList({
     };
   };
 
-  const beginTrackReorder = (e, trackId) => {
+  const beginRowReorder = (e, row) => {
     if (e.button !== 0) return;
     if (e.target.closest('[data-track-interactive="true"]')) return;
+    e.preventDefault();
+
     const container = listRef.current;
     if (!container) return;
-    const rowMeta = tracks
-      .map((track, index) => {
-        const row = container.querySelector(`[data-track-row-id="${track.id}"]`);
-        if (!row) return null;
-        const rect = row.getBoundingClientRect();
+
+    const rowMeta = visibleRows
+      .map((candidate) => {
+        const rowElement = container.querySelector(`[data-tree-row-id="${candidate.nodeId}"]`);
+        if (!rowElement) return null;
+        const rect = rowElement.getBoundingClientRect();
         return {
-          id: track.id,
-          index,
+          nodeId: candidate.nodeId,
+          kind: candidate.kind,
+          trackId: candidate.trackId || null,
           mid: rect.top + rect.height / 2,
         };
       })
       .filter(Boolean);
+
     if (rowMeta.length < 2) return;
+    const fromIndex = rowMeta.findIndex((meta) => meta.nodeId === row.nodeId);
+    if (fromIndex < 0) return;
+
     reorderDragRef.current = {
-      trackId,
+      nodeId: row.nodeId,
+      kind: row.kind,
+      trackId: row.trackId || null,
+      fromIndex,
+      rowHeight: row.height,
       startY: e.clientY,
       lastY: e.clientY,
       moved: false,
       rowMeta,
     };
-    setDraggingTrackId(trackId);
+    setRowDragPreview({
+      nodeId: row.nodeId,
+      fromIndex,
+      insertIndex: fromIndex,
+      rowHeight: row.height,
+      deltaY: 0,
+      moved: false,
+    });
+    setDraggingNodeId(row.nodeId);
   };
 
   const handleDragMove = (e) => {
@@ -188,12 +309,12 @@ function TrackList({
       const range = 100;
       const next = Math.min(100, Math.max(0, startValue + (deltaX / width) * range));
       handleVolumeChange(trackId, next);
-      setDragTooltip((prev) => prev ? { ...prev, value: next } : { trackId, type, value: next });
+      setDragTooltip((prev) => (prev ? { ...prev, value: next } : { trackId, type, value: next }));
     } else {
-      const range = 200; // -100 to +100
+      const range = 200;
       const next = Math.min(100, Math.max(-100, startValue + (deltaX / width) * range));
       handlePanChange(trackId, next);
-      setDragTooltip((prev) => prev ? { ...prev, value: next } : { trackId, type, value: next });
+      setDragTooltip((prev) => (prev ? { ...prev, value: next } : { trackId, type, value: next }));
     }
   };
 
@@ -202,38 +323,54 @@ function TrackList({
     setDragTooltip(null);
   };
 
-  const handleTrackReorderMove = (e) => {
+  const handleRowReorderMove = (e) => {
     const dragState = reorderDragRef.current;
     if (!dragState) return;
     dragState.lastY = e.clientY;
-    if (!dragState.moved && Math.abs(e.clientY - dragState.startY) < 4) return;
+    const deltaY = e.clientY - dragState.startY;
+    if (!dragState.moved && Math.abs(deltaY) < 4) return;
+    if (!dragState.moved) {
+      setGlobalDragCursor(true);
+    }
     dragState.moved = true;
+    const insertIndex = getInsertIndex(dragState.rowMeta, dragState.fromIndex, e.clientY);
+    setRowDragPreview((prev) => {
+      if (!prev || prev.nodeId !== dragState.nodeId) return prev;
+      return {
+        ...prev,
+        insertIndex,
+        deltaY,
+        moved: true,
+      };
+    });
     e.preventDefault();
   };
 
-  const handleTrackReorderEnd = () => {
+  const handleRowReorderEnd = () => {
     const dragState = reorderDragRef.current;
     if (!dragState) return;
+
     reorderDragRef.current = null;
-    setDraggingTrackId(null);
+    setDraggingNodeId(null);
+    setRowDragPreview(null);
+    setGlobalDragCursor(false);
+
     if (!dragState.moved) return;
 
-    const { rowMeta, trackId, lastY } = dragState;
-    const fromIndex = rowMeta.findIndex((row) => row.id === trackId);
-    if (fromIndex < 0) return;
+    const { rowMeta, nodeId, trackId, lastY, fromIndex } = dragState;
+    const insertIndex = getInsertIndex(rowMeta, fromIndex, lastY);
 
-    let insertIndex = rowMeta.length;
-    for (let i = 0; i < rowMeta.length; i += 1) {
-      if (lastY < rowMeta[i].mid) {
-        insertIndex = i;
-        break;
-      }
-    }
-    if (insertIndex > fromIndex) {
-      insertIndex -= 1;
-    }
     if (insertIndex === fromIndex) return;
-    onReorderTrack?.(trackId, insertIndex);
+
+    const target = rowMeta[insertIndex];
+    if (!target) return;
+
+    if (onMoveNode) {
+      onMoveNode(nodeId, target.nodeId, insertIndex < fromIndex ? 'before' : 'after');
+    } else if (trackId && target.trackId) {
+      onReorderTrack?.(trackId, insertIndex);
+    }
+
     suppressClickRef.current = true;
     window.setTimeout(() => {
       suppressClickRef.current = false;
@@ -267,6 +404,7 @@ function TrackList({
 
   const commitEditTooltip = (track) => {
     if (!editTooltip) return;
+
     const text = editTooltip.text.trim();
     if (editTooltip.type === 'volume') {
       if (!text) {
@@ -296,38 +434,9 @@ function TrackList({
         handlePanChange(track.id, Math.min(100, Math.max(-100, parsed)));
       }
     }
+
     setEditTooltip(null);
   };
-
-  useEffect(() => {
-    const handleMove = (e) => {
-      handleDragMove(e);
-      handleTrackReorderMove(e);
-    };
-    const handleUp = () => {
-      endDrag();
-      handleTrackReorderEnd();
-    };
-    window.addEventListener('mousemove', handleMove);
-    window.addEventListener('mouseup', handleUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMove);
-      window.removeEventListener('mouseup', handleUp);
-    };
-  }, []);
-
-  useEffect(() => {
-    const closeMenu = () => setContextMenu(null);
-    window.addEventListener('click', closeMenu);
-    return () => window.removeEventListener('click', closeMenu);
-  }, []);
-
-  useEffect(() => {
-    if (!emptyContextMenu) return;
-    setContextMenu(emptyContextMenu);
-    onClearEmptyContextMenu?.();
-  }, [emptyContextMenu, onClearEmptyContextMenu]);
-
 
   const handleToggleLock = (trackId, currentLocked) => {
     onUpdateTrack(trackId, { locked: !currentLocked });
@@ -349,21 +458,29 @@ function TrackList({
     setEditingName(null);
   };
 
+  const handleRenameGroup = (groupRow) => {
+    const nextNameRaw = window.prompt('Rename group', groupRow.name);
+    if (nextNameRaw === null) return;
+    const normalizedName = normalizeTrackName(nextNameRaw);
+    if (!normalizedName) return;
+    onRenameGroup?.(groupRow.nodeId, normalizedName);
+  };
+
   const getRoleColor = (role) => {
     const colors = {
-      'instrument': 'bg-purple-600',
-      'lead': 'bg-blue-600',
+      instrument: 'bg-purple-600',
+      lead: 'bg-blue-600',
       'choir-part-1': 'bg-green-600',
       'choir-part-2': 'bg-green-500',
       'choir-part-3': 'bg-green-400',
       'choir-part-4': 'bg-teal-500',
       'choir-part-5': 'bg-teal-400',
-      'other': 'bg-gray-600',
+      other: 'bg-gray-600',
     };
     return colors[role] || 'bg-gray-600';
   };
 
-  if (!tracks || tracks.length === 0) {
+  if (!visibleRows.length) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-500">
         <p>No tracks yet. Import audio files to get started.</p>
@@ -385,14 +502,82 @@ function TrackList({
         });
       }}
     >
-      {tracks.map((track) => {
-        const trackHeight = track.locked ? LOCKED_TRACK_HEIGHT : TRACK_HEIGHT;
+      {visibleRows.map((row, rowIndex) => {
+        const offsetY = getRowDragOffsetY(rowIndex, row.nodeId);
+        const isDragging = draggingNodeId === row.nodeId;
+        const isActivelyDragging = isDragging && Boolean(rowDragPreview?.moved);
+        const rowMotionStyle = {
+          transform: `translateY(${offsetY}px)`,
+          transition: 'none',
+          position: 'relative',
+          zIndex: isDragging ? 30 : 1,
+          boxShadow: isDragging && rowDragPreview?.moved ? '0 8px 24px rgba(0,0,0,0.35)' : undefined,
+          willChange: rowDragPreview?.moved ? 'transform' : undefined,
+        };
+
+        if (row.kind === 'group') {
+          return (
+            <div
+              key={row.nodeId}
+              data-tree-row-id={row.nodeId}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setContextMenu({
+                  x: e.clientX,
+                  y: e.clientY,
+                  type: 'group',
+                  group: row,
+                });
+              }}
+              onMouseDown={(e) => beginRowReorder(e, row)}
+              className={`border-b border-gray-700 bg-gray-800/80 hover:bg-gray-750 cursor-pointer ${isActivelyDragging ? 'cursor-grabbing' : ''}`}
+              style={{
+                height: `${row.height}px`,
+                minHeight: `${row.height}px`,
+                maxHeight: `${row.height}px`,
+                ...rowMotionStyle,
+              }}
+            >
+              <div
+                className="h-full flex items-center gap-2 pr-4"
+                style={{ paddingLeft: `${16 + row.depth * 16}px` }}
+              >
+                <button
+                  data-track-interactive="true"
+                  className="w-5 h-5 rounded-sm text-gray-300 hover:bg-gray-700 flex items-center justify-center"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleGroupCollapse?.(row.nodeId);
+                  }}
+                  title={row.collapsed ? 'Expand group' : 'Collapse group'}
+                >
+                  {row.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                </button>
+                <span
+                  className="text-sm font-medium text-gray-200 truncate select-none"
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    handleRenameGroup(row);
+                  }}
+                >
+                  {row.name}
+                </span>
+              </div>
+            </div>
+          );
+        }
+
+        const track = row.track || trackMap.get(row.trackId);
+        if (!track) return null;
+
+        const trackHeight = row.height || (track.locked ? LOCKED_TRACK_HEIGHT : TRACK_HEIGHT);
         const { Icon: TrackIcon } = getIconForTrack(track);
-        
+
         return (
           <div
-            key={track.id}
-            data-track-row-id={track.id}
+            key={row.nodeId}
+            data-tree-row-id={row.nodeId}
             onContextMenu={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -401,239 +586,232 @@ function TrackList({
                 y: e.clientY,
                 type: 'track',
                 track,
+                row,
               });
             }}
-            onMouseDown={(e) => beginTrackReorder(e, track.id)}
+            onMouseDown={(e) => beginRowReorder(e, row)}
             onClick={() => {
               if (suppressClickRef.current) return;
               onSelectTrack(track.id);
             }}
-            className={`border-b border-gray-700 px-4 py-3 cursor-pointer ${
-              selectedTrackId === track.id
-                ? 'bg-gray-700'
-                : 'bg-gray-800 hover:bg-gray-750'
-            } ${track.locked ? 'bg-gray-850' : ''} ${draggingTrackId === track.id ? 'cursor-grabbing' : ''}`}
-            style={{ 
+            className={`border-b border-gray-700 cursor-pointer ${
+              selectedTrackId === track.id ? 'bg-gray-700' : 'bg-gray-800 hover:bg-gray-750'
+            } ${track.locked ? 'bg-gray-850' : ''} ${isActivelyDragging ? 'cursor-grabbing' : ''}`}
+            style={{
               height: `${trackHeight}px`,
               minHeight: `${trackHeight}px`,
               maxHeight: `${trackHeight}px`,
-              display: 'flex',
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: '16px'
+              ...rowMotionStyle,
             }}
           >
             <div
-              data-track-interactive="true"
-              className="flex-shrink-0"
-              onClick={() => onSelectTrack(track.id)}
+              className="h-full flex items-center gap-4 pr-4"
+              style={{ paddingLeft: `${16 + row.depth * 16}px` }}
             >
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  cycleIcon(track);
-                }}
-                className={`w-14 h-14 rounded-lg ${getRoleColor(track.role)} text-white flex items-center justify-center`}
-                title="Click to change icon"
+              <div
+                data-track-interactive="true"
+                className="flex-shrink-0"
+                onClick={() => onSelectTrack(track.id)}
               >
-                <TrackIcon size={22} />
-              </button>
-            </div>
-
-            <div className={`flex-1 min-w-0 flex flex-col ${track.locked ? 'justify-center gap-3' : 'gap-1'}`}>
-              {/* Upper Row: Name */}
-              {!track.locked && (
-                <div
-                  data-track-interactive="true"
-                  className="flex items-center min-w-0"
-                  onClick={() => onSelectTrack(track.id)}
-                >
-                  {editingName === track.id ? (
-                    <input
-                      type="text"
-                      defaultValue={track.name}
-                      autoFocus
-                      onBlur={(e) => handleNameChange(track.id, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          handleNameChange(track.id, e.target.value);
-                        } else if (e.key === 'Escape') {
-                          setEditingName(null);
-                        }
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                      className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-lg font-semibold leading-none focus:outline-none min-w-0 h-[28px]"
-                    />
-                  ) : (
-                    <span
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        setEditingName(track.id);
-                      }}
-                      className="flex-1 text-lg font-semibold truncate min-w-0 h-[28px] flex items-center"
-                      title="Double-click to edit"
-                    >
-                      {track.name}
-                    </span>
-                  )}
-                </div>
-              )}
-
-              {/* Lower Row: Controls */}
-              <div data-track-interactive="true" className="flex items-center gap-3">
-                <div className="flex items-center gap-0" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleToggleMute(track.id, track.muted);
-                    }}
-                    className={`w-7 h-7 flex items-center justify-center rounded-l-md rounded-r-none border border-gray-600 transition-colors ${
-                      track.muted
-                        ? 'bg-red-600 text-white'
-                        : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
-                    }`}
-                    title={track.muted ? 'Unmute' : 'Mute'}
-                  >
-                    {track.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleToggleSolo(track.id, track.soloed);
-                    }}
-                    className={`w-7 h-7 flex items-center justify-center rounded-r-md rounded-l-none border border-l-0 border-gray-600 transition-colors ${
-                      track.soloed
-                        ? 'bg-yellow-600 text-white'
-                        : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
-                    }`}
-                    title={track.soloed ? 'Unsolo' : 'Solo'}
-                  >
-                    <Headphones size={16} />
-                  </button>
-                </div>
-
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    handleToggleLock(track.id, track.locked);
+                    cycleIcon(track);
                   }}
-                  className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-600 transition-colors bg-gray-800 hover:bg-gray-600 text-gray-300 -ml-1"
-                  title={track.locked ? 'Unlock track' : 'Lock track'}
+                  className={`w-14 h-14 rounded-lg ${getRoleColor(track.role)} text-white flex items-center justify-center`}
+                  title="Click to change icon"
                 >
-                  {track.locked ? <Lock size={16} /> : <Unlock size={16} />}
+                  <TrackIcon size={22} />
                 </button>
+              </div>
 
-                <div
-                  className="flex-1 flex items-center relative"
-                  onClick={(e) => e.stopPropagation()}
-                  onMouseDown={(e) => e.stopPropagation()}
-                >
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="0.1"
-                    value={track.volume}
-                    readOnly
-                    onMouseDown={(e) => {
-                      if (e.detail > 1) return;
-                      beginDrag(e, track.id, 'volume');
-                    }}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      handleVolumeDoubleClick(track, e);
-                    }}
-                    className="w-full volume-slider volume-slider-lg cursor-pointer"
-                  />
-                  {dragTooltip?.trackId === track.id && dragTooltip.type === 'volume' && (
-                    <div
-                      className="fixed w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
-                      style={{ left: dragTooltip.x, top: dragTooltip.y, transform: 'translate(-50%, -100%)' }}
-                    >
-                      {dragTooltip.value <= 0 ? '-∞' : volumeToDb(dragTooltip.value).toFixed(1)}
-                    </div>
-                  )}
-                  {editTooltip?.trackId === track.id && editTooltip.type === 'volume' && (
-                    <input
-                      type="text"
-                      value={editTooltip.text}
-                      onChange={(e) => setEditTooltip({ ...editTooltip, text: e.target.value })}
-                      onFocus={(e) => e.target.select()}
-                      onBlur={() => commitEditTooltip(track)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          commitEditTooltip(track);
-                        } else if (e.key === 'Escape') {
-                          setEditTooltip(null);
-                        }
-                      }}
-                      className="fixed w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
-                      style={{ left: editTooltip.x, top: editTooltip.y, transform: 'translate(-50%, -100%)' }}
-                      autoFocus
-                    />
-                  )}
-                </div>
-
-                <div
-                  className="relative w-8 h-8 flex-shrink-0"
-                  onClick={(e) => e.stopPropagation()}
-                  onMouseDown={(e) => e.stopPropagation()}
-                >
-                  <div className="absolute inset-0 overflow-hidden">
-                    <div className="absolute inset-0 pan-ring pointer-events-none" />
-                    <div className="absolute left-1/2 top-1/2 w-6 h-6 rounded-full bg-gray-700 border border-gray-600 -translate-x-1/2 -translate-y-1/2 pointer-events-none" />
-                    <div
-                      className="absolute left-1/2 top-1/2 w-[3px] h-3 bg-gray-200 rounded-full origin-bottom pointer-events-none"
-                      style={{
-                        transform: `translate(-50%, -100%) rotate(${(track.pan / 100) * 135}deg)`,
-                      }}
-                    />
+              <div className={`flex-1 min-w-0 flex flex-col ${track.locked ? 'justify-center gap-3' : 'gap-1'}`}>
+                {!track.locked && (
+                  <div
+                    data-track-interactive="true"
+                    className="flex items-center min-w-0"
+                    onClick={() => onSelectTrack(track.id)}
+                  >
+                    {editingName === track.id ? (
+                      <input
+                        type="text"
+                        defaultValue={track.name}
+                        autoFocus
+                        onBlur={(e) => handleNameChange(track.id, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            handleNameChange(track.id, e.target.value);
+                          } else if (e.key === 'Escape') {
+                            setEditingName(null);
+                          }
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-lg font-semibold leading-none focus:outline-none min-w-0 h-[28px]"
+                      />
+                    ) : (
+                      <span
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          setEditingName(track.id);
+                        }}
+                        className="flex-1 text-lg font-semibold truncate min-w-0 h-[28px] flex items-center select-none"
+                        title="Double-click to edit"
+                      >
+                        {track.name}
+                      </span>
+                    )}
                   </div>
-                  <input
-                    type="range"
-                    min="-100"
-                    max="100"
-                    step="1"
-                    value={track.pan}
-                    readOnly
-                    onMouseDown={(e) => {
-                      if (e.detail > 1) return;
-                      beginDrag(e, track.id, 'pan');
-                    }}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      handlePanDoubleClick(track, e);
-                    }}
-                    className="absolute top-0 left-0 right-0 h-4 pan-knob opacity-0 cursor-pointer z-10 pointer-events-auto appearance-none touch-none"
-                    aria-label="Pan"
-                  />
-                  {dragTooltip?.trackId === track.id && dragTooltip.type === 'pan' && (
-                    <div
-                      className="fixed w-12 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
-                      style={{ left: dragTooltip.x, top: dragTooltip.y, transform: 'translate(-50%, -100%)' }}
-                    >
-                      {Math.round(dragTooltip.value)}
-                    </div>
-                  )}
-                  {editTooltip?.trackId === track.id && editTooltip.type === 'pan' && (
-                    <input
-                      type="text"
-                      value={editTooltip.text}
-                      onChange={(e) => setEditTooltip({ ...editTooltip, text: e.target.value })}
-                      onFocus={(e) => e.target.select()}
-                      onBlur={() => commitEditTooltip(track)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          commitEditTooltip(track);
-                        } else if (e.key === 'Escape') {
-                          setEditTooltip(null);
-                        }
+                )}
+
+                <div data-track-interactive="true" className="flex items-center gap-3">
+                  <div className="flex items-center gap-0" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleToggleMute(track.id, track.muted);
                       }}
-                      className="fixed w-12 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
-                      style={{ left: editTooltip.x, top: editTooltip.y, transform: 'translate(-50%, -100%)' }}
-                      autoFocus
+                      className={`w-7 h-7 flex items-center justify-center rounded-l-md rounded-r-none border border-gray-600 transition-colors ${
+                        track.muted ? 'bg-red-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
+                      }`}
+                      title={track.muted ? 'Unmute' : 'Mute'}
+                    >
+                      {track.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleToggleSolo(track.id, track.soloed);
+                      }}
+                      className={`w-7 h-7 flex items-center justify-center rounded-r-md rounded-l-none border border-l-0 border-gray-600 transition-colors ${
+                        track.soloed ? 'bg-yellow-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
+                      }`}
+                      title={track.soloed ? 'Unsolo' : 'Solo'}
+                    >
+                      <Headphones size={16} />
+                    </button>
+                  </div>
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleToggleLock(track.id, track.locked);
+                    }}
+                    className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-600 transition-colors bg-gray-800 hover:bg-gray-600 text-gray-300 -ml-1"
+                    title={track.locked ? 'Unlock track' : 'Lock track'}
+                  >
+                    {track.locked ? <Lock size={16} /> : <Unlock size={16} />}
+                  </button>
+
+                  <div
+                    className="flex-1 flex items-center relative"
+                    onClick={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="0.1"
+                      value={track.volume}
+                      readOnly
+                      onMouseDown={(e) => {
+                        if (e.detail > 1) return;
+                        beginDrag(e, track.id, 'volume');
+                      }}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        handleVolumeDoubleClick(track, e);
+                      }}
+                      className="w-full volume-slider volume-slider-lg cursor-pointer"
                     />
-                  )}
+                    {dragTooltip?.trackId === track.id && dragTooltip.type === 'volume' && (
+                      <div
+                        className="fixed w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
+                        style={{ left: dragTooltip.x, top: dragTooltip.y, transform: 'translate(-50%, -100%)' }}
+                      >
+                        {dragTooltip.value <= 0 ? '-∞' : volumeToDb(dragTooltip.value).toFixed(1)}
+                      </div>
+                    )}
+                    {editTooltip?.trackId === track.id && editTooltip.type === 'volume' && (
+                      <input
+                        type="text"
+                        value={editTooltip.text}
+                        onChange={(e) => setEditTooltip({ ...editTooltip, text: e.target.value })}
+                        onFocus={(e) => e.target.select()}
+                        onBlur={() => commitEditTooltip(track)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            commitEditTooltip(track);
+                          } else if (e.key === 'Escape') {
+                            setEditTooltip(null);
+                          }
+                        }}
+                        className="fixed w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
+                        style={{ left: editTooltip.x, top: editTooltip.y, transform: 'translate(-50%, -100%)' }}
+                        autoFocus
+                      />
+                    )}
+                  </div>
+
+                  <div
+                    className="relative w-8 h-8 flex-shrink-0"
+                    onClick={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <div className="absolute inset-0 overflow-hidden">
+                      <div className="absolute inset-0 pan-ring pointer-events-none" />
+                      <div className="absolute left-1/2 top-1/2 w-6 h-6 rounded-full bg-gray-700 border border-gray-600 -translate-x-1/2 -translate-y-1/2 pointer-events-none" />
+                      <div
+                        className="absolute left-1/2 top-1/2 w-[3px] h-3 bg-gray-200 rounded-full origin-bottom pointer-events-none"
+                        style={{ transform: `translate(-50%, -100%) rotate(${(track.pan / 100) * 135}deg)` }}
+                      />
+                    </div>
+                    <input
+                      type="range"
+                      min="-100"
+                      max="100"
+                      step="1"
+                      value={track.pan}
+                      readOnly
+                      onMouseDown={(e) => {
+                        if (e.detail > 1) return;
+                        beginDrag(e, track.id, 'pan');
+                      }}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        handlePanDoubleClick(track, e);
+                      }}
+                      className="absolute top-0 left-0 right-0 h-4 pan-knob opacity-0 cursor-pointer z-10 pointer-events-auto appearance-none touch-none"
+                      aria-label="Pan"
+                    />
+                    {dragTooltip?.trackId === track.id && dragTooltip.type === 'pan' && (
+                      <div
+                        className="fixed w-12 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
+                        style={{ left: dragTooltip.x, top: dragTooltip.y, transform: 'translate(-50%, -100%)' }}
+                      >
+                        {Math.round(dragTooltip.value)}
+                      </div>
+                    )}
+                    {editTooltip?.trackId === track.id && editTooltip.type === 'pan' && (
+                      <input
+                        type="text"
+                        value={editTooltip.text}
+                        onChange={(e) => setEditTooltip({ ...editTooltip, text: e.target.value })}
+                        onFocus={(e) => e.target.select()}
+                        onBlur={() => commitEditTooltip(track)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            commitEditTooltip(track);
+                          } else if (e.key === 'Escape') {
+                            setEditTooltip(null);
+                          }
+                        }}
+                        className="fixed w-12 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
+                        style={{ left: editTooltip.x, top: editTooltip.y, transform: 'translate(-50%, -100%)' }}
+                        autoFocus
+                      />
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -650,10 +828,10 @@ function TrackList({
             e.stopPropagation();
           }}
         >
-          {contextMenu.type === 'track' ? (
+          {contextMenu.type === 'track' && contextMenu.track ? (
             <>
               <button
-                className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700"
+                className={menuItemClass}
                 onClick={() => {
                   setEditingName(contextMenu.track.id);
                   setContextMenu(null);
@@ -661,16 +839,21 @@ function TrackList({
               >
                 Rename track
               </button>
+
               <div className="relative">
                 <div
-                  className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 select-none w-full cursor-pointer"
+                  className={`${menuItemClass} select-none cursor-pointer`}
                   onMouseEnter={openTypeMenu}
                   onMouseLeave={() => setIsTypeTriggerHover(false)}
-                  style={{ backgroundColor: (isTypeTriggerHover || isTypeMenuHover || isChoirTriggerHover || isChoirMenuHover) ? '#374151' : undefined }}
+                  style={{
+                    backgroundColor: (isTypeTriggerHover || isTypeMenuHover || isChoirTriggerHover || isChoirMenuHover)
+                      ? '#374151'
+                      : undefined,
+                  }}
                 >
                   <div className="flex items-center justify-between w-full">
-                  <span>Change track type</span>
-                  <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+                    <span>Change track type</span>
+                    <ChevronRight size={14} className="text-gray-400 ml-0.5" />
                   </div>
                 </div>
               </div>
@@ -678,10 +861,12 @@ function TrackList({
               {contextMenu.track.role?.startsWith('choir-part-') && (
                 <div className="relative">
                   <div
-                    className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 select-none w-full cursor-pointer"
+                    className={`${menuItemClass} select-none cursor-pointer`}
                     onMouseEnter={openAutoPanMenu}
                     onMouseLeave={() => setIsAutoPanTriggerHover(false)}
-                    style={{ backgroundColor: (isAutoPanTriggerHover || isAutoPanMenuHover) ? '#374151' : undefined }}
+                    style={{
+                      backgroundColor: (isAutoPanTriggerHover || isAutoPanMenuHover) ? '#374151' : undefined,
+                    }}
                   >
                     <div className="flex items-center justify-between w-full">
                       <span>Auto-pan choir</span>
@@ -692,7 +877,7 @@ function TrackList({
               )}
 
               <button
-                className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-red-300 hover:bg-gray-700"
+                className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-red-300 hover:bg-gray-700 whitespace-nowrap"
                 onClick={() => {
                   onDeleteTrack?.(contextMenu.track.id);
                   setContextMenu(null);
@@ -702,33 +887,112 @@ function TrackList({
               </button>
 
               <div className="my-0.5 border-t border-gray-700" />
+
               <button
-                className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700"
+                className={menuItemClass}
                 onClick={() => {
-                  onAddTrack?.();
+                  onAddTrack?.({
+                    parentId: contextMenu.row?.parentId || null,
+                    afterNodeId: contextMenu.row?.nodeId || null,
+                  });
                   setContextMenu(null);
                 }}
               >
                 Create new track
               </button>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onCreateGroup?.('Group', contextMenu.row?.parentId || null);
+                  setContextMenu(null);
+                }}
+              >
+                Create group
+              </button>
             </>
-          ) : (
-            <button
-              className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700"
-              onClick={() => {
-                onAddTrack?.();
-                setContextMenu(null);
-              }}
-            >
-              Create a track
-            </button>
-          )}
+          ) : null}
+
+          {contextMenu.type === 'group' && contextMenu.group ? (
+            <>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  handleRenameGroup(contextMenu.group);
+                  setContextMenu(null);
+                }}
+              >
+                Rename group
+              </button>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onToggleGroupCollapse?.(contextMenu.group.nodeId);
+                  setContextMenu(null);
+                }}
+              >
+                {contextMenu.group.collapsed ? 'Expand group' : 'Collapse group'}
+              </button>
+              <button
+                className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-red-300 hover:bg-gray-700 whitespace-nowrap"
+                onClick={() => {
+                  onDeleteGroup?.(contextMenu.group.nodeId);
+                  setContextMenu(null);
+                }}
+              >
+                Delete group
+              </button>
+
+              <div className="my-0.5 border-t border-gray-700" />
+
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onAddTrack?.(contextMenu.group.nodeId);
+                  setContextMenu(null);
+                }}
+              >
+                Create new track
+              </button>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onCreateGroup?.('Group', contextMenu.group.nodeId);
+                  setContextMenu(null);
+                }}
+              >
+                Create subgroup
+              </button>
+            </>
+          ) : null}
+
+          {contextMenu.type === 'empty' ? (
+            <>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onAddTrack?.();
+                  setContextMenu(null);
+                }}
+              >
+                Create a track
+              </button>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onCreateGroup?.('Group', null);
+                  setContextMenu(null);
+                }}
+              >
+                Create group
+              </button>
+            </>
+          ) : null}
         </div>
       )}
 
-      {contextMenu && typeMenuOpen && (
+      {contextMenu && contextMenu.type === 'track' && contextMenu.track && typeMenuOpen && (
         <div
-          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[20px]"
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[120px]"
           style={{ left: typeMenuPos.x, top: typeMenuPos.y }}
           onMouseEnter={() => setIsTypeMenuHover(true)}
           onMouseLeave={() => setIsTypeMenuHover(false)}
@@ -738,7 +1002,7 @@ function TrackList({
           }}
         >
           <button
-            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            className={menuItemClass}
             onClick={() => {
               onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.INSTRUMENT });
               setContextMenu(null);
@@ -747,7 +1011,7 @@ function TrackList({
             Instrument
           </button>
           <button
-            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            className={menuItemClass}
             onClick={() => {
               onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.LEAD });
               setContextMenu(null);
@@ -755,9 +1019,10 @@ function TrackList({
           >
             Lead
           </button>
+
           {autoPanManualChoirParts ? (
             <div
-              className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 select-none whitespace-nowrap cursor-pointer"
+              className={`${menuItemClass} select-none cursor-pointer`}
               onMouseEnter={openChoirMenu}
               onMouseLeave={() => setIsChoirTriggerHover(false)}
               style={{ backgroundColor: (isChoirTriggerHover || isChoirMenuHover) ? '#374151' : undefined }}
@@ -769,7 +1034,7 @@ function TrackList({
             </div>
           ) : (
             <button
-              className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+              className={menuItemClass}
               onClick={() => {
                 onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_1 });
                 setContextMenu(null);
@@ -778,8 +1043,9 @@ function TrackList({
               Choir part
             </button>
           )}
+
           <button
-            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            className={menuItemClass}
             onClick={() => {
               onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.OTHER });
               setContextMenu(null);
@@ -790,7 +1056,7 @@ function TrackList({
         </div>
       )}
 
-      {contextMenu && choirMenuOpen && autoPanManualChoirParts && (
+      {contextMenu && contextMenu.type === 'track' && contextMenu.track && choirMenuOpen && autoPanManualChoirParts && (
         <div
           className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[25px]"
           style={{ left: choirMenuPos.x, top: choirMenuPos.y }}
@@ -802,7 +1068,7 @@ function TrackList({
           }}
         >
           <button
-            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            className={menuItemClass}
             onClick={() => {
               onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_1 });
               setContextMenu(null);
@@ -811,7 +1077,7 @@ function TrackList({
             1
           </button>
           <button
-            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            className={menuItemClass}
             onClick={() => {
               onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_2 });
               setContextMenu(null);
@@ -820,7 +1086,7 @@ function TrackList({
             2
           </button>
           <button
-            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            className={menuItemClass}
             onClick={() => {
               onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_3 });
               setContextMenu(null);
@@ -829,7 +1095,7 @@ function TrackList({
             3
           </button>
           <button
-            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            className={menuItemClass}
             onClick={() => {
               onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_4 });
               setContextMenu(null);
@@ -838,7 +1104,7 @@ function TrackList({
             4
           </button>
           <button
-            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            className={menuItemClass}
             onClick={() => {
               onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_5 });
               setContextMenu(null);
@@ -849,9 +1115,9 @@ function TrackList({
         </div>
       )}
 
-      {contextMenu && autoPanMenuOpen && (
+      {contextMenu && contextMenu.type === 'track' && contextMenu.track && autoPanMenuOpen && (
         <div
-          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[120px]"
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[140px]"
           style={{ left: autoPanMenuPos.x, top: autoPanMenuPos.y }}
           onMouseEnter={() => setIsAutoPanMenuHover(true)}
           onMouseLeave={() => setIsAutoPanMenuHover(false)}
@@ -861,7 +1127,7 @@ function TrackList({
           }}
         >
           <button
-            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            className={menuItemClass}
             onClick={() => {
               onToggleAutoPanInverted?.();
               setContextMenu(null);
@@ -869,9 +1135,11 @@ function TrackList({
           >
             Inverted Auto Pan: {autoPanInverted ? 'On' : 'Off'}
           </button>
+
           <div className="my-0.5 border-t border-gray-700" />
+
           <button
-            className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+            className={menuItemClass}
             onClick={() => {
               onSetAutoPanStrategy?.('off');
               setContextMenu(null);
@@ -882,7 +1150,7 @@ function TrackList({
           {AUTO_PAN_STRATEGIES.map((option) => (
             <button
               key={option.id}
-              className="block text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap"
+              className={menuItemClass}
               onClick={() => {
                 onSetAutoPanStrategy?.(option.id);
                 setContextMenu(null);

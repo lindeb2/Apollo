@@ -13,6 +13,7 @@ function useKeyboardShortcuts({
   onRedo,
   onToggleLoop,
   onDeleteTrack,
+  onAddTrack,
 }) {
   useEffect(() => {
     if (!enabled) return;
@@ -65,6 +66,12 @@ function useKeyboardShortcuts({
         e.preventDefault();
         onDeleteTrack?.();
       }
+
+      // N - Create new track (from selected track position)
+      if (e.code === 'KeyN' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        onAddTrack?.();
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -72,7 +79,7 @@ function useKeyboardShortcuts({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [enabled, onPlayPause, onStop, onRecord, onUndo, onRedo, onToggleLoop, onDeleteTrack]);
+  }, [enabled, onPlayPause, onStop, onRecord, onUndo, onRedo, onToggleLoop, onDeleteTrack, onAddTrack]);
 }
 
 export default useKeyboardShortcuts;

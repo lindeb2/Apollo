@@ -94,6 +94,7 @@ export function normalizeExportSettings(settings = {}) {
  * @property {number} exportSettings.gainDb - Practice target gain boost in dB
  * @property {number} exportSettings.attenuationDb - Practice non-target attenuation in dB
  * @property {number} exportSettings.transformedPanRange - Pan remap output range (0-100)
+ * @property {Array} trackTree - Hierarchy nodes for groups/tracks
  * @property {Track[]} tracks - Array of tracks
  * @property {Loop} loop - Loop configuration
  * @property {number} undoStackSize - Max undo stack size (100)
@@ -111,6 +112,7 @@ export function createEmptyProject(name = 'Untitled Project', autoPan = null, ex
     masterVolume: dbToVolume(0),
     autoPan: autoPan ?? { ...DEFAULT_AUTO_PAN_SETTINGS },
     exportSettings: normalizeExportSettings(exportSettings || {}),
+    trackTree: [],
     tracks: [],
     loop: { enabled: false, startMs: 0, endMs: 0 },
     undoStackSize: 100,
