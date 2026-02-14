@@ -1421,6 +1421,7 @@ function Editor({ onBackToDashboard }) {
           updateProject={updateProject}
           shortcutsEnabled={true}
           deleteClipShortcutEnabled
+          onDeleteTrackShortcut={handleDeleteTrackById}
           sharedVerticalScroll
           scrollContainerRef={timelineScrollRef}
         >

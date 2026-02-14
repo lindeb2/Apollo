@@ -52,6 +52,7 @@ function Timeline({
   updateProject,
   shortcutsEnabled = false,
   deleteClipShortcutEnabled = false,
+  onDeleteTrackShortcut = null,
   sharedVerticalScroll = false,
   children,
 }) {
@@ -490,6 +491,12 @@ function Timeline({
         return;
       }
 
+      if (deleteClipShortcutEnabled && (e.code === 'Delete' || e.code === 'Backspace') && !selectedClip && selectedTrackId) {
+        e.preventDefault();
+        onDeleteTrackShortcut?.(selectedTrackId);
+        return;
+      }
+
       if (e.code === 'KeyT' && (e.ctrlKey || e.metaKey) && selectedClip && selectedTrackId) {
         e.preventDefault();
         const track = project.tracks.find(t => t.id === selectedTrackId);
@@ -644,7 +651,7 @@ function Timeline({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [shortcutsEnabled, deleteClipShortcutEnabled, selectedClipId, selectedTrackId, clipboardClip, currentTimeMs, project.tracks, onUpdateClip, timelineRows]);
+  }, [shortcutsEnabled, deleteClipShortcutEnabled, selectedClipId, selectedTrackId, clipboardClip, currentTimeMs, project.tracks, onUpdateClip, timelineRows, onDeleteTrackShortcut]);
 
   const handleContextMenu = (e) => {
     e.preventDefault();

@@ -506,14 +506,17 @@ function TrackList({
         const offsetY = getRowDragOffsetY(rowIndex, row.nodeId);
         const isDragging = draggingNodeId === row.nodeId;
         const isActivelyDragging = isDragging && Boolean(rowDragPreview?.moved);
-        const rowMotionStyle = {
-          transform: `translateY(${offsetY}px)`,
-          transition: 'none',
-          position: 'relative',
-          zIndex: isDragging ? 30 : 1,
-          boxShadow: isDragging && rowDragPreview?.moved ? '0 8px 24px rgba(0,0,0,0.35)' : undefined,
-          willChange: rowDragPreview?.moved ? 'transform' : undefined,
-        };
+        const hasRowMotion = Boolean(rowDragPreview?.moved);
+        const rowMotionStyle = hasRowMotion
+          ? {
+              transform: `translateY(${offsetY}px)`,
+              transition: 'none',
+              position: 'relative',
+              zIndex: isDragging ? 30 : 1,
+              boxShadow: isDragging ? '0 8px 24px rgba(0,0,0,0.35)' : undefined,
+              willChange: 'transform',
+            }
+          : {};
 
         if (row.kind === 'group') {
           return (
