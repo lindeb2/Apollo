@@ -453,8 +453,8 @@ async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {},
     }
   }
 
-  const durationSeconds = Math.ceil(msToSeconds(maxDurationMs)) + 1;
-  const length = durationSeconds * SAMPLE_RATE;
+  // Render exactly to the last clip end (no extra tail padding).
+  const length = Math.max(1, Math.ceil(msToSeconds(maxDurationMs) * SAMPLE_RATE));
   const offlineContext = new OfflineAudioContext(2, length, SAMPLE_RATE);
 
   const masterGain = offlineContext.createGain();
