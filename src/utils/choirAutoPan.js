@@ -267,6 +267,46 @@ function getChoirPartNumber(role) {
   return Number.isFinite(value) ? value : null;
 }
 
+function getChoirUnits(project, settings) {
+  const mix = getEffectiveTrackMix(project);
+  const unitsById = new Map();
+
+  for (const trackId of mix.orderedTrackIds) {
+    const state = mix.statesByTrackId.get(trackId);
+    if (!state?.choirRole || state.muted) continue;
+    const unitId = state.choirUnitId || `track:${trackId}`;
+    if (!unitsById.has(unitId)) {
+      unitsById.set(unitId, {
+        unitId,
+        role: state.choirRole,
+        trackIds: [],
+      });
+    }
+    unitsById.get(unitId).trackIds.push(trackId);
+  }
+
+  const units = Array.from(unitsById.values());
+  if (!settings.manualChoirParts) {
+    return units.map((unit, idx) => ({ ...unit, partIndex: idx + 1 }));
+  }
+
+  const partNumbers = Array.from(
+    new Set(
+      units
+        .map((unit) => getChoirPartNumber(unit.role))
+        .filter((value) => Number.isFinite(value))
+    )
+  ).sort((a, b) => a - b);
+  const partIndexByNumber = new Map(partNumbers.map((value, idx) => [value, idx + 1]));
+
+  return units
+    .map((unit) => ({
+      ...unit,
+      partIndex: partIndexByNumber.get(getChoirPartNumber(unit.role)) || null,
+    }))
+    .filter((unit) => unit.partIndex !== null);
+}
+
 export function applyChoirAutoPanToProject(project, settingsOverride = {}) {
   if (!project) return { project, panUpdates: null };
 
@@ -282,9 +322,8 @@ export function applyChoirAutoPanToProject(project, settingsOverride = {}) {
     };
   }
 
-  const choirTracks = project.tracks.filter((track) => track.role?.startsWith('choir-part-'));
-
-  if (choirTracks.length === 0) {
+  const choirUnits = getChoirUnits(project, nextSettings);
+  if (choirUnits.length === 0) {
     return {
       project: { ...project, autoPan: nextSettings },
       panUpdates: null,
@@ -292,14 +331,8 @@ export function applyChoirAutoPanToProject(project, settingsOverride = {}) {
   }
 
   const n = nextSettings.manualChoirParts
-    ? Array.from(
-      new Set(
-        choirTracks
-          .map((track) => getChoirPartNumber(track.role))
-          .filter((value) => Number.isFinite(value))
-      )
-    ).length
-    : choirTracks.length;
+    ? Array.from(new Set(choirUnits.map((unit) => unit.partIndex))).length
+    : choirUnits.length;
 
   if (n === 0) {
     return {
@@ -316,27 +349,17 @@ export function applyChoirAutoPanToProject(project, settingsOverride = {}) {
   });
 
   const panUpdates = {};
-  const partNumbers = nextSettings.manualChoirParts
-    ? Array.from(
-      new Set(
-        choirTracks
-          .map((track) => getChoirPartNumber(track.role))
-          .filter((value) => Number.isFinite(value))
-      )
-    ).sort((a, b) => a - b)
-    : null;
-  const partIndexByNumber = partNumbers
-    ? new Map(partNumbers.map((value, idx) => [value, idx + 1]))
-    : null;
-  const partIndexByTrackId = !nextSettings.manualChoirParts
-    ? new Map(choirTracks.map((track, idx) => [track.id, idx + 1]))
-    : null;
+  const partIndexByTrackId = new Map();
+  choirUnits.forEach((unit, idx) => {
+    const partIndex = nextSettings.manualChoirParts ? unit.partIndex : (idx + 1);
+    if (!partIndex) return;
+    for (const trackId of unit.trackIds) {
+      partIndexByTrackId.set(trackId, partIndex);
+    }
+  });
 
   const nextTracks = project.tracks.map((track) => {
-    if (!track.role?.startsWith('choir-part-')) return track;
-    const partIndex = nextSettings.manualChoirParts
-      ? partIndexByNumber?.get(getChoirPartNumber(track.role))
-      : partIndexByTrackId?.get(track.id);
+    const partIndex = partIndexByTrackId.get(track.id);
     if (!partIndex) return track;
     const nextPanRaw = panByPartIndex[partIndex];
     if (!Number.isFinite(nextPanRaw)) return track;
@@ -357,3 +380,4 @@ export function applyChoirAutoPanToProject(project, settingsOverride = {}) {
     panUpdates,
   };
 }
+import { getEffectiveTrackMix } from './trackTree';

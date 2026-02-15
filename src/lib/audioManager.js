@@ -1,5 +1,6 @@
 import { volumeToGain, equalPowerPan, msToSeconds } from '../utils/audio';
 import { SAMPLE_RATE } from '../types/project';
+import { getEffectiveTrackMix } from '../utils/trackTree';
 
 /**
  * Audio Manager
@@ -189,10 +190,11 @@ class AudioManager {
 
       this.isPlaying = true;
       this.startTime = this.audioContext.currentTime - msToSeconds(currentTimeMs);
+      const mix = getEffectiveTrackMix(project);
 
       // Start all tracks
       for (const track of project.tracks) {
-        await this.playTrack(track, currentTimeMs, project);
+        await this.playTrack(track, currentTimeMs, mix.statesByTrackId.get(track.id));
       }
     } finally {
       this.isInitializingPlayback = false;
@@ -202,15 +204,10 @@ class AudioManager {
   /**
    * Play a single track
    */
-  async playTrack(track, currentTimeMs, project) {
+  async playTrack(track, currentTimeMs, effectiveState) {
     // Skip if track has no clips
     if (!track.clips || track.clips.length === 0) return;
-
-    // Calculate if track should be audible
-    const isSoloed = project.tracks.some(t => t.soloed);
-    const isAudible = isSoloed ? track.soloed : !track.muted;
-
-    if (!isAudible) return;
+    if (!effectiveState?.audible) return;
 
     // Play all clips that should be audible at current time or in the future
     for (const clip of track.clips) {
@@ -236,13 +233,15 @@ class AudioManager {
 
       // Create gain node
       const gainNode = this.audioContext.createGain();
-      const trackGain = volumeToGain(track.volume);
+      const trackGain = Number.isFinite(effectiveState.effectiveGain)
+        ? effectiveState.effectiveGain
+        : volumeToGain(track.volume);
       const clipGain = Math.pow(10, clip.gainDb / 20);
       gainNode.gain.value = trackGain * clipGain;
 
       // Create pan node
       const panNode = this.audioContext.createStereoPanner();
-      panNode.pan.value = track.pan / 100;
+      panNode.pan.value = (Number.isFinite(effectiveState.effectivePan) ? effectiveState.effectivePan : track.pan) / 100;
 
       // Connect: source -> gain -> pan -> master -> destination
       source.connect(gainNode);
@@ -343,10 +342,11 @@ class AudioManager {
    * Update track volume in real-time
    */
   updateTrackVolume(trackId, volume) {
-    const nodes = this.activeSources.get(trackId);
-    if (nodes) {
-      const gain = volumeToGain(volume);
-      nodes.gainNode.gain.value = gain;
+    const gain = volumeToGain(volume);
+    for (const [sourceKey, nodes] of this.activeSources.entries()) {
+      if (sourceKey === trackId || sourceKey.startsWith(`${trackId}-`)) {
+        nodes.gainNode.gain.value = gain;
+      }
     }
   }
 
@@ -354,9 +354,26 @@ class AudioManager {
    * Update track pan in real-time
    */
   updateTrackPan(trackId, pan) {
-    const nodes = this.activeSources.get(trackId);
-    if (nodes) {
-      nodes.panNode.pan.value = pan / 100;
+    for (const [sourceKey, nodes] of this.activeSources.entries()) {
+      if (sourceKey === trackId || sourceKey.startsWith(`${trackId}-`)) {
+        nodes.panNode.pan.value = pan / 100;
+      }
+    }
+  }
+
+  /**
+   * Update effective track mix (inherited gain/pan) in real-time
+   */
+  updateTrackMix(trackId, effectiveGain, effectivePan) {
+    for (const [sourceKey, nodes] of this.activeSources.entries()) {
+      if (sourceKey === trackId || sourceKey.startsWith(`${trackId}-`)) {
+        if (Number.isFinite(effectiveGain)) {
+          nodes.gainNode.gain.value = effectiveGain;
+        }
+        if (Number.isFinite(effectivePan)) {
+          nodes.panNode.pan.value = effectivePan / 100;
+        }
+      }
     }
   }
 

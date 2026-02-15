@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useMemo } from 'react';
 import { VolumeX } from 'lucide-react';
 import {
   formatTime,
@@ -10,7 +10,7 @@ import {
 import { audioManager } from '../lib/audioManager';
 import Waveform from './Waveform';
 import { calculateGlobalPeakAmplitude } from '../utils/waveformUtils';
-import { getTrackHeight } from '../utils/trackTree';
+import { getGroupDescendantTrackIdsByGroup, getTrackHeight } from '../utils/trackTree';
 import { 
   constrainClipMove, 
   constrainCropStart, 
@@ -44,7 +44,10 @@ function Timeline({
   isRecording,
   recordingSegments,
   selectedTrackId,
+  selectedNodeId = null,
+  selectedRowKind = null,
   onUpdateClip,
+  onSelectRow,
   onSelectTrack,
   onSeek,
   onVerticalScroll,
@@ -150,8 +153,74 @@ function Timeline({
       height: getTrackHeight(track),
     }));
 
+  const trackRowByTrackId = useMemo(() => {
+    const map = new Map();
+    timelineRows.forEach((row) => {
+      if (row.kind === 'track' && row.trackId) {
+        map.set(row.trackId, row);
+      }
+    });
+    return map;
+  }, [timelineRows]);
+
+  const selectRow = (row) => {
+    if (!row) return;
+    onSelectRow?.(row);
+    if (row.kind === 'track' && row.trackId) {
+      onSelectTrack?.(row.trackId);
+    }
+  };
+
   // Calculate total timeline height based on rendered rows
   const totalTimelineHeight = timelineRows.reduce((sum, row) => sum + row.height, 0);
+
+  const groupTimelinePreviewByNodeId = useMemo(() => {
+    const groupTrackIdsByNodeId = getGroupDescendantTrackIdsByGroup(project);
+    const trackById = new Map((project.tracks || []).map((track) => [track.id, track]));
+    const byGroupNodeId = new Map();
+
+    for (const [groupNodeId, trackIds] of groupTrackIdsByNodeId.entries()) {
+      const clips = [];
+      for (const trackId of trackIds) {
+        const track = trackById.get(trackId);
+        if (!track?.clips?.length) continue;
+        for (const clip of track.clips) {
+          const durationMs = Math.max(0, (clip.cropEndMs || 0) - (clip.cropStartMs || 0));
+          if (durationMs <= 0) continue;
+          clips.push({
+            key: `${trackId}:${clip.id}`,
+            startMs: clip.timelineStartMs,
+            durationMs,
+            cropStartMs: clip.cropStartMs,
+            cropEndMs: clip.cropEndMs,
+            sourceDurationMs: clip.sourceDurationMs,
+            blobId: clip.blobId,
+          });
+        }
+      }
+
+      clips.sort((a, b) => a.startMs - b.startMs || b.durationMs - a.durationMs);
+
+      const activeSegments = [];
+      for (const clip of clips) {
+        const clipStart = clip.startMs;
+        const clipEnd = clip.startMs + clip.durationMs;
+        const previous = activeSegments[activeSegments.length - 1];
+        if (!previous || clipStart > previous.endMs) {
+          activeSegments.push({ startMs: clipStart, endMs: clipEnd });
+        } else if (clipEnd > previous.endMs) {
+          previous.endMs = clipEnd;
+        }
+      }
+
+      byGroupNodeId.set(groupNodeId, {
+        clips,
+        activeSegments,
+      });
+    }
+
+    return byGroupNodeId;
+  }, [project]);
 
   // Calculate total timeline duration (in ms) based on furthest clip endpoint
   const rawProjectDurationMs = project.tracks.reduce((max, track) => {
@@ -310,7 +379,12 @@ function Timeline({
   const handleClipClick = (e, clipId, trackId) => {
     e.stopPropagation();
     setSelectedClipId(clipId);
-    onSelectTrack(trackId);
+    const row = trackRowByTrackId.get(trackId);
+    if (row) {
+      selectRow(row);
+    } else {
+      onSelectTrack(trackId);
+    }
   };
 
   const handleClipRightClick = (e, clip, track) => {
@@ -372,7 +446,12 @@ function Timeline({
     });
 
     setSelectedClipId(clip.id);
-    onSelectTrack(track.id);
+    const row = trackRowByTrackId.get(track.id);
+    if (row) {
+      selectRow(row);
+    } else {
+      onSelectTrack(track.id);
+    }
   };
 
   useEffect(() => {
@@ -460,6 +539,12 @@ function Timeline({
   }, [dragState, pixelsPerMs, onUpdateClip]);
 
   useEffect(() => {
+    if (selectedRowKind === 'group') {
+      setSelectedClipId(null);
+    }
+  }, [selectedRowKind]);
+
+  useEffect(() => {
     if (!selectedClipId) return;
     if (!selectedTrackId) {
       setSelectedClipId(null);
@@ -481,23 +566,24 @@ function Timeline({
     const handleKeyDown = (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
-      const selectedTrack = project.tracks.find(t => t.id === selectedTrackId);
+      const hasTrackSelection = selectedRowKind !== 'group' && Boolean(selectedTrackId);
+      const selectedTrack = hasTrackSelection ? project.tracks.find(t => t.id === selectedTrackId) : null;
       const selectedClip = selectedTrack?.clips.find(c => c.id === selectedClipId);
 
-      if (deleteClipShortcutEnabled && (e.code === 'Delete' || e.code === 'Backspace') && selectedClip && selectedTrackId) {
+      if (deleteClipShortcutEnabled && (e.code === 'Delete' || e.code === 'Backspace') && selectedClip && hasTrackSelection) {
         e.preventDefault();
         onUpdateClip(selectedTrackId, selectedClipId, null, 'delete');
         setSelectedClipId(null);
         return;
       }
 
-      if (deleteClipShortcutEnabled && (e.code === 'Delete' || e.code === 'Backspace') && !selectedClip && selectedTrackId) {
+      if (deleteClipShortcutEnabled && (e.code === 'Delete' || e.code === 'Backspace') && !selectedClip && hasTrackSelection) {
         e.preventDefault();
         onDeleteTrackShortcut?.(selectedTrackId);
         return;
       }
 
-      if (e.code === 'KeyT' && (e.ctrlKey || e.metaKey) && selectedClip && selectedTrackId) {
+      if (e.code === 'KeyT' && (e.ctrlKey || e.metaKey) && selectedClip && hasTrackSelection) {
         e.preventDefault();
         const track = project.tracks.find(t => t.id === selectedTrackId);
         if (!track || track.locked) return;
@@ -532,7 +618,7 @@ function Timeline({
         return;
       }
 
-      if (e.code === 'KeyM' && selectedTrackId) {
+      if (e.code === 'KeyM' && hasTrackSelection) {
         e.preventDefault();
         const track = project.tracks.find(t => t.id === selectedTrackId);
         if (!track) return;
@@ -546,7 +632,7 @@ function Timeline({
         return;
       }
 
-      if (e.code === 'KeyS' && selectedTrackId) {
+      if (e.code === 'KeyS' && hasTrackSelection) {
         e.preventDefault();
         const track = project.tracks.find(t => t.id === selectedTrackId);
         if (!track) return;
@@ -560,7 +646,7 @@ function Timeline({
         return;
       }
 
-      if (e.code === 'KeyL' && selectedTrackId) {
+      if (e.code === 'KeyL' && hasTrackSelection) {
         e.preventDefault();
         const track = project.tracks.find(t => t.id === selectedTrackId);
         if (!track) return;
@@ -576,21 +662,21 @@ function Timeline({
 
       if (e.code === 'ArrowUp' || e.code === 'ArrowDown') {
         e.preventDefault();
-        const visibleTrackIds = timelineRows
-          .filter((row) => row.kind === 'track')
-          .map((row) => row.trackId);
-        if (!visibleTrackIds.length) return;
-        const currentIndex = visibleTrackIds.findIndex((id) => id === selectedTrackId);
+        if (!timelineRows.length) return;
+        const currentIndex = selectedNodeId
+          ? timelineRows.findIndex((row) => row.nodeId === selectedNodeId)
+          : -1;
         const nextIndex =
           currentIndex === -1
             ? 0
             : Math.min(
-                visibleTrackIds.length - 1,
+                timelineRows.length - 1,
                 Math.max(0, currentIndex + (e.code === 'ArrowDown' ? 1 : -1))
               );
-        const nextTrackId = visibleTrackIds[nextIndex];
-        if (nextTrackId) {
-          onSelectTrack(nextTrackId);
+        const nextRow = timelineRows[nextIndex];
+        if (nextRow) {
+          selectRow(nextRow);
+          setSelectedClipId(null);
         }
         return;
       }
@@ -602,7 +688,7 @@ function Timeline({
         setClipboardClip({ ...selectedClip });
       }
 
-      if (e.code === 'KeyV' && (e.ctrlKey || e.metaKey) && clipboardClip && selectedTrackId) {
+      if (e.code === 'KeyV' && (e.ctrlKey || e.metaKey) && clipboardClip && hasTrackSelection) {
         e.preventDefault();
         const track = project.tracks.find(t => t.id === selectedTrackId);
         if (!track) return;
@@ -624,7 +710,7 @@ function Timeline({
         }
       }
 
-      if (e.code === 'KeyD' && (e.ctrlKey || e.metaKey) && selectedClip && selectedTrackId) {
+      if (e.code === 'KeyD' && (e.ctrlKey || e.metaKey) && selectedClip && hasTrackSelection) {
         e.preventDefault();
         const track = project.tracks.find(t => t.id === selectedTrackId);
         if (!track) return;
@@ -651,7 +737,7 @@ function Timeline({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [shortcutsEnabled, deleteClipShortcutEnabled, selectedClipId, selectedTrackId, clipboardClip, currentTimeMs, project.tracks, onUpdateClip, timelineRows, onDeleteTrackShortcut]);
+  }, [shortcutsEnabled, deleteClipShortcutEnabled, selectedClipId, selectedTrackId, selectedNodeId, selectedRowKind, clipboardClip, currentTimeMs, project.tracks, onUpdateClip, timelineRows, onDeleteTrackShortcut]);
 
   const handleContextMenu = (e) => {
     e.preventDefault();
@@ -1185,17 +1271,81 @@ function Timeline({
               {timelineRows.map((row, rowIndex) => {
                 const trackY = getTrackYPosition(timelineRows, rowIndex);
                 if (row.kind === 'group') {
+                  const groupPreview = groupTimelinePreviewByNodeId.get(row.nodeId);
+                  const rowPadding = row.collapsed ? 4 : 8;
+                  const rowInternalHeight = Math.max(0, row.height - (rowPadding * 2));
                   return (
                     <div
                       key={row.nodeId}
-                      className="border-b border-gray-700 bg-gray-900/80"
+                      className={`border-b border-gray-700 relative ${row.collapsed ? 'bg-gray-850' : 'bg-gray-900/80'}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        selectRow(row);
+                        setSelectedClipId(null);
+                      }}
                       style={{
                         height: `${row.height}px`,
                         top: `${trackY}px`,
                         position: 'absolute',
                         width: '100%',
                       }}
-                    />
+                    >
+                      {row.collapsed && (
+                        <div className="absolute inset-y-0 left-3 right-3 flex items-center text-4xl text-gray-200 font-semibold pointer-events-none z-10">
+                          <span className="sticky left-3">{row.name}</span>
+                        </div>
+                      )}
+
+                      {groupPreview?.activeSegments?.map((segment, idx) => {
+                        const leftPx = segment.startMs * pixelsPerMs;
+                        const widthPx = Math.max(0, (segment.endMs - segment.startMs) * pixelsPerMs);
+                        return (
+                          <div
+                            key={`group-segment-${row.nodeId}-${idx}`}
+                            className="absolute rounded pointer-events-none"
+                            style={{
+                              left: `${leftPx}px`,
+                              top: `${rowPadding}px`,
+                              width: `${widthPx}px`,
+                              height: `${rowInternalHeight}px`,
+                              backgroundColor: 'rgba(79, 142, 247, 0.18)',
+                            }}
+                          />
+                        );
+                      })}
+
+                      {groupPreview?.clips?.map((clip) => {
+                        const clipLeftPx = clip.startMs * pixelsPerMs;
+                        const clipWidthPx = clip.durationMs * pixelsPerMs;
+                        const audioBuffer = audioManager.mediaCache.get(clip.blobId);
+                        return (
+                          <div
+                            key={`group-clip-${row.nodeId}-${clip.key}`}
+                            className="absolute rounded overflow-hidden pointer-events-none"
+                            style={{
+                              left: `${clipLeftPx}px`,
+                              top: `${rowPadding}px`,
+                              width: `${clipWidthPx}px`,
+                              height: `${rowInternalHeight}px`,
+                              backgroundColor: 'transparent',
+                            }}
+                          >
+                            {audioBuffer && (
+                              <Waveform
+                                audioBuffer={audioBuffer}
+                                clipId={`group:${row.nodeId}:${clip.key}`}
+                                cropStartMs={clip.cropStartMs}
+                                cropEndMs={clip.cropEndMs}
+                                sourceDurationMs={clip.sourceDurationMs}
+                                height={rowInternalHeight}
+                                color="rgba(123, 173, 255, 0.55)"
+                                globalPeakAmplitude={globalPeakAmplitude}
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   );
                 }
 

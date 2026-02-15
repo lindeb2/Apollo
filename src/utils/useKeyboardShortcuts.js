@@ -14,6 +14,7 @@ function useKeyboardShortcuts({
   onToggleLoop,
   onDeleteTrack,
   onAddTrack,
+  onAddSubtrack,
 }) {
   useEffect(() => {
     if (!enabled) return;
@@ -68,9 +69,14 @@ function useKeyboardShortcuts({
       }
 
       // N - Create new track (from selected track position)
+      // Shift+N - Create new subtrack (convert selected empty track into group)
       if (e.code === 'KeyN' && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
-        onAddTrack?.();
+        if (e.shiftKey) {
+          onAddSubtrack?.();
+        } else {
+          onAddTrack?.();
+        }
       }
     };
 
@@ -79,7 +85,7 @@ function useKeyboardShortcuts({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [enabled, onPlayPause, onStop, onRecord, onUndo, onRedo, onToggleLoop, onDeleteTrack, onAddTrack]);
+  }, [enabled, onPlayPause, onStop, onRecord, onUndo, onRedo, onToggleLoop, onDeleteTrack, onAddTrack, onAddSubtrack]);
 }
 
 export default useKeyboardShortcuts;

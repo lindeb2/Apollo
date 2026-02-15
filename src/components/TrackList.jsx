@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ChevronDown,
   ChevronRight,
   Headphones,
   Lock,
@@ -24,7 +23,11 @@ function TrackList({
   tracks,
   rows,
   onUpdateTrack,
+  onUpdateGroup,
+  onCreateSubtrack,
+  onSelectRow,
   onSelectTrack,
+  selectedNodeId,
   selectedTrackId,
   onAddTrack,
   onDeleteTrack,
@@ -90,6 +93,15 @@ function TrackList({
   ], []);
 
   const menuItemClass = 'w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap';
+
+  const selectRow = (row) => {
+    if (!row) return;
+    onSelectRow?.(row);
+    if (row.kind === 'track') {
+      const trackId = row.trackId || row.track?.id;
+      if (trackId) onSelectTrack?.(trackId);
+    }
+  };
 
   const setGlobalDragCursor = (active) => {
     document.body.classList.toggle('row-drag-cursor', active);
@@ -225,27 +237,34 @@ function TrackList({
     onUpdateTrack(trackId, { pan: parseFloat(value) });
   };
 
-  const beginDrag = (e, trackId, type) => {
+  const handleGroupVolumeChange = (groupNodeId, value) => {
+    onUpdateGroup?.(groupNodeId, { volume: parseFloat(value) });
+  };
+
+  const handleGroupPanChange = (groupNodeId, value) => {
+    onUpdateGroup?.(groupNodeId, { pan: parseFloat(value) });
+  };
+
+  const beginDrag = (e, entityId, type, startValue, onChange) => {
     e.preventDefault();
     e.stopPropagation();
     if (editTooltip) setEditTooltip(null);
-    const track = trackMap.get(trackId);
-    const startValue = type === 'volume' ? track?.volume ?? 0 : track?.pan ?? 0;
     const rect = e.currentTarget.getBoundingClientRect();
     setDragTooltip({
-      trackId,
+      entityId,
       type,
       value: startValue,
       x: rect.left + rect.width / 2,
       y: rect.top - 6,
     });
     dragRef.current = {
-      trackId,
+      entityId,
       type,
       startX: e.clientX,
       startValue,
       width: rect.width,
       moved: false,
+      onChange,
     };
   };
 
@@ -299,7 +318,7 @@ function TrackList({
 
   const handleDragMove = (e) => {
     if (!dragRef.current) return;
-    const { trackId, type, startX, startValue, width, moved } = dragRef.current;
+    const { entityId, type, startX, startValue, width, moved, onChange } = dragRef.current;
     const deltaX = e.clientX - startX;
     if (!moved && Math.abs(deltaX) < 2) return;
     dragRef.current.moved = true;
@@ -308,13 +327,13 @@ function TrackList({
     if (type === 'volume') {
       const range = 100;
       const next = Math.min(100, Math.max(0, startValue + (deltaX / width) * range));
-      handleVolumeChange(trackId, next);
-      setDragTooltip((prev) => (prev ? { ...prev, value: next } : { trackId, type, value: next }));
+      onChange?.(next);
+      setDragTooltip((prev) => (prev ? { ...prev, value: next } : { entityId, type, value: next }));
     } else {
       const range = 200;
       const next = Math.min(100, Math.max(-100, startValue + (deltaX / width) * range));
-      handlePanChange(trackId, next);
-      setDragTooltip((prev) => (prev ? { ...prev, value: next } : { trackId, type, value: next }));
+      onChange?.(next);
+      setDragTooltip((prev) => (prev ? { ...prev, value: next } : { entityId, type, value: next }));
     }
   };
 
@@ -377,61 +396,57 @@ function TrackList({
     }, 0);
   };
 
-  const handleVolumeDoubleClick = (track, e) => {
+  const openEditTooltip = (entityId, type, text, e) => {
     setDragTooltip(null);
     const rect = e.currentTarget.getBoundingClientRect();
-    const display = track.volume <= 0 ? '-∞' : volumeToDb(track.volume).toFixed(1);
     setEditTooltip({
-      trackId: track.id,
-      type: 'volume',
-      text: display,
+      entityId,
+      type,
+      text,
       x: rect.left + rect.width / 2,
       y: rect.top - 6,
     });
   };
 
-  const handlePanDoubleClick = (track, e) => {
-    setDragTooltip(null);
-    const rect = e.currentTarget.getBoundingClientRect();
-    setEditTooltip({
-      trackId: track.id,
-      type: 'pan',
-      text: track.pan.toFixed(0),
-      x: rect.left + rect.width / 2,
-      y: rect.top - 6,
-    });
+  const handleVolumeDoubleClick = (entityId, currentVolume, e) => {
+    const display = currentVolume <= 0 ? '-∞' : volumeToDb(currentVolume).toFixed(1);
+    openEditTooltip(entityId, 'volume', display, e);
   };
 
-  const commitEditTooltip = (track) => {
+  const handlePanDoubleClick = (entityId, currentPan, e) => {
+    openEditTooltip(entityId, 'pan', currentPan.toFixed(0), e);
+  };
+
+  const commitEditTooltip = ({ onVolumeChange, onPanChange }) => {
     if (!editTooltip) return;
 
     const text = editTooltip.text.trim();
     if (editTooltip.type === 'volume') {
       if (!text) {
-        handleVolumeChange(track.id, dbToVolume(0));
+        onVolumeChange?.(dbToVolume(0));
         setEditTooltip(null);
         return;
       }
       const normalized = text.toLowerCase();
       if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
-        handleVolumeChange(track.id, 0);
+        onVolumeChange?.(0);
         setEditTooltip(null);
         return;
       }
       const parsed = parseFloat(text);
       if (!Number.isNaN(parsed)) {
         const clampedDb = Math.min(6, Math.max(-60, parsed));
-        handleVolumeChange(track.id, dbToVolume(clampedDb));
+        onVolumeChange?.(dbToVolume(clampedDb));
       }
     } else {
       if (!text) {
-        handlePanChange(track.id, 0);
+        onPanChange?.(0);
         setEditTooltip(null);
         return;
       }
       const parsed = parseFloat(text);
       if (!Number.isNaN(parsed)) {
-        handlePanChange(track.id, Math.min(100, Math.max(-100, parsed)));
+        onPanChange?.(Math.min(100, Math.max(-100, parsed)));
       }
     }
 
@@ -450,6 +465,14 @@ function TrackList({
     onUpdateTrack(trackId, { soloed: !currentSoloed });
   };
 
+  const handleToggleGroupMute = (groupNodeId, currentMuted) => {
+    onUpdateGroup?.(groupNodeId, { muted: !currentMuted });
+  };
+
+  const handleToggleGroupSolo = (groupNodeId, currentSoloed) => {
+    onUpdateGroup?.(groupNodeId, { soloed: !currentSoloed });
+  };
+
   const handleNameChange = (trackId, newName) => {
     const normalizedName = normalizeTrackName(newName);
     if (normalizedName) {
@@ -464,6 +487,14 @@ function TrackList({
     const normalizedName = normalizeTrackName(nextNameRaw);
     if (!normalizedName) return;
     onRenameGroup?.(groupRow.nodeId, normalizedName);
+  };
+
+  const handleGroupNameChange = (groupNodeId, newName) => {
+    const normalizedName = normalizeTrackName(newName);
+    if (normalizedName) {
+      onRenameGroup?.(groupNodeId, normalizedName);
+    }
+    setEditingName(null);
   };
 
   const getRoleColor = (role) => {
@@ -519,6 +550,10 @@ function TrackList({
           : {};
 
         if (row.kind === 'group') {
+          const groupIsLocked = Boolean(row.collapsed);
+          const GroupIcon = row.role?.startsWith('choir-part-') ? Users : Waves;
+          const isSelectedRow = selectedNodeId === row.nodeId;
+
           return (
             <div
               key={row.nodeId}
@@ -534,7 +569,15 @@ function TrackList({
                 });
               }}
               onMouseDown={(e) => beginRowReorder(e, row)}
-              className={`border-b border-gray-700 bg-gray-800/80 hover:bg-gray-750 cursor-pointer ${isActivelyDragging ? 'cursor-grabbing' : ''}`}
+              onClick={() => {
+                if (suppressClickRef.current) return;
+                selectRow(row);
+              }}
+              className={`border-b border-gray-700 cursor-pointer ${
+                isSelectedRow
+                  ? 'bg-gray-700'
+                  : 'bg-gray-800 hover:bg-gray-750'
+              } ${isActivelyDragging ? 'cursor-grabbing' : ''}`}
               style={{
                 height: `${row.height}px`,
                 minHeight: `${row.height}px`,
@@ -543,29 +586,234 @@ function TrackList({
               }}
             >
               <div
-                className="h-full flex items-center gap-2 pr-4"
+                className="h-full flex items-center gap-4 pr-4"
                 style={{ paddingLeft: `${16 + row.depth * 16}px` }}
               >
-                <button
+                <div
                   data-track-interactive="true"
-                  className="w-5 h-5 rounded-sm text-gray-300 hover:bg-gray-700 flex items-center justify-center"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleGroupCollapse?.(row.nodeId);
-                  }}
-                  title={row.collapsed ? 'Expand group' : 'Collapse group'}
+                  className="flex-shrink-0"
+                  onClick={(e) => e.stopPropagation()}
                 >
-                  {row.collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-                </button>
-                <span
-                  className="text-sm font-medium text-gray-200 truncate select-none"
-                  onDoubleClick={(e) => {
-                    e.stopPropagation();
-                    handleRenameGroup(row);
-                  }}
-                >
-                  {row.name}
-                </span>
+                  <div className={`w-14 h-14 rounded-lg ${getRoleColor(row.role)} text-white flex items-center justify-center`}>
+                    <GroupIcon size={22} />
+                  </div>
+                </div>
+
+                <div className={`flex-1 min-w-0 flex flex-col ${groupIsLocked ? 'justify-center gap-3' : 'gap-1'}`}>
+                  {!groupIsLocked && (
+                    <div
+                      className="flex items-center min-w-0"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {editingName === `group:${row.nodeId}` ? (
+                        <input
+                          type="text"
+                          defaultValue={row.name}
+                          autoFocus
+                          onBlur={(e) => handleGroupNameChange(row.nodeId, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              handleGroupNameChange(row.nodeId, e.target.value);
+                            } else if (e.key === 'Escape') {
+                              setEditingName(null);
+                            }
+                          }}
+                          data-track-interactive="true"
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onClick={(e) => e.stopPropagation()}
+                          className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-lg font-semibold leading-none focus:outline-none min-w-0 h-[28px]"
+                        />
+                      ) : (
+                        <span
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            setEditingName(`group:${row.nodeId}`);
+                          }}
+                          className="flex-1 text-lg font-semibold truncate min-w-0 h-[28px] flex items-center select-none"
+                          title="Double-click to edit"
+                        >
+                          {row.name}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  <div data-track-interactive="true" className="flex items-center gap-3">
+                    <div className="flex items-center gap-0" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleToggleGroupMute(row.nodeId, row.muted);
+                        }}
+                        className={`w-7 h-7 flex items-center justify-center rounded-l-md rounded-r-none border border-gray-600 transition-colors ${
+                          row.muted ? 'bg-red-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
+                        }`}
+                        title={row.muted ? 'Unmute group' : 'Mute group'}
+                      >
+                        {row.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleToggleGroupSolo(row.nodeId, row.soloed);
+                        }}
+                        className={`w-7 h-7 flex items-center justify-center rounded-r-md rounded-l-none border border-l-0 border-gray-600 transition-colors ${
+                          row.soloed ? 'bg-yellow-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
+                        }`}
+                        title={row.soloed ? 'Unsolo group' : 'Solo group'}
+                      >
+                        <Headphones size={16} />
+                      </button>
+                    </div>
+
+                    <button
+                      data-track-interactive="true"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleGroupCollapse?.(row.nodeId);
+                      }}
+                      className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-600 transition-colors bg-gray-800 hover:bg-gray-600 text-gray-300 -ml-1"
+                      title={groupIsLocked ? 'Expand group' : 'Collapse group'}
+                    >
+                      {groupIsLocked ? <Lock size={16} /> : <Unlock size={16} />}
+                    </button>
+
+                    <div
+                      className="flex-1 flex items-center relative"
+                      onClick={(e) => e.stopPropagation()}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="0.1"
+                        value={row.volume ?? 100}
+                        readOnly
+                        onMouseDown={(e) => {
+                          if (e.detail > 1) return;
+                          beginDrag(
+                            e,
+                            row.nodeId,
+                            'volume',
+                            row.volume ?? 100,
+                            (next) => handleGroupVolumeChange(row.nodeId, next)
+                          );
+                        }}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          handleVolumeDoubleClick(row.nodeId, row.volume ?? 100, e);
+                        }}
+                        className="w-full volume-slider volume-slider-lg cursor-pointer"
+                      />
+                      {dragTooltip?.entityId === row.nodeId && dragTooltip.type === 'volume' && (
+                        <div
+                          className="fixed w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
+                          style={{ left: dragTooltip.x, top: dragTooltip.y, transform: 'translate(-50%, -100%)' }}
+                        >
+                          {dragTooltip.value <= 0 ? '-∞' : volumeToDb(dragTooltip.value).toFixed(1)}
+                        </div>
+                      )}
+                      {editTooltip?.entityId === row.nodeId && editTooltip.type === 'volume' && (
+                        <input
+                          type="text"
+                          value={editTooltip.text}
+                          onChange={(e) => setEditTooltip({ ...editTooltip, text: e.target.value })}
+                          onFocus={(e) => e.target.select()}
+                          onBlur={() => commitEditTooltip({
+                            onVolumeChange: (next) => handleGroupVolumeChange(row.nodeId, next),
+                            onPanChange: (next) => handleGroupPanChange(row.nodeId, next),
+                          })}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              commitEditTooltip({
+                                onVolumeChange: (next) => handleGroupVolumeChange(row.nodeId, next),
+                                onPanChange: (next) => handleGroupPanChange(row.nodeId, next),
+                              });
+                            } else if (e.key === 'Escape') {
+                              setEditTooltip(null);
+                            }
+                          }}
+                          className="fixed w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
+                          style={{ left: editTooltip.x, top: editTooltip.y, transform: 'translate(-50%, -100%)' }}
+                          autoFocus
+                        />
+                      )}
+                    </div>
+
+                    <div
+                      className="relative w-8 h-8 flex-shrink-0"
+                      onClick={(e) => e.stopPropagation()}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      <div className="absolute inset-0 overflow-hidden">
+                        <div className="absolute inset-0 pan-ring pointer-events-none" />
+                        <div className="absolute left-1/2 top-1/2 w-6 h-6 rounded-full bg-gray-700 border border-gray-600 -translate-x-1/2 -translate-y-1/2 pointer-events-none" />
+                        <div
+                          className="absolute left-1/2 top-1/2 w-[3px] h-3 bg-gray-200 rounded-full origin-bottom pointer-events-none"
+                          style={{ transform: `translate(-50%, -100%) rotate(${((row.pan ?? 0) / 100) * 135}deg)` }}
+                        />
+                      </div>
+                      <input
+                        type="range"
+                        min="-100"
+                        max="100"
+                        step="1"
+                        value={row.pan ?? 0}
+                        readOnly
+                        onMouseDown={(e) => {
+                          if (e.detail > 1) return;
+                          beginDrag(
+                            e,
+                            row.nodeId,
+                            'pan',
+                            row.pan ?? 0,
+                            (next) => handleGroupPanChange(row.nodeId, next)
+                          );
+                        }}
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          handlePanDoubleClick(row.nodeId, row.pan ?? 0, e);
+                        }}
+                        className="absolute top-0 left-0 right-0 h-4 pan-knob opacity-0 cursor-pointer z-10 pointer-events-auto appearance-none touch-none"
+                        aria-label="Group pan"
+                      />
+                      {dragTooltip?.entityId === row.nodeId && dragTooltip.type === 'pan' && (
+                        <div
+                          className="fixed w-12 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
+                          style={{ left: dragTooltip.x, top: dragTooltip.y, transform: 'translate(-50%, -100%)' }}
+                        >
+                          {Math.round(dragTooltip.value)}
+                        </div>
+                      )}
+                      {editTooltip?.entityId === row.nodeId && editTooltip.type === 'pan' && (
+                        <input
+                          type="text"
+                          value={editTooltip.text}
+                          onChange={(e) => setEditTooltip({ ...editTooltip, text: e.target.value })}
+                          onFocus={(e) => e.target.select()}
+                          onBlur={() => commitEditTooltip({
+                            onVolumeChange: (next) => handleGroupVolumeChange(row.nodeId, next),
+                            onPanChange: (next) => handleGroupPanChange(row.nodeId, next),
+                          })}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              commitEditTooltip({
+                                onVolumeChange: (next) => handleGroupVolumeChange(row.nodeId, next),
+                                onPanChange: (next) => handleGroupPanChange(row.nodeId, next),
+                              });
+                            } else if (e.key === 'Escape') {
+                              setEditTooltip(null);
+                            }
+                          }}
+                          className="fixed w-12 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
+                          style={{ left: editTooltip.x, top: editTooltip.y, transform: 'translate(-50%, -100%)' }}
+                          autoFocus
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           );
@@ -576,6 +824,9 @@ function TrackList({
 
         const trackHeight = row.height || (track.locked ? LOCKED_TRACK_HEIGHT : TRACK_HEIGHT);
         const { Icon: TrackIcon } = getIconForTrack(track);
+        const isSelectedRow = selectedNodeId
+          ? selectedNodeId === row.nodeId
+          : selectedTrackId === track.id;
 
         return (
           <div
@@ -595,10 +846,10 @@ function TrackList({
             onMouseDown={(e) => beginRowReorder(e, row)}
             onClick={() => {
               if (suppressClickRef.current) return;
-              onSelectTrack(track.id);
+              selectRow(row);
             }}
             className={`border-b border-gray-700 cursor-pointer ${
-              selectedTrackId === track.id ? 'bg-gray-700' : 'bg-gray-800 hover:bg-gray-750'
+              isSelectedRow ? 'bg-gray-700' : 'bg-gray-800 hover:bg-gray-750'
             } ${track.locked ? 'bg-gray-850' : ''} ${isActivelyDragging ? 'cursor-grabbing' : ''}`}
             style={{
               height: `${trackHeight}px`,
@@ -611,11 +862,11 @@ function TrackList({
               className="h-full flex items-center gap-4 pr-4"
               style={{ paddingLeft: `${16 + row.depth * 16}px` }}
             >
-              <div
-                data-track-interactive="true"
-                className="flex-shrink-0"
-                onClick={() => onSelectTrack(track.id)}
-              >
+                <div
+                  data-track-interactive="true"
+                  className="flex-shrink-0"
+                  onClick={() => selectRow(row)}
+                >
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -631,9 +882,8 @@ function TrackList({
               <div className={`flex-1 min-w-0 flex flex-col ${track.locked ? 'justify-center gap-3' : 'gap-1'}`}>
                 {!track.locked && (
                   <div
-                    data-track-interactive="true"
                     className="flex items-center min-w-0"
-                    onClick={() => onSelectTrack(track.id)}
+                    onClick={() => selectRow(row)}
                   >
                     {editingName === track.id ? (
                       <input
@@ -648,6 +898,8 @@ function TrackList({
                             setEditingName(null);
                           }
                         }}
+                        data-track-interactive="true"
+                        onMouseDown={(e) => e.stopPropagation()}
                         onClick={(e) => e.stopPropagation()}
                         className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-lg font-semibold leading-none focus:outline-none min-w-0 h-[28px]"
                       />
@@ -719,15 +971,21 @@ function TrackList({
                       readOnly
                       onMouseDown={(e) => {
                         if (e.detail > 1) return;
-                        beginDrag(e, track.id, 'volume');
+                        beginDrag(
+                          e,
+                          track.id,
+                          'volume',
+                          track.volume,
+                          (next) => handleVolumeChange(track.id, next)
+                        );
                       }}
                       onDoubleClick={(e) => {
                         e.stopPropagation();
-                        handleVolumeDoubleClick(track, e);
+                        handleVolumeDoubleClick(track.id, track.volume, e);
                       }}
                       className="w-full volume-slider volume-slider-lg cursor-pointer"
                     />
-                    {dragTooltip?.trackId === track.id && dragTooltip.type === 'volume' && (
+                    {dragTooltip?.entityId === track.id && dragTooltip.type === 'volume' && (
                       <div
                         className="fixed w-16 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
                         style={{ left: dragTooltip.x, top: dragTooltip.y, transform: 'translate(-50%, -100%)' }}
@@ -735,16 +993,22 @@ function TrackList({
                         {dragTooltip.value <= 0 ? '-∞' : volumeToDb(dragTooltip.value).toFixed(1)}
                       </div>
                     )}
-                    {editTooltip?.trackId === track.id && editTooltip.type === 'volume' && (
+                    {editTooltip?.entityId === track.id && editTooltip.type === 'volume' && (
                       <input
                         type="text"
                         value={editTooltip.text}
                         onChange={(e) => setEditTooltip({ ...editTooltip, text: e.target.value })}
                         onFocus={(e) => e.target.select()}
-                        onBlur={() => commitEditTooltip(track)}
+                        onBlur={() => commitEditTooltip({
+                          onVolumeChange: (next) => handleVolumeChange(track.id, next),
+                          onPanChange: (next) => handlePanChange(track.id, next),
+                        })}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
-                            commitEditTooltip(track);
+                            commitEditTooltip({
+                              onVolumeChange: (next) => handleVolumeChange(track.id, next),
+                              onPanChange: (next) => handlePanChange(track.id, next),
+                            });
                           } else if (e.key === 'Escape') {
                             setEditTooltip(null);
                           }
@@ -778,16 +1042,22 @@ function TrackList({
                       readOnly
                       onMouseDown={(e) => {
                         if (e.detail > 1) return;
-                        beginDrag(e, track.id, 'pan');
+                        beginDrag(
+                          e,
+                          track.id,
+                          'pan',
+                          track.pan,
+                          (next) => handlePanChange(track.id, next)
+                        );
                       }}
                       onDoubleClick={(e) => {
                         e.stopPropagation();
-                        handlePanDoubleClick(track, e);
+                        handlePanDoubleClick(track.id, track.pan, e);
                       }}
                       className="absolute top-0 left-0 right-0 h-4 pan-knob opacity-0 cursor-pointer z-10 pointer-events-auto appearance-none touch-none"
                       aria-label="Pan"
                     />
-                    {dragTooltip?.trackId === track.id && dragTooltip.type === 'pan' && (
+                    {dragTooltip?.entityId === track.id && dragTooltip.type === 'pan' && (
                       <div
                         className="fixed w-12 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
                         style={{ left: dragTooltip.x, top: dragTooltip.y, transform: 'translate(-50%, -100%)' }}
@@ -795,16 +1065,22 @@ function TrackList({
                         {Math.round(dragTooltip.value)}
                       </div>
                     )}
-                    {editTooltip?.trackId === track.id && editTooltip.type === 'pan' && (
+                    {editTooltip?.entityId === track.id && editTooltip.type === 'pan' && (
                       <input
                         type="text"
                         value={editTooltip.text}
                         onChange={(e) => setEditTooltip({ ...editTooltip, text: e.target.value })}
                         onFocus={(e) => e.target.select()}
-                        onBlur={() => commitEditTooltip(track)}
+                        onBlur={() => commitEditTooltip({
+                          onVolumeChange: (next) => handleVolumeChange(track.id, next),
+                          onPanChange: (next) => handlePanChange(track.id, next),
+                        })}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
-                            commitEditTooltip(track);
+                            commitEditTooltip({
+                              onVolumeChange: (next) => handleVolumeChange(track.id, next),
+                              onPanChange: (next) => handlePanChange(track.id, next),
+                            });
                           } else if (e.key === 'Escape') {
                             setEditTooltip(null);
                           }
@@ -901,16 +1177,16 @@ function TrackList({
                   setContextMenu(null);
                 }}
               >
-                Create new track
+                Create track
               </button>
               <button
                 className={menuItemClass}
                 onClick={() => {
-                  onCreateGroup?.('Group', contextMenu.row?.parentId || null);
+                  onCreateSubtrack?.(contextMenu.track.id);
                   setContextMenu(null);
                 }}
               >
-                Create group
+                Create subtrack
               </button>
             </>
           ) : null}
@@ -926,6 +1202,42 @@ function TrackList({
               >
                 Rename group
               </button>
+              {autoPanManualChoirParts ? (
+                <>
+                  {[1, 2, 3, 4, 5].map((part) => (
+                    <button
+                      key={`group-choir-${part}`}
+                      className={menuItemClass}
+                      onClick={() => {
+                        onUpdateGroup?.(contextMenu.group.nodeId, { role: `choir-part-${part}` });
+                        setContextMenu(null);
+                      }}
+                    >
+                      Set choir part {part}
+                    </button>
+                  ))}
+                  <button
+                    className={menuItemClass}
+                    onClick={() => {
+                      onUpdateGroup?.(contextMenu.group.nodeId, { role: 'group' });
+                      setContextMenu(null);
+                    }}
+                  >
+                    Clear choir part
+                  </button>
+                </>
+              ) : (
+                <button
+                  className={menuItemClass}
+                  onClick={() => {
+                    const nextRole = contextMenu.group.role?.startsWith('choir-part-') ? 'group' : 'choir-part-1';
+                    onUpdateGroup?.(contextMenu.group.nodeId, { role: nextRole });
+                    setContextMenu(null);
+                  }}
+                >
+                  {contextMenu.group.role?.startsWith('choir-part-') ? 'Clear choir part' : 'Set as choir part'}
+                </button>
+              )}
               <button
                 className={menuItemClass}
                 onClick={() => {
@@ -950,20 +1262,23 @@ function TrackList({
               <button
                 className={menuItemClass}
                 onClick={() => {
-                  onAddTrack?.(contextMenu.group.nodeId);
+                  onAddTrack?.({
+                    parentId: contextMenu.group.parentId || null,
+                    afterNodeId: contextMenu.group.nodeId,
+                  });
                   setContextMenu(null);
                 }}
               >
-                Create new track
+                Create track
               </button>
               <button
                 className={menuItemClass}
                 onClick={() => {
-                  onCreateGroup?.('Group', contextMenu.group.nodeId);
+                  onAddTrack?.(contextMenu.group.nodeId);
                   setContextMenu(null);
                 }}
               >
-                Create subgroup
+                Create subtrack
               </button>
             </>
           ) : null}
@@ -978,15 +1293,6 @@ function TrackList({
                 }}
               >
                 Create a track
-              </button>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onCreateGroup?.('Group', null);
-                  setContextMenu(null);
-                }}
-              >
-                Create group
               </button>
             </>
           ) : null}

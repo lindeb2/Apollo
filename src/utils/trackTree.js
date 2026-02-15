@@ -1,4 +1,7 @@
-const GROUP_ROW_HEIGHT = 40;
+import { volumeToGain } from './audio';
+
+const GROUP_EXPANDED_HEIGHT = 100;
+const GROUP_COLLAPSED_HEIGHT = 70;
 const ROOT_PARENT_ID = null;
 
 function toNumber(value, fallback = 0) {
@@ -7,6 +10,14 @@ function toNumber(value, fallback = 0) {
 
 function sortByOrder(a, b) {
   return toNumber(a.order, 0) - toNumber(b.order, 0);
+}
+
+function clampPan(value) {
+  return Math.max(-100, Math.min(100, toNumber(value, 0)));
+}
+
+function isChoirRole(role) {
+  return typeof role === 'string' && role.startsWith('choir-part-');
 }
 
 function makeTrackNode(trackId, order = 0, parentId = ROOT_PARENT_ID) {
@@ -21,6 +32,10 @@ function makeTrackNode(trackId, order = 0, parentId = ROOT_PARENT_ID) {
 
 export function getTrackHeight(track) {
   return track?.locked ? 70 : 100;
+}
+
+function getGroupHeight(groupNode) {
+  return groupNode?.collapsed ? GROUP_COLLAPSED_HEIGHT : GROUP_EXPANDED_HEIGHT;
 }
 
 export function normalizeTrackTree(project) {
@@ -69,6 +84,11 @@ export function normalizeTrackTree(project) {
       order: toNumber(rawNode.order, 0),
       name: typeof rawNode.name === 'string' && rawNode.name.trim() ? rawNode.name : 'Group',
       collapsed: Boolean(rawNode.collapsed),
+      muted: Boolean(rawNode.muted),
+      soloed: Boolean(rawNode.soloed),
+      volume: Math.max(0, Math.min(100, toNumber(rawNode.volume, 100))),
+      pan: clampPan(rawNode.pan),
+      role: isChoirRole(rawNode.role) ? rawNode.role : 'group',
     });
   }
 
@@ -144,7 +164,12 @@ export function getVisibleTimelineRows(project) {
           depth,
           name: node.name,
           collapsed: Boolean(node.collapsed),
-          height: GROUP_ROW_HEIGHT,
+          height: getGroupHeight(node),
+          muted: Boolean(node.muted),
+          soloed: Boolean(node.soloed),
+          volume: Math.max(0, Math.min(100, toNumber(node.volume, 100))),
+          pan: clampPan(node.pan),
+          role: isChoirRole(node.role) ? node.role : 'group',
         });
         if (!node.collapsed) {
           walk(node.id, depth + 1);
@@ -173,6 +198,31 @@ export function getVisibleTrackIds(project) {
   return getVisibleTimelineRows(project)
     .filter((row) => row.kind === 'track')
     .map((row) => row.trackId);
+}
+
+export function getGroupDescendantTrackIdsByGroup(project) {
+  const normalized = normalizeTrackTree(project);
+  const childrenMap = getChildrenMap(normalized.trackTree || []);
+  const byGroupId = new Map();
+
+  const walk = (parentId) => {
+    const key = parentId || '__root__';
+    const children = childrenMap.get(key) || [];
+    const trackIds = [];
+    for (const node of children) {
+      if (node.kind === 'track') {
+        trackIds.push(node.trackId);
+        continue;
+      }
+      const nestedTrackIds = walk(node.id);
+      byGroupId.set(node.id, nestedTrackIds);
+      trackIds.push(...nestedTrackIds);
+    }
+    return trackIds;
+  };
+
+  walk(ROOT_PARENT_ID);
+  return byGroupId;
 }
 
 export function reorderTracksByTree(project) {
@@ -295,8 +345,37 @@ export function createGroupNode(project, name = 'Group', parentId = ROOT_PARENT_
     order: insertionIndex,
     name: name || 'Group',
     collapsed: false,
+    muted: false,
+    soloed: false,
+    volume: 100,
+    pan: 0,
+    role: 'group',
   };
   return { ...normalized, trackTree: [...normalized.trackTree, nextNode] };
+}
+
+export function updateGroupNode(project, groupNodeId, updates = {}) {
+  const normalized = normalizeTrackTree(project);
+  return {
+    ...normalized,
+    trackTree: normalized.trackTree.map((node) => {
+      if (node.id !== groupNodeId || node.kind !== 'group') return node;
+      const nextRole = updates.role !== undefined
+        ? (isChoirRole(updates.role) ? updates.role : 'group')
+        : node.role;
+      return {
+        ...node,
+        ...updates,
+        volume: updates.volume !== undefined
+          ? Math.max(0, Math.min(100, toNumber(updates.volume, 100)))
+          : node.volume,
+        pan: updates.pan !== undefined ? clampPan(updates.pan) : node.pan,
+        muted: updates.muted !== undefined ? Boolean(updates.muted) : node.muted,
+        soloed: updates.soloed !== undefined ? Boolean(updates.soloed) : node.soloed,
+        role: nextRole,
+      };
+    }),
+  };
 }
 
 export function renameGroupNode(project, groupNodeId, name) {
@@ -401,4 +480,82 @@ export function deleteGroupPromoteChildren(project, groupNodeId) {
 
   const nextTree = normalized.trackTree.filter((node) => node.id !== group.id);
   return reorderTracksByTree({ ...normalized, trackTree: nextTree });
+}
+
+export function getEffectiveTrackMix(project) {
+  const normalized = normalizeTrackTree(project);
+  const childrenMap = getChildrenMap(normalized.trackTree || []);
+  const nodeById = new Map((normalized.trackTree || []).map((node) => [node.id, node]));
+  const trackById = new Map((normalized.tracks || []).map((track) => [track.id, track]));
+  const statesByTrackId = new Map();
+  const orderedTrackIds = [];
+  let anySolo = false;
+
+  const walk = (parentId, inherited) => {
+    const key = parentId || '__root__';
+    const children = childrenMap.get(key) || [];
+    for (const node of children) {
+      if (node.kind === 'group') {
+        const next = {
+          muted: inherited.muted || Boolean(node.muted),
+          solo: inherited.solo || Boolean(node.soloed),
+          gain: inherited.gain * volumeToGain(Math.max(0, Math.min(100, toNumber(node.volume, 100)))),
+          pan: clampPan(inherited.pan + clampPan(node.pan)),
+          choirRole: isChoirRole(node.role) ? node.role : inherited.choirRole,
+          choirUnitId: isChoirRole(node.role) ? node.id : inherited.choirUnitId,
+          choirUnitName: isChoirRole(node.role) ? node.name : inherited.choirUnitName,
+        };
+        if (node.soloed) {
+          anySolo = true;
+        }
+        walk(node.id, next);
+        continue;
+      }
+
+      const track = trackById.get(node.trackId);
+      if (!track) continue;
+      const trackSoloPath = inherited.solo || Boolean(track.soloed);
+      if (track.soloed) {
+        anySolo = true;
+      }
+      const ownChoirRole = isChoirRole(track.role) ? track.role : null;
+      const choirRole = inherited.choirRole || ownChoirRole;
+      statesByTrackId.set(track.id, {
+        trackId: track.id,
+        nodeId: node.id,
+        muted: inherited.muted || Boolean(track.muted),
+        soloPath: trackSoloPath,
+        effectiveGain: inherited.gain * volumeToGain(Math.max(0, Math.min(100, toNumber(track.volume, 100)))),
+        effectivePan: clampPan(inherited.pan + clampPan(track.pan)),
+        choirRole,
+        choirUnitId: inherited.choirUnitId || (ownChoirRole ? `track:${track.id}` : null),
+        choirUnitName: inherited.choirUnitName || track.name,
+      });
+      orderedTrackIds.push(track.id);
+    }
+  };
+
+  walk(ROOT_PARENT_ID, {
+    muted: false,
+    solo: false,
+    gain: 1,
+    pan: 0,
+    choirRole: null,
+    choirUnitId: null,
+    choirUnitName: null,
+  });
+
+  for (const trackId of orderedTrackIds) {
+    const state = statesByTrackId.get(trackId);
+    if (!state) continue;
+    state.audible = anySolo ? (state.soloPath && !state.muted) : !state.muted;
+  }
+
+  return {
+    project: normalized,
+    statesByTrackId,
+    orderedTrackIds,
+    anySolo,
+    nodeById,
+  };
 }
