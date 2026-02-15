@@ -15,6 +15,8 @@ function useKeyboardShortcuts({
   onDeleteTrack,
   onAddTrack,
   onAddSubtrack,
+  onIndentRight,
+  onIndentLeft,
 }) {
   useEffect(() => {
     if (!enabled) return;
@@ -68,6 +70,18 @@ function useKeyboardShortcuts({
         onDeleteTrack?.();
       }
 
+      // Ctrl/Cmd + Right - Indent selected row
+      if (e.code === 'ArrowRight' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        onIndentRight?.();
+      }
+
+      // Ctrl/Cmd + Left - Outdent selected row
+      if (e.code === 'ArrowLeft' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        onIndentLeft?.();
+      }
+
       // N - Create new track (from selected track position)
       // Shift+N - Create new subtrack (convert selected empty track into group)
       if (e.code === 'KeyN' && !e.ctrlKey && !e.metaKey) {
@@ -85,7 +99,20 @@ function useKeyboardShortcuts({
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [enabled, onPlayPause, onStop, onRecord, onUndo, onRedo, onToggleLoop, onDeleteTrack, onAddTrack, onAddSubtrack]);
+  }, [
+    enabled,
+    onPlayPause,
+    onStop,
+    onRecord,
+    onUndo,
+    onRedo,
+    onToggleLoop,
+    onDeleteTrack,
+    onAddTrack,
+    onAddSubtrack,
+    onIndentRight,
+    onIndentLeft,
+  ]);
 }
 
 export default useKeyboardShortcuts;

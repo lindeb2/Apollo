@@ -1096,6 +1096,146 @@ function Editor({ onBackToDashboard }) {
     }
   };
 
+  const handleConvertEmptyTrackAboveToGroup = (sourceTrackId, movingNodeId) => {
+    let panUpdates = null;
+    updateProject((proj) => {
+      const normalized = normalizeTrackTree(proj);
+      const sourceNode = getTrackNodeByTrackId(normalized, sourceTrackId);
+      const movingNode = (normalized.trackTree || []).find((node) => node.id === movingNodeId);
+      const sourceTrack = (normalized.tracks || []).find((track) => track.id === sourceTrackId);
+
+      if (!sourceNode || !movingNode || !sourceTrack) return normalized;
+      if ((sourceTrack.clips?.length || 0) > 0) return normalized;
+      if (sourceNode.id === movingNode.id) return normalized;
+
+      const sourceParentId = sourceNode.parentId ?? null;
+      const movingParentId = movingNode.parentId ?? null;
+      const sourceOrder = Number.isFinite(Number(sourceNode.order)) ? Number(sourceNode.order) : 0;
+      const groupNodeId = crypto.randomUUID();
+      const groupRole = sourceTrack.role?.startsWith('choir-part-') ? sourceTrack.role : 'group';
+
+      const nextTree = (normalized.trackTree || [])
+        .filter((node) => node.id !== sourceNode.id && node.id !== movingNode.id)
+        .map((node) => ({ ...node }));
+
+      const reindexParent = (parentId) => {
+        const siblings = nextTree
+          .filter((node) => (node.parentId ?? null) === (parentId ?? null))
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        siblings.forEach((node, idx) => {
+          node.order = idx;
+        });
+      };
+
+      reindexParent(sourceParentId);
+      if (movingParentId !== sourceParentId) {
+        reindexParent(movingParentId);
+      }
+
+      const sourceSiblings = nextTree
+        .filter((node) => (node.parentId ?? null) === sourceParentId)
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      const insertionIndex = Math.max(0, Math.min(sourceOrder, sourceSiblings.length));
+      sourceSiblings.forEach((node) => {
+        if (node.order >= insertionIndex) {
+          node.order += 1;
+        }
+      });
+
+      nextTree.push({
+        id: groupNodeId,
+        kind: 'group',
+        parentId: sourceParentId,
+        order: insertionIndex,
+        name: sourceTrack.name,
+        collapsed: false,
+        muted: Boolean(sourceTrack.muted),
+        soloed: Boolean(sourceTrack.soloed),
+        volume: Number.isFinite(sourceTrack.volume) ? sourceTrack.volume : 100,
+        pan: Number.isFinite(sourceTrack.pan) ? sourceTrack.pan : 0,
+        role: groupRole,
+      });
+
+      nextTree.push({
+        ...movingNode,
+        parentId: groupNodeId,
+        order: 0,
+      });
+
+      reindexParent(sourceParentId);
+      reindexParent(groupNodeId);
+
+      let nextProject = {
+        ...normalized,
+        tracks: (normalized.tracks || []).filter((track) => track.id !== sourceTrackId),
+        trackTree: nextTree,
+      };
+
+      nextProject = collapseEmptyGroupsToTracks(nextProject);
+      nextProject = reorderTracksByTree(nextProject);
+
+      if (nextProject.autoPan?.enabled && !nextProject.autoPan?.manualChoirParts) {
+        const result = applyChoirAutoPanToProject(nextProject);
+        panUpdates = result.panUpdates;
+        nextProject = result.project;
+      }
+
+      return nextProject;
+    }, 'Indent track into empty track');
+
+    if (isPlaying && panUpdates) {
+      Object.entries(panUpdates).forEach(([id, pan]) => {
+        audioManager.updateTrackPan(id, pan);
+      });
+    }
+  };
+
+  const handleIndentSelectedRight = () => {
+    const currentIndex = selectedNodeId
+      ? timelineRows.findIndex((row) => row.nodeId === selectedNodeId)
+      : -1;
+    if (currentIndex <= 0) return;
+
+    const selectedRow = timelineRows[currentIndex];
+    const rowAbove = timelineRows[currentIndex - 1];
+    if (!selectedRow || !rowAbove) return;
+
+    if (rowAbove.depth === selectedRow.depth + 1) {
+      handleMoveNode(selectedRow.nodeId, rowAbove.nodeId, 'after');
+      return;
+    }
+
+    if (rowAbove.kind === 'group') {
+      handleMoveNode(selectedRow.nodeId, rowAbove.nodeId, 'inside');
+      return;
+    }
+
+    if (rowAbove.kind === 'track' && (rowAbove.track?.clips?.length || 0) === 0) {
+      handleConvertEmptyTrackAboveToGroup(rowAbove.trackId, selectedRow.nodeId);
+    }
+  };
+
+  const handleIndentSelectedLeft = () => {
+    const selectedRow = selectedNodeId
+      ? timelineRows.find((row) => row.nodeId === selectedNodeId)
+      : null;
+    if (!selectedRow) return;
+    if (!selectedRow.parentId) return;
+
+    const parentGroup = (treeProject.trackTree || []).find(
+      (node) => node.id === selectedRow.parentId && node.kind === 'group'
+    );
+    if (!parentGroup) return;
+
+    const siblings = (treeProject.trackTree || [])
+      .filter((node) => (node.parentId ?? null) === parentGroup.id)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const lastSibling = siblings[siblings.length - 1];
+    if (!lastSibling || lastSibling.id !== selectedRow.nodeId) return;
+
+    handleMoveNode(selectedRow.nodeId, parentGroup.id, 'after');
+  };
+
   const collapseEmptyGroupsToTracks = (proj) => {
     const normalized = normalizeTrackTree(proj);
     const childCountByParentId = new Map();
@@ -1587,6 +1727,8 @@ function Editor({ onBackToDashboard }) {
     onDeleteTrack: handleDeleteTrack,
     onAddTrack: handleAddTrackFromSelected,
     onAddSubtrack: handleCreateSubtrackFromSelected,
+    onIndentRight: handleIndentSelectedRight,
+    onIndentLeft: handleIndentSelectedLeft,
   });
 
   useEffect(() => {
