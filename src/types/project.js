@@ -1,4 +1,4 @@
-import { dbToVolume } from '../utils/audio';
+import { dbToVolume, normalizePanLawDb, DEFAULT_PAN_LAW_DB } from '../utils/audio';
 import { DEFAULT_AUTO_PAN_SETTINGS } from '../utils/choirAutoPan';
 
 /**
@@ -90,6 +90,7 @@ export function normalizeExportSettings(settings = {}) {
  * @property {boolean} autoPan.manualChoirParts - Use manual choir part selection
  * @property {number} autoPan.rangeLimit - Max pan range
  * @property {number} autoPan.spreadK - Spread factor
+ * @property {number} panLawDb - Pan law in dB at center (0, -3, -4.5, -6)
  * @property {Object} exportSettings - Export configuration
  * @property {number} exportSettings.gainDb - Practice target gain boost in dB
  * @property {number} exportSettings.attenuationDb - Practice non-target attenuation in dB
@@ -103,7 +104,12 @@ export function normalizeExportSettings(settings = {}) {
 /**
  * Create a new empty project
  */
-export function createEmptyProject(name = 'Untitled Project', autoPan = null, exportSettings = null) {
+export function createEmptyProject(
+  name = 'Untitled Project',
+  autoPan = null,
+  exportSettings = null,
+  panLawDb = DEFAULT_PAN_LAW_DB
+) {
   return {
     version: '1.0.0',
     projectId: crypto.randomUUID(),
@@ -111,6 +117,7 @@ export function createEmptyProject(name = 'Untitled Project', autoPan = null, ex
     sampleRate: SAMPLE_RATE,
     masterVolume: dbToVolume(0),
     autoPan: autoPan ?? { ...DEFAULT_AUTO_PAN_SETTINGS },
+    panLawDb: normalizePanLawDb(panLawDb),
     exportSettings: normalizeExportSettings(exportSettings || {}),
     trackTree: [],
     tracks: [],

@@ -2,6 +2,9 @@ import {
   volumeToGain,
   dbToGain,
   msToSeconds,
+  normalizePanLawDb,
+  getPanLawCompensationGain,
+  getPanLawHeadroomGain,
 } from '../utils/audio';
 import lamejs from 'lamejs';
 import {
@@ -499,9 +502,10 @@ async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {},
   // Render exactly to the last clip end (no extra tail padding).
   const length = Math.max(1, Math.ceil(msToSeconds(maxDurationMs) * SAMPLE_RATE));
   const offlineContext = new OfflineAudioContext(2, length, SAMPLE_RATE);
+  const panLawDb = normalizePanLawDb(project?.panLawDb);
 
   const masterGain = offlineContext.createGain();
-  masterGain.gain.value = volumeToGain(project.masterVolume);
+  masterGain.gain.value = volumeToGain(project.masterVolume) * getPanLawHeadroomGain(panLawDb);
   masterGain.connect(offlineContext.destination);
 
   for (const track of tracks) {
@@ -518,6 +522,7 @@ async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {},
         ? panAdjustments[track.id]
         : (Number.isFinite(effective?.effectivePan) ? effective.effectivePan : track.pan)
     );
+    const panLawCompensationGain = getPanLawCompensationGain(totalPan, panLawDb);
 
     for (const clip of track.clips) {
       if (clip.muted) continue;
@@ -529,7 +534,7 @@ async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {},
       source.buffer = audioBuffer;
 
       const gainNode = offlineContext.createGain();
-      gainNode.gain.value = totalGain * dbToGain(clip.gainDb);
+      gainNode.gain.value = totalGain * dbToGain(clip.gainDb) * panLawCompensationGain;
 
       const panNode = offlineContext.createStereoPanner();
       panNode.pan.value = totalPan / 100;

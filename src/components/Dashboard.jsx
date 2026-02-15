@@ -4,7 +4,7 @@ import { listProjects, deleteProject as deleteProjectFromDB, saveProject } from 
 import { importFromJSON, importFromZIP } from '../lib/projectPortability';
 import { audioManager } from '../lib/audioManager';
 import { storeMediaBlob } from '../lib/db';
-import { formatTime } from '../utils/audio';
+import { formatTime, PAN_LAW_OPTIONS_DB, normalizePanLawDb } from '../utils/audio';
 import { AUTO_PAN_STRATEGIES } from '../utils/choirAutoPan';
 import { normalizeProjectName } from '../utils/naming';
 
@@ -26,6 +26,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
     defaultChoirPanning: 'off',
     defaultInvertedAutoPan: false,
     defaultManualChoirParts: false,
+    defaultPanLawDb: -3,
     defaultExportGainDb: 4,
     defaultExportAttenuationDb: 4,
     defaultExportPanRange: 100,
@@ -61,6 +62,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
           typeof parsed.defaultManualChoirParts === 'boolean'
             ? parsed.defaultManualChoirParts
             : prev.defaultManualChoirParts,
+        defaultPanLawDb: normalizePanLawDb(parsed.defaultPanLawDb),
         defaultExportGainDb:
           typeof parsed.defaultExportGainDb === 'number'
             ? parsed.defaultExportGainDb
@@ -533,6 +535,25 @@ function Dashboard({ onOpenProject, onNewProject }) {
                   />
                   <span>Manually select choir parts</span>
                 </label>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Panning law</label>
+                  <select
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={String(audioSettings.defaultPanLawDb)}
+                    onChange={(e) =>
+                      setAudioSettings((prev) => ({
+                        ...prev,
+                        defaultPanLawDb: normalizePanLawDb(Number(e.target.value)),
+                      }))
+                    }
+                  >
+                    {PAN_LAW_OPTIONS_DB.map((value) => (
+                      <option key={value} value={value}>
+                        {`${value} dB`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">dB gain</label>
                   <input

@@ -108,18 +108,78 @@ function TrackList({
     document.body.style.userSelect = active ? 'none' : '';
   };
 
-  const getInsertIndex = (rowMeta, fromIndex, pointerY) => {
-    let insertIndex = rowMeta.length;
-    for (let i = 0; i < rowMeta.length; i += 1) {
-      if (pointerY < rowMeta[i].mid) {
-        insertIndex = i;
-        break;
+  const getDropTarget = (rowMeta, fromIndex, pointerY) => {
+    if (!rowMeta.length) return null;
+
+    const metaIndexByNodeId = new Map(rowMeta.map((meta, idx) => [meta.nodeId, idx]));
+    const getLastDescendantIndex = (groupIndex) => {
+      const groupDepth = rowMeta[groupIndex]?.depth ?? 0;
+      let last = groupIndex;
+      for (let i = groupIndex + 1; i < rowMeta.length; i += 1) {
+        if ((rowMeta[i]?.depth ?? 0) <= groupDepth) break;
+        last = i;
       }
+      return last;
+    };
+
+    let hoverIndex = rowMeta.findIndex((meta) => pointerY < meta.bottom);
+    if (hoverIndex === -1) hoverIndex = rowMeta.length - 1;
+
+    const hovered = rowMeta[hoverIndex];
+    if (!hovered) return null;
+
+    let target = hovered;
+    let placement = 'after';
+
+    if (hovered.kind === 'group') {
+      // Hovering the parent row always means drop inside that group.
+      placement = 'inside';
+    } else {
+      const bottomHalf = pointerY >= hovered.mid;
+      const parentGroupIndex = hovered.parentId ? metaIndexByNodeId.get(hovered.parentId) : undefined;
+      const hasParentGroup = Number.isInteger(parentGroupIndex) && rowMeta[parentGroupIndex]?.kind === 'group';
+      const isLastVisibleInParent = hasParentGroup
+        ? hoverIndex === getLastDescendantIndex(parentGroupIndex)
+        : false;
+
+      if (hasParentGroup && isLastVisibleInParent) {
+        if (bottomHalf) {
+          // Bottom half of the last child exits the parent group.
+          target = rowMeta[parentGroupIndex];
+          placement = 'after';
+        } else {
+          // Top half of the last child stays inside as the last child.
+          placement = 'after';
+        }
+      } else {
+        placement = bottomHalf ? 'after' : 'before';
+      }
+    }
+
+    const targetIndex = rowMeta.findIndex((meta) => meta.nodeId === target.nodeId);
+    let insertAnchorIndex = targetIndex;
+    if (target.kind === 'group' && (placement === 'after' || placement === 'inside')) {
+      // In flattened preview, both "inside as last child" and "after group"
+      // land after the group's visible descendants.
+      insertAnchorIndex = getLastDescendantIndex(targetIndex);
+    }
+
+    let insertIndex = insertAnchorIndex;
+    if (placement === 'after' || placement === 'inside') {
+      insertIndex = insertAnchorIndex + 1;
     }
     if (insertIndex > fromIndex) {
       insertIndex -= 1;
     }
-    return Math.max(0, Math.min(rowMeta.length - 1, insertIndex));
+    insertIndex = Math.max(0, Math.min(rowMeta.length, insertIndex));
+
+    const targetDepth = placement === 'inside' ? target.depth + 1 : target.depth;
+    return {
+      target,
+      placement,
+      insertIndex,
+      targetDepth,
+    };
   };
 
   const getRowDragOffsetY = (rowIndex, rowNodeId) => {
@@ -277,14 +337,20 @@ function TrackList({
     if (!container) return;
 
     const rowMeta = visibleRows
-      .map((candidate) => {
+      .map((candidate, index) => {
         const rowElement = container.querySelector(`[data-tree-row-id="${candidate.nodeId}"]`);
         if (!rowElement) return null;
         const rect = rowElement.getBoundingClientRect();
         return {
+          index,
           nodeId: candidate.nodeId,
           kind: candidate.kind,
           trackId: candidate.trackId || null,
+          parentId: candidate.parentId ?? null,
+          depth: candidate.depth ?? 0,
+          top: rect.top,
+          bottom: rect.bottom,
+          height: rect.height,
           mid: rect.top + rect.height / 2,
         };
       })
@@ -304,6 +370,7 @@ function TrackList({
       lastY: e.clientY,
       moved: false,
       rowMeta,
+      lastDropTarget: null,
     };
     setRowDragPreview({
       nodeId: row.nodeId,
@@ -312,6 +379,7 @@ function TrackList({
       rowHeight: row.height,
       deltaY: 0,
       moved: false,
+      targetDepth: row.depth ?? 0,
     });
     setDraggingNodeId(row.nodeId);
   };
@@ -352,12 +420,15 @@ function TrackList({
       setGlobalDragCursor(true);
     }
     dragState.moved = true;
-    const insertIndex = getInsertIndex(dragState.rowMeta, dragState.fromIndex, e.clientY);
+    const dropTarget = getDropTarget(dragState.rowMeta, dragState.fromIndex, e.clientY);
+    if (!dropTarget) return;
+    dragState.lastDropTarget = dropTarget;
     setRowDragPreview((prev) => {
       if (!prev || prev.nodeId !== dragState.nodeId) return prev;
       return {
         ...prev,
-        insertIndex,
+        insertIndex: dropTarget.insertIndex,
+        targetDepth: dropTarget.targetDepth,
         deltaY,
         moved: true,
       };
@@ -377,16 +448,15 @@ function TrackList({
     if (!dragState.moved) return;
 
     const { rowMeta, nodeId, trackId, lastY, fromIndex } = dragState;
-    const insertIndex = getInsertIndex(rowMeta, fromIndex, lastY);
+    const dropTarget = dragState.lastDropTarget || getDropTarget(rowMeta, fromIndex, lastY);
+    if (!dropTarget) return;
+    const { target, placement, insertIndex } = dropTarget;
 
-    if (insertIndex === fromIndex) return;
-
-    const target = rowMeta[insertIndex];
-    if (!target) return;
+    if (target.nodeId === nodeId) return;
 
     if (onMoveNode) {
-      onMoveNode(nodeId, target.nodeId, insertIndex < fromIndex ? 'before' : 'after');
-    } else if (trackId && target.trackId) {
+      onMoveNode(nodeId, target.nodeId, placement);
+    } else if (trackId && target.trackId && placement !== 'inside') {
       onReorderTrack?.(trackId, insertIndex);
     }
 
@@ -537,6 +607,9 @@ function TrackList({
         const offsetY = getRowDragOffsetY(rowIndex, row.nodeId);
         const isDragging = draggingNodeId === row.nodeId;
         const isActivelyDragging = isDragging && Boolean(rowDragPreview?.moved);
+        const previewDepth = isActivelyDragging
+          ? (rowDragPreview?.targetDepth ?? row.depth ?? 0)
+          : (row.depth ?? 0);
         const hasRowMotion = Boolean(rowDragPreview?.moved);
         const rowMotionStyle = hasRowMotion
           ? {
@@ -587,7 +660,7 @@ function TrackList({
             >
               <div
                 className="h-full flex items-center gap-4 pr-4"
-                style={{ paddingLeft: `${16 + row.depth * 16}px` }}
+                style={{ paddingLeft: `${16 + previewDepth * 16}px` }}
               >
                 <div
                   data-track-interactive="true"
@@ -860,7 +933,7 @@ function TrackList({
           >
             <div
               className="h-full flex items-center gap-4 pr-4"
-              style={{ paddingLeft: `${16 + row.depth * 16}px` }}
+              style={{ paddingLeft: `${16 + previewDepth * 16}px` }}
             >
                 <div
                   data-track-interactive="true"

@@ -3,6 +3,7 @@ import { saveProject, saveUndoAction, loadUndoHistory } from '../lib/db';
 import { createEmptyProject, normalizeExportSettings } from '../types/project';
 import { normalizeAutoPanSettings, normalizeProjectAutoPan } from '../utils/choirAutoPan';
 import { normalizeTrackTree, reorderTracksByTree } from '../utils/trackTree';
+import { normalizePanLawDb } from '../utils/audio';
 
 /**
  * ChoirMaster Zustand Store
@@ -45,6 +46,7 @@ const useStore = create((set, get) => ({
   initProject: (name) => {
     let autoPan = normalizeAutoPanSettings();
     let exportSettings = normalizeExportSettings();
+    let panLawDb = normalizePanLawDb();
     try {
       const saved = localStorage.getItem('choirmaster.settings');
       if (saved) {
@@ -65,12 +67,13 @@ const useStore = create((set, get) => ({
           attenuationDb: parsed?.defaultExportAttenuationDb,
           transformedPanRange: parsed?.defaultExportPanRange,
         });
+        panLawDb = normalizePanLawDb(parsed?.defaultPanLawDb);
       }
     } catch {
       // Ignore invalid settings
     }
 
-    const project = normalizeTrackTree(createEmptyProject(name, autoPan, exportSettings));
+    const project = normalizeTrackTree(createEmptyProject(name, autoPan, exportSettings, panLawDb));
     set({
       project,
       currentProjectId: project.projectId,
@@ -89,6 +92,7 @@ const useStore = create((set, get) => ({
   loadProject: async (projectData) => {
     const normalizedProject = reorderTracksByTree(normalizeTrackTree(normalizeProjectAutoPan({
       ...projectData,
+      panLawDb: normalizePanLawDb(projectData?.panLawDb),
       exportSettings: normalizeExportSettings(projectData.exportSettings),
     })));
     // Load undo history

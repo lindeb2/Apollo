@@ -1,4 +1,10 @@
-import { volumeToGain, equalPowerPan, msToSeconds } from '../utils/audio';
+import {
+  volumeToGain,
+  msToSeconds,
+  normalizePanLawDb,
+  getPanLawCompensationGain,
+  getPanLawHeadroomGain,
+} from '../utils/audio';
 import { SAMPLE_RATE } from '../types/project';
 import { getEffectiveTrackMix } from '../utils/trackTree';
 
@@ -16,6 +22,8 @@ class AudioManager {
     this.startTime = 0;
     this.pauseTime = 0;
     this.isInitializingPlayback = false; // Flag to prevent concurrent play() calls
+    this.currentMasterVolume = 100;
+    this.currentPanLawDb = normalizePanLawDb();
   }
 
   /**
@@ -30,6 +38,7 @@ class AudioManager {
 
     // Create master gain node
     this.masterGainNode = this.audioContext.createGain();
+    this.masterGainNode.gain.value = this.getMasterOutputGain();
     this.masterGainNode.connect(this.audioContext.destination);
     
     console.log('AudioManager initialized', {
@@ -190,6 +199,11 @@ class AudioManager {
 
       this.isPlaying = true;
       this.startTime = this.audioContext.currentTime - msToSeconds(currentTimeMs);
+      this.currentMasterVolume = Number.isFinite(Number(project?.masterVolume))
+        ? Number(project.masterVolume)
+        : this.currentMasterVolume;
+      this.currentPanLawDb = normalizePanLawDb(project?.panLawDb);
+      this.applyMasterGain();
       const mix = getEffectiveTrackMix(project);
 
       // Start all tracks
@@ -233,15 +247,16 @@ class AudioManager {
 
       // Create gain node
       const gainNode = this.audioContext.createGain();
-      const trackGain = Number.isFinite(effectiveState.effectiveGain)
+      const baseGain = Number.isFinite(effectiveState.effectiveGain)
         ? effectiveState.effectiveGain
         : volumeToGain(track.volume);
       const clipGain = Math.pow(10, clip.gainDb / 20);
-      gainNode.gain.value = trackGain * clipGain;
 
       // Create pan node
       const panNode = this.audioContext.createStereoPanner();
-      panNode.pan.value = (Number.isFinite(effectiveState.effectivePan) ? effectiveState.effectivePan : track.pan) / 100;
+      const effectivePan = Number.isFinite(effectiveState.effectivePan) ? effectiveState.effectivePan : track.pan;
+      panNode.pan.value = effectivePan / 100;
+      gainNode.gain.value = this.getClipOutputGain(baseGain, clipGain, effectivePan);
 
       // Connect: source -> gain -> pan -> master -> destination
       source.connect(gainNode);
@@ -267,7 +282,14 @@ class AudioManager {
 
       // Store active source (use unique key for multiple clips)
       const sourceKey = `${track.id}-${clip.id}`;
-      this.activeSources.set(sourceKey, { source, gainNode, panNode });
+      this.activeSources.set(sourceKey, {
+        source,
+        gainNode,
+        panNode,
+        baseGain,
+        clipGain,
+        effectivePan,
+      });
 
       // Auto-cleanup when done
       source.onended = () => {
@@ -332,9 +354,22 @@ class AudioManager {
    * Set master volume
    */
   setMasterVolume(volume) {
-    if (this.masterGainNode) {
-      const gain = volumeToGain(volume);
-      this.masterGainNode.gain.value = gain;
+    this.currentMasterVolume = Number.isFinite(Number(volume))
+      ? Number(volume)
+      : this.currentMasterVolume;
+    this.applyMasterGain();
+  }
+
+  setPanLawDb(panLawDb) {
+    this.currentPanLawDb = normalizePanLawDb(panLawDb);
+    this.applyMasterGain();
+
+    for (const nodes of this.activeSources.values()) {
+      nodes.gainNode.gain.value = this.getClipOutputGain(
+        nodes.baseGain,
+        nodes.clipGain,
+        nodes.effectivePan
+      );
     }
   }
 
@@ -345,7 +380,12 @@ class AudioManager {
     const gain = volumeToGain(volume);
     for (const [sourceKey, nodes] of this.activeSources.entries()) {
       if (sourceKey === trackId || sourceKey.startsWith(`${trackId}-`)) {
-        nodes.gainNode.gain.value = gain;
+        nodes.baseGain = gain;
+        nodes.gainNode.gain.value = this.getClipOutputGain(
+          nodes.baseGain,
+          nodes.clipGain,
+          nodes.effectivePan
+        );
       }
     }
   }
@@ -356,7 +396,13 @@ class AudioManager {
   updateTrackPan(trackId, pan) {
     for (const [sourceKey, nodes] of this.activeSources.entries()) {
       if (sourceKey === trackId || sourceKey.startsWith(`${trackId}-`)) {
+        nodes.effectivePan = pan;
         nodes.panNode.pan.value = pan / 100;
+        nodes.gainNode.gain.value = this.getClipOutputGain(
+          nodes.baseGain,
+          nodes.clipGain,
+          nodes.effectivePan
+        );
       }
     }
   }
@@ -368,11 +414,17 @@ class AudioManager {
     for (const [sourceKey, nodes] of this.activeSources.entries()) {
       if (sourceKey === trackId || sourceKey.startsWith(`${trackId}-`)) {
         if (Number.isFinite(effectiveGain)) {
-          nodes.gainNode.gain.value = effectiveGain;
+          nodes.baseGain = effectiveGain;
         }
         if (Number.isFinite(effectivePan)) {
+          nodes.effectivePan = effectivePan;
           nodes.panNode.pan.value = effectivePan / 100;
         }
+        nodes.gainNode.gain.value = this.getClipOutputGain(
+          nodes.baseGain,
+          nodes.clipGain,
+          nodes.effectivePan
+        );
       }
     }
   }
@@ -400,6 +452,20 @@ class AudioManager {
 
     this.mediaCache.clear();
     this.activeSources.clear();
+  }
+
+  getMasterOutputGain() {
+    return volumeToGain(this.currentMasterVolume) * getPanLawHeadroomGain(this.currentPanLawDb);
+  }
+
+  applyMasterGain() {
+    if (!this.masterGainNode) return;
+    this.masterGainNode.gain.value = this.getMasterOutputGain();
+  }
+
+  getClipOutputGain(baseGain, clipGain, pan) {
+    const panCompensation = getPanLawCompensationGain(pan, this.currentPanLawDb);
+    return baseGain * clipGain * panCompensation;
   }
 }
 

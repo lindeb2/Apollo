@@ -9,7 +9,7 @@ import FileImport from './FileImport';
 import TrackList from './TrackList';
 import Timeline from './Timeline';
 import ExportDialog from './ExportDialog';
-import { dbToVolume, volumeToDb } from '../utils/audio';
+import { dbToVolume, volumeToDb, PAN_LAW_OPTIONS_DB, normalizePanLawDb } from '../utils/audio';
 import { AUTO_PAN_STRATEGIES, applyChoirAutoPanToProject } from '../utils/choirAutoPan';
 import useKeyboardShortcuts from '../utils/useKeyboardShortcuts';
 import { processRecordingOverwrites } from '../utils/clipCollision';
@@ -17,7 +17,6 @@ import { normalizeProjectName } from '../utils/naming';
 import {
   attachTrackNode,
   createGroupNode,
-  deleteGroupPromoteChildren,
   getEffectiveTrackMix,
   getTrackNodeByTrackId,
   updateGroupNode,
@@ -229,6 +228,11 @@ function Editor({ onBackToDashboard }) {
   useEffect(() => {
     audioManager.setMasterVolume(masterVolume);
   }, [masterVolume]);
+
+  useEffect(() => {
+    if (!project) return;
+    audioManager.setPanLawDb(project.panLawDb);
+  }, [project?.panLawDb]);
 
   useEffect(() => {
     const handleMove = (e) => {
@@ -1024,6 +1028,14 @@ function Editor({ onBackToDashboard }) {
     }), 'Update export settings');
   };
 
+  const handleUpdatePanLaw = (nextPanLawDb) => {
+    const normalizedPanLawDb = normalizePanLawDb(nextPanLawDb);
+    updateProject((proj) => ({
+      ...proj,
+      panLawDb: normalizedPanLawDb,
+    }), 'Update panning law');
+  };
+
   const handleReorderTrack = (trackId, insertIndex) => {
     let panUpdates = null;
     updateProject((proj) => {
@@ -1136,17 +1148,26 @@ function Editor({ onBackToDashboard }) {
   };
 
   const handleDeleteGroup = (groupNodeId) => {
-    const normalized = normalizeTrackTree(project);
-    const groupNode = (normalized.trackTree || []).find((node) => node.kind === 'group' && node.id === groupNodeId);
+    const normalizedBeforeDelete = normalizeTrackTree(project);
+    const rowsBeforeDelete = getVisibleTimelineRows(normalizedBeforeDelete);
+    const groupNode = (normalizedBeforeDelete.trackTree || []).find(
+      (node) => node.kind === 'group' && node.id === groupNodeId
+    );
     if (!groupNode) return;
 
-    const stack = [groupNodeId];
-    const descendantTrackIds = [];
+    const deletedRowIndex = rowsBeforeDelete.findIndex((row) => row.nodeId === groupNodeId);
+    const deletedParentId = groupNode.parentId ?? null;
 
+    const nodeIdsToDelete = new Set([groupNodeId]);
+    const descendantTrackIds = [];
+    const stack = [groupNodeId];
     while (stack.length > 0) {
       const currentGroupId = stack.pop();
-      const children = (normalized.trackTree || []).filter((node) => (node.parentId ?? null) === currentGroupId);
+      const children = (normalizedBeforeDelete.trackTree || []).filter(
+        (node) => (node.parentId ?? null) === currentGroupId
+      );
       for (const child of children) {
+        nodeIdsToDelete.add(child.id);
         if (child.kind === 'track' && child.trackId) {
           descendantTrackIds.push(child.trackId);
         } else if (child.kind === 'group') {
@@ -1155,11 +1176,11 @@ function Editor({ onBackToDashboard }) {
       }
     }
 
-    const trackById = new Map((normalized.tracks || []).map((track) => [track.id, track]));
-    const clipCount = descendantTrackIds.reduce((sum, trackId) => {
-      const track = trackById.get(trackId);
-      return sum + (track?.clips?.length || 0);
-    }, 0);
+    const trackById = new Map((normalizedBeforeDelete.tracks || []).map((track) => [track.id, track]));
+    const clipCount = descendantTrackIds.reduce(
+      (sum, trackId) => sum + (trackById.get(trackId)?.clips?.length || 0),
+      0
+    );
 
     if (clipCount > 0) {
       const confirmed = window.confirm(
@@ -1168,7 +1189,72 @@ function Editor({ onBackToDashboard }) {
       if (!confirmed) return;
     }
 
-    updateProject((proj) => deleteGroupPromoteChildren(proj, groupNodeId), 'Delete group');
+    let panUpdates = null;
+    let nextRowSelection = null;
+    updateProject((proj) => {
+      let nextProject = normalizeTrackTree(proj);
+      nextProject = {
+        ...nextProject,
+        tracks: (nextProject.tracks || []).filter((track) => !descendantTrackIds.includes(track.id)),
+        trackTree: (nextProject.trackTree || []).filter((node) => !nodeIdsToDelete.has(node.id)),
+      };
+      nextProject = collapseEmptyGroupsToTracks(nextProject);
+      nextProject = reorderTracksByTree(nextProject);
+
+      if (nextProject.autoPan?.enabled && !nextProject.autoPan?.manualChoirParts) {
+        const result = applyChoirAutoPanToProject(nextProject);
+        panUpdates = result.panUpdates;
+        nextProject = result.project;
+      }
+
+      const rowsAfterDelete = getVisibleTimelineRows(nextProject);
+      if (!rowsAfterDelete.length) {
+        nextRowSelection = null;
+      } else {
+        const sameLevelRowIndexes = rowsAfterDelete
+          .map((row, idx) => ({ row, idx }))
+          .filter(({ row }) => (row.parentId ?? null) === deletedParentId);
+
+        const sameLevelAbove = sameLevelRowIndexes
+          .filter(({ idx }) => deletedRowIndex !== -1 && idx < deletedRowIndex)
+          .sort((a, b) => b.idx - a.idx)[0]?.row || null;
+        const sameLevelBelow = sameLevelRowIndexes
+          .filter(({ idx }) => deletedRowIndex !== -1 && idx >= deletedRowIndex)
+          .sort((a, b) => a.idx - b.idx)[0]?.row || null;
+
+        if (sameLevelAbove || sameLevelBelow) {
+          nextRowSelection = sameLevelAbove || sameLevelBelow;
+        } else if (deletedRowIndex > 0) {
+          nextRowSelection = rowsAfterDelete[Math.min(deletedRowIndex - 1, rowsAfterDelete.length - 1)] || null;
+        } else if (deletedRowIndex === 0) {
+          nextRowSelection = rowsAfterDelete[0] || null;
+        } else {
+          nextRowSelection = rowsAfterDelete[0] || null;
+        }
+      }
+
+      return nextProject;
+    }, `Delete group "${groupNode.name}"`);
+
+    if (isPlaying && panUpdates) {
+      Object.entries(panUpdates).forEach(([id, pan]) => {
+        audioManager.updateTrackPan(id, pan);
+      });
+    }
+
+    if (nextRowSelection) {
+      if (nextRowSelection.kind === 'track') {
+        selectTrackAndRow(nextRowSelection.trackId);
+      } else {
+        setSelectedNodeId(nextRowSelection.nodeId);
+        setSelectedRowKind('group');
+        selectTrack(null);
+      }
+    } else {
+      setSelectedNodeId(null);
+      setSelectedRowKind(null);
+      selectTrack(null);
+    }
   };
 
   const handleToggleGroupCollapse = (groupNodeId) => {
@@ -1367,6 +1453,10 @@ function Editor({ onBackToDashboard }) {
   };
 
   const handleDeleteTrack = () => {
+    if (selectedRowKind === 'group' && selectedNodeId) {
+      handleDeleteGroup(selectedNodeId);
+      return;
+    }
     handleDeleteTrackById(selectedTrackId);
   };
 
@@ -1954,6 +2044,20 @@ function Editor({ onBackToDashboard }) {
                   />
                   <span>Manually select choir parts</span>
                 </label>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Panning law</label>
+                  <select
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    value={String(project?.panLawDb ?? -3)}
+                    onChange={(e) => handleUpdatePanLaw(Number(e.target.value))}
+                  >
+                    {PAN_LAW_OPTIONS_DB.map((value) => (
+                      <option key={value} value={value}>
+                        {`${value} dB`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">dB gain</label>
                   <input

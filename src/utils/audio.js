@@ -9,6 +9,8 @@ const MIN_VOLUME_GAIN = 0.001;
 const VOLUME_GAIN_SCALE = 1.994;
 const CLIP_GAIN_MIN_DB = -24;
 const CLIP_GAIN_MAX_DB = 24;
+export const PAN_LAW_OPTIONS_DB = [0, -3, -4.5, -6];
+export const DEFAULT_PAN_LAW_DB = -3;
 
 /**
  * Convert volume slider value (0-100) to decibels
@@ -89,6 +91,36 @@ export function panToNormalized(sliderValue) {
  */
 export function normalizedToPan(normalized) {
   return normalized * 100;
+}
+
+export function normalizePanLawDb(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return DEFAULT_PAN_LAW_DB;
+  const allowed = PAN_LAW_OPTIONS_DB.find((option) => Math.abs(option - numeric) < 0.001);
+  return allowed ?? DEFAULT_PAN_LAW_DB;
+}
+
+/**
+ * Gain compensation applied before StereoPannerNode so selected pan law
+ * is respected while still using WebAudio's panner curve.
+ */
+export function getPanLawCompensationGain(pan, panLawDb = DEFAULT_PAN_LAW_DB) {
+  const normalizedPan = Math.max(-1, Math.min(1, (Number(pan) || 0) / 100));
+  const normalizedLawDb = normalizePanLawDb(panLawDb);
+  const centerGainTarget = dbToGain(normalizedLawDb);
+  const stereoPannerCenterGain = Math.SQRT1_2;
+  const centerCompensation = centerGainTarget / stereoPannerCenterGain;
+  const towardCenter = 1 - Math.abs(normalizedPan);
+  return 1 + ((centerCompensation - 1) * towardCenter);
+}
+
+/**
+ * Global headroom to avoid clipping introduced by positive pan-law compensation.
+ * (Only needed when compensation can exceed unity, e.g. 0 dB pan law.)
+ */
+export function getPanLawHeadroomGain(panLawDb = DEFAULT_PAN_LAW_DB) {
+  const centerCompensation = getPanLawCompensationGain(0, panLawDb);
+  return 1 / Math.max(1, centerCompensation);
 }
 
 /**
