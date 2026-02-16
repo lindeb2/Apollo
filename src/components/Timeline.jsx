@@ -10,7 +10,7 @@ import {
 import { audioManager } from '../lib/audioManager';
 import Waveform from './Waveform';
 import { calculateGlobalPeakAmplitude } from '../utils/waveformUtils';
-import { getGroupDescendantTrackIdsByGroup, getTrackHeight } from '../utils/trackTree';
+import { getEffectiveTrackMix, getGroupDescendantTrackIdsByGroup, getTrackHeight } from '../utils/trackTree';
 import { 
   constrainClipMove, 
   constrainCropStart, 
@@ -177,14 +177,19 @@ function Timeline({
   const groupTimelinePreviewByNodeId = useMemo(() => {
     const groupTrackIdsByNodeId = getGroupDescendantTrackIdsByGroup(project);
     const trackById = new Map((project.tracks || []).map((track) => [track.id, track]));
+    const effectiveMix = getEffectiveTrackMix(project);
+    const trackStateById = effectiveMix.statesByTrackId;
     const byGroupNodeId = new Map();
 
     for (const [groupNodeId, trackIds] of groupTrackIdsByNodeId.entries()) {
       const clips = [];
       for (const trackId of trackIds) {
+        const trackState = trackStateById.get(trackId);
+        if (!trackState?.audible) continue;
         const track = trackById.get(trackId);
         if (!track?.clips?.length) continue;
         for (const clip of track.clips) {
+          if (clip?.muted) continue;
           const durationMs = Math.max(0, (clip.cropEndMs || 0) - (clip.cropStartMs || 0));
           if (durationMs <= 0) continue;
           clips.push({
