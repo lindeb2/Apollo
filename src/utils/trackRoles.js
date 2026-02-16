@@ -15,6 +15,7 @@ export const GROUP_ROLE_NONE = 'group';
 export const GROUP_ROLE_INSTRUMENTS = 'instruments';
 export const GROUP_ROLE_LEADS = 'leads';
 export const GROUP_ROLE_CHOIRS = 'choirs';
+export const GROUP_ROLE_OTHERS = 'others';
 
 export const TRACK_CATEGORY_ROLES = new Set([
   TRACK_ROLE_INSTRUMENT,
@@ -27,6 +28,7 @@ const GROUP_PARENT_ROLES = new Set([
   GROUP_ROLE_INSTRUMENTS,
   GROUP_ROLE_LEADS,
   GROUP_ROLE_CHOIRS,
+  GROUP_ROLE_OTHERS,
 ]);
 
 const GROUP_ALLOWED_ROLES = new Set([
@@ -60,6 +62,7 @@ export function mapGroupParentRoleToTrackRole(role) {
   if (role === GROUP_ROLE_INSTRUMENTS) return TRACK_ROLE_INSTRUMENT;
   if (role === GROUP_ROLE_LEADS) return TRACK_ROLE_LEAD;
   if (role === GROUP_ROLE_CHOIRS) return TRACK_ROLE_CHOIR;
+  if (role === GROUP_ROLE_OTHERS) return TRACK_ROLE_OTHER;
   return null;
 }
 

@@ -19,6 +19,7 @@ import {
   GROUP_ROLE_CHOIRS,
   isChoirRole,
   isGroupParentRole,
+  mapGroupParentRoleToTrackRole,
   groupRoleToTrackRole,
 } from '../utils/trackRoles';
 import {
@@ -852,7 +853,7 @@ function Editor({ onBackToDashboard }) {
         audioManager.mediaCache.set(blobId, audioBuffer);
 
         const trackName = file.name.replace(/\.[^/.]+$/, '');
-        const track = createTrack(trackName, role || TRACK_ROLES.INSTRUMENT, false);
+        const track = createTrack(trackName, role || TRACK_ROLES.INSTRUMENT);
 
         const durationMs = audioBuffer.duration * 1000;
         const clip = createClip(blobId, 0, durationMs);
@@ -952,6 +953,44 @@ function Editor({ onBackToDashboard }) {
     let nextProjectAfter = null;
     updateProject((proj) => {
       let nextProject = updateGroupNode(proj, groupNodeId, updates);
+      if (updates.role !== undefined && isGroupParentRole(updates.role)) {
+        const inheritedTrackRole = mapGroupParentRoleToTrackRole(updates.role);
+        if (inheritedTrackRole) {
+          const descendantGroupIds = new Set();
+          const descendantTrackIds = new Set();
+          const stack = [groupNodeId];
+          while (stack.length > 0) {
+            const currentGroupId = stack.pop();
+            const children = (nextProject.trackTree || []).filter(
+              (node) => (node.parentId ?? null) === currentGroupId
+            );
+            for (const child of children) {
+              if (child.kind === 'track' && child.trackId) {
+                descendantTrackIds.add(child.trackId);
+              } else if (child.kind === 'group') {
+                descendantGroupIds.add(child.id);
+                stack.push(child.id);
+              }
+            }
+          }
+
+          if (descendantGroupIds.size > 0 || descendantTrackIds.size > 0) {
+            nextProject = {
+              ...nextProject,
+              tracks: (nextProject.tracks || []).map((track) => (
+                descendantTrackIds.has(track.id)
+                  ? { ...track, role: inheritedTrackRole }
+                  : track
+              )),
+              trackTree: (nextProject.trackTree || []).map((node) => (
+                node.kind === 'group' && descendantGroupIds.has(node.id)
+                  ? { ...node, role: inheritedTrackRole }
+                  : node
+              )),
+            };
+          }
+        }
+      }
       const wasChoirGroup = (proj.trackTree || []).some(
         (node) => node.id === groupNodeId && node.kind === 'group' && (
           isChoirRole(node.role) || (isGroupParentRole(node.role) && node.role === GROUP_ROLE_CHOIRS)
@@ -1275,7 +1314,7 @@ function Editor({ onBackToDashboard }) {
 
     emptyGroups.forEach((group) => {
       const role = groupRoleToTrackRole(group.role);
-      const restoredTrack = createTrack(group.name || 'Track', role, Boolean(group.collapsed));
+      const restoredTrack = createTrack(group.name || 'Track', role);
       restoredTrack.muted = Boolean(group.muted);
       restoredTrack.soloed = Boolean(group.soloed);
       restoredTrack.volume = Number.isFinite(Number(group.volume)) ? Number(group.volume) : restoredTrack.volume;
@@ -1511,7 +1550,7 @@ function Editor({ onBackToDashboard }) {
   const handleAddEmptyTrack = (options = null) => {
     const trackNumber = project.tracks.length + 1;
     const trackName = `Track ${trackNumber}`;
-    const newTrack = createTrack(trackName, 'other', false);
+    const newTrack = createTrack(trackName, 'other');
 
     let preferredParentId = null;
     let preferredInsertIndex = null;
@@ -1692,7 +1731,7 @@ function Editor({ onBackToDashboard }) {
     }
 
     const newTrackNumber = project.tracks.length + 1;
-    const newTrack = createTrack(`Track ${newTrackNumber}`, 'other', false);
+    const newTrack = createTrack(`Track ${newTrackNumber}`, 'other');
 
     updateProject((proj) => {
       const normalized = normalizeTrackTree(proj);
@@ -1783,6 +1822,57 @@ function Editor({ onBackToDashboard }) {
     }), description);
   };
 
+  const getSelectedTargetGroupNodeId = () => {
+    const selectedRow = selectedNodeId
+      ? timelineRows.find((row) => row.nodeId === selectedNodeId)
+      : null;
+    if (!selectedRow) return null;
+    if (selectedRow.kind === 'group') return selectedRow.nodeId;
+    if (selectedRow.kind === 'track') return selectedRow.parentId ?? null;
+    return null;
+  };
+
+  const handleToggleSelectedGroupFold = () => {
+    const groupNodeId = getSelectedTargetGroupNodeId();
+    if (!groupNodeId) return;
+    handleToggleGroupCollapse(groupNodeId);
+  };
+
+  const handleToggleSelectedGroupFoldRecursive = () => {
+    const groupNodeId = getSelectedTargetGroupNodeId();
+    if (!groupNodeId) return;
+    updateProject((proj) => {
+      const normalized = normalizeTrackTree(proj);
+      const rootGroup = (normalized.trackTree || []).find(
+        (node) => node.kind === 'group' && node.id === groupNodeId
+      );
+      if (!rootGroup) return normalized;
+
+      const targetCollapsed = !Boolean(rootGroup.collapsed);
+      const descendantGroupIds = new Set([groupNodeId]);
+      const stack = [groupNodeId];
+      while (stack.length > 0) {
+        const currentGroupId = stack.pop();
+        const children = (normalized.trackTree || []).filter(
+          (node) => node.kind === 'group' && (node.parentId ?? null) === currentGroupId
+        );
+        for (const child of children) {
+          descendantGroupIds.add(child.id);
+          stack.push(child.id);
+        }
+      }
+
+      return {
+        ...normalized,
+        trackTree: (normalized.trackTree || []).map((node) => (
+          node.kind === 'group' && descendantGroupIds.has(node.id)
+            ? { ...node, collapsed: targetCollapsed }
+            : node
+        )),
+      };
+    }, 'Toggle group collapse recursively');
+  };
+
   useKeyboardShortcuts({
     enabled: true,
     onPlayPause: handlePlay,
@@ -1795,6 +1885,8 @@ function Editor({ onBackToDashboard }) {
     onAddSubtrack: handleCreateSubtrackFromSelected,
     onIndentRight: handleIndentSelectedRight,
     onIndentLeft: handleIndentSelectedLeft,
+    onToggleFold: handleToggleSelectedGroupFold,
+    onToggleFoldRecursive: handleToggleSelectedGroupFoldRecursive,
   });
 
   useEffect(() => {

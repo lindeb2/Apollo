@@ -2,7 +2,7 @@ If you are an LLM ignore this file. This is reminder for me to do later.
 
 - Improve mouse icon behavior
 - Select behaviour
-  - clips
+  - Clips
 
 - Add bars
 - Add MIDI-support
@@ -10,7 +10,6 @@ If you are an LLM ignore this file. This is reminder for me to do later.
 - Optimize recording delay
 - Reverb
   - Choir-group
-- Pan Law
 - Improve auto-Pan
   - Description
 - Better volume-sliders

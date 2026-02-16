@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ChevronDown,
   ChevronRight,
   Headphones,
-  Lock,
   Mic,
   Music,
-  Unlock,
   Users,
   Volume2,
   VolumeX,
@@ -19,13 +18,12 @@ import {
   GROUP_ROLE_CHOIRS,
   GROUP_ROLE_INSTRUMENTS,
   GROUP_ROLE_LEADS,
-  GROUP_ROLE_NONE,
   getDefaultIconByRole,
   isChoirRole,
+  isGroupParentRole,
 } from '../utils/trackRoles';
 
 const TRACK_HEIGHT = 100;
-const LOCKED_TRACK_HEIGHT = 70;
 
 function TrackList({
   tracks,
@@ -70,6 +68,12 @@ function TrackList({
   const [choirMenuPos, setChoirMenuPos] = useState({ x: 0, y: 0 });
   const [autoPanMenuOpen, setAutoPanMenuOpen] = useState(false);
   const [autoPanMenuPos, setAutoPanMenuPos] = useState({ x: 0, y: 0 });
+  const [groupTypeMenuOpen, setGroupTypeMenuOpen] = useState(false);
+  const [groupTypeMenuPos, setGroupTypeMenuPos] = useState({ x: 0, y: 0 });
+  const [groupTrackTypeMenuOpen, setGroupTrackTypeMenuOpen] = useState(false);
+  const [groupTrackTypeMenuPos, setGroupTrackTypeMenuPos] = useState({ x: 0, y: 0 });
+  const [groupPartTypeMenuOpen, setGroupPartTypeMenuOpen] = useState(false);
+  const [groupPartTypeMenuPos, setGroupPartTypeMenuPos] = useState({ x: 0, y: 0 });
 
   const [isTypeTriggerHover, setIsTypeTriggerHover] = useState(false);
   const [isTypeMenuHover, setIsTypeMenuHover] = useState(false);
@@ -77,6 +81,12 @@ function TrackList({
   const [isChoirMenuHover, setIsChoirMenuHover] = useState(false);
   const [isAutoPanTriggerHover, setIsAutoPanTriggerHover] = useState(false);
   const [isAutoPanMenuHover, setIsAutoPanMenuHover] = useState(false);
+  const [isGroupTypeTriggerHover, setIsGroupTypeTriggerHover] = useState(false);
+  const [isGroupTypeMenuHover, setIsGroupTypeMenuHover] = useState(false);
+  const [isGroupTrackTypeTriggerHover, setIsGroupTrackTypeTriggerHover] = useState(false);
+  const [isGroupTrackTypeMenuHover, setIsGroupTrackTypeMenuHover] = useState(false);
+  const [isGroupPartTypeTriggerHover, setIsGroupPartTypeTriggerHover] = useState(false);
+  const [isGroupPartTypeMenuHover, setIsGroupPartTypeMenuHover] = useState(false);
 
   const trackMap = useMemo(() => new Map((tracks || []).map((track) => [track.id, track])), [tracks]);
   const visibleRows = useMemo(() => {
@@ -89,9 +99,13 @@ function TrackList({
       trackId: track.id,
       track,
       depth: 0,
-      height: track.locked ? LOCKED_TRACK_HEIGHT : TRACK_HEIGHT,
+      height: TRACK_HEIGHT,
     }));
   }, [rows, tracks]);
+  const rowByNodeId = useMemo(
+    () => new Map((visibleRows || []).map((row) => [row.nodeId, row])),
+    [visibleRows]
+  );
 
   const iconOptions = useMemo(() => [
     { key: 'mic', Icon: Mic },
@@ -109,6 +123,19 @@ function TrackList({
       const trackId = row.trackId || row.track?.id;
       if (trackId) onSelectTrack?.(trackId);
     }
+  };
+
+  const getInheritedParentGroupRole = (row) => {
+    let parentId = row?.parentId ?? null;
+    while (parentId) {
+      const parentRow = rowByNodeId.get(parentId);
+      if (!parentRow || parentRow.kind !== 'group') return null;
+      if (isGroupParentRole(parentRow.role)) {
+        return parentRow.role;
+      }
+      parentId = parentRow.parentId ?? null;
+    }
+    return null;
   };
 
   const setGlobalDragCursor = (active) => {
@@ -218,6 +245,20 @@ function TrackList({
   }, [contextMenu]);
 
   useEffect(() => {
+    if (!contextMenu || contextMenu.type !== 'group') {
+      setGroupTypeMenuOpen(false);
+      setGroupTrackTypeMenuOpen(false);
+      setGroupPartTypeMenuOpen(false);
+      setIsGroupTypeTriggerHover(false);
+      setIsGroupTypeMenuHover(false);
+      setIsGroupTrackTypeTriggerHover(false);
+      setIsGroupTrackTypeMenuHover(false);
+      setIsGroupPartTypeTriggerHover(false);
+      setIsGroupPartTypeMenuHover(false);
+    }
+  }, [contextMenu]);
+
+  useEffect(() => {
     const typeOpen = isTypeTriggerHover || isTypeMenuHover || isChoirTriggerHover || isChoirMenuHover;
     const choirOpen = isChoirTriggerHover || isChoirMenuHover;
     setTypeMenuOpen(typeOpen);
@@ -228,6 +269,27 @@ function TrackList({
     const autoOpen = isAutoPanTriggerHover || isAutoPanMenuHover;
     setAutoPanMenuOpen(autoOpen);
   }, [isAutoPanTriggerHover, isAutoPanMenuHover]);
+
+  useEffect(() => {
+    const typeOpen = isGroupTypeTriggerHover
+      || isGroupTypeMenuHover
+      || isGroupTrackTypeTriggerHover
+      || isGroupTrackTypeMenuHover
+      || isGroupPartTypeTriggerHover
+      || isGroupPartTypeMenuHover;
+    const groupTrackOpen = isGroupTrackTypeTriggerHover || isGroupTrackTypeMenuHover;
+    const groupPartOpen = isGroupPartTypeTriggerHover || isGroupPartTypeMenuHover;
+    setGroupTypeMenuOpen(typeOpen);
+    setGroupTrackTypeMenuOpen(groupTrackOpen);
+    setGroupPartTypeMenuOpen(groupPartOpen);
+  }, [
+    isGroupTypeTriggerHover,
+    isGroupTypeMenuHover,
+    isGroupTrackTypeTriggerHover,
+    isGroupTrackTypeMenuHover,
+    isGroupPartTypeTriggerHover,
+    isGroupPartTypeMenuHover,
+  ]);
 
   useEffect(() => {
     const handleMove = (e) => {
@@ -275,6 +337,24 @@ function TrackList({
     const rect = event.currentTarget.getBoundingClientRect();
     setAutoPanMenuPos({ x: rect.right + 1, y: rect.top - 1 });
     setIsAutoPanTriggerHover(true);
+  };
+
+  const openGroupTypeMenu = (event) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setGroupTypeMenuPos({ x: rect.right + 1, y: rect.top - 1 });
+    setIsGroupTypeTriggerHover(true);
+  };
+
+  const openGroupTrackTypeMenu = (event) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setGroupTrackTypeMenuPos({ x: rect.right + 1, y: rect.top - 1 });
+    setIsGroupTrackTypeTriggerHover(true);
+  };
+
+  const openGroupPartTypeMenu = (event) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setGroupPartTypeMenuPos({ x: rect.right + 1, y: rect.top - 1 });
+    setIsGroupPartTypeTriggerHover(true);
   };
 
   const getDefaultIconKey = (role) => {
@@ -529,10 +609,6 @@ function TrackList({
     setEditTooltip(null);
   };
 
-  const handleToggleLock = (trackId, currentLocked) => {
-    onUpdateTrack(trackId, { locked: !currentLocked });
-  };
-
   const handleToggleMute = (trackId, currentMuted) => {
     onUpdateTrack(trackId, { muted: !currentMuted });
   };
@@ -586,6 +662,7 @@ function TrackList({
       instruments: 'bg-purple-700',
       leads: 'bg-blue-700',
       choirs: 'bg-green-700',
+      others: 'bg-gray-700',
       other: 'bg-gray-600',
       group: 'bg-gray-600',
     };
@@ -634,7 +711,7 @@ function TrackList({
           : {};
 
         if (row.kind === 'group') {
-          const groupIsLocked = Boolean(row.collapsed);
+          const groupCollapsed = Boolean(row.collapsed);
           const groupIconKey = getDefaultIconKey(row.role);
           const GroupIcon = groupIconKey === 'music'
             ? Music
@@ -686,44 +763,42 @@ function TrackList({
                   </div>
                 </div>
 
-                <div className={`flex-1 min-w-0 flex flex-col ${groupIsLocked ? 'justify-center gap-3' : 'gap-1'}`}>
-                  {!groupIsLocked && (
-                    <div
-                      className="flex items-center min-w-0"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {editingName === `group:${row.nodeId}` ? (
-                        <input
-                          type="text"
-                          defaultValue={row.name}
-                          autoFocus
-                          onBlur={(e) => handleGroupNameChange(row.nodeId, e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              handleGroupNameChange(row.nodeId, e.target.value);
-                            } else if (e.key === 'Escape') {
-                              setEditingName(null);
-                            }
-                          }}
-                          data-track-interactive="true"
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onClick={(e) => e.stopPropagation()}
-                          className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-lg font-semibold leading-none focus:outline-none min-w-0 h-[28px]"
-                        />
-                      ) : (
-                        <span
-                          onDoubleClick={(e) => {
-                            e.stopPropagation();
-                            setEditingName(`group:${row.nodeId}`);
-                          }}
-                          className="flex-1 text-lg font-semibold truncate min-w-0 h-[28px] flex items-center select-none"
-                          title="Double-click to edit"
-                        >
-                          {row.name}
-                        </span>
-                      )}
-                    </div>
-                  )}
+                <div className="flex-1 min-w-0 flex flex-col gap-1">
+                  <div
+                    className="flex items-center min-w-0"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {editingName === `group:${row.nodeId}` ? (
+                      <input
+                        type="text"
+                        defaultValue={row.name}
+                        autoFocus
+                        onBlur={(e) => handleGroupNameChange(row.nodeId, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            handleGroupNameChange(row.nodeId, e.target.value);
+                          } else if (e.key === 'Escape') {
+                            setEditingName(null);
+                          }
+                        }}
+                        data-track-interactive="true"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-lg font-semibold leading-none focus:outline-none min-w-0 h-[28px]"
+                      />
+                    ) : (
+                      <span
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          setEditingName(`group:${row.nodeId}`);
+                        }}
+                        className="flex-1 text-lg font-semibold truncate min-w-0 h-[28px] flex items-center select-none"
+                        title="Double-click to edit"
+                      >
+                        {row.name}
+                      </span>
+                    )}
+                  </div>
 
                   <div data-track-interactive="true" className="flex items-center gap-3">
                     <div className="flex items-center gap-0" onClick={(e) => e.stopPropagation()}>
@@ -760,9 +835,9 @@ function TrackList({
                         onToggleGroupCollapse?.(row.nodeId);
                       }}
                       className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-600 transition-colors bg-gray-800 hover:bg-gray-600 text-gray-300 -ml-1"
-                      title={groupIsLocked ? 'Expand group' : 'Collapse group'}
+                      title={groupCollapsed ? 'Expand group' : 'Collapse group'}
                     >
-                      {groupIsLocked ? <Lock size={16} /> : <Unlock size={16} />}
+                      {groupCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
                     </button>
 
                     <div
@@ -909,7 +984,7 @@ function TrackList({
         const track = row.track || trackMap.get(row.trackId);
         if (!track) return null;
 
-        const trackHeight = row.height || (track.locked ? LOCKED_TRACK_HEIGHT : TRACK_HEIGHT);
+        const trackHeight = row.height || TRACK_HEIGHT;
         const { Icon: TrackIcon } = getIconForTrack(track);
         const isSelectedRow = selectedNodeId
           ? selectedNodeId === row.nodeId
@@ -937,7 +1012,7 @@ function TrackList({
             }}
             className={`border-b border-gray-700 cursor-pointer ${
               isSelectedRow ? 'bg-gray-700' : 'bg-gray-800 hover:bg-gray-750'
-            } ${track.locked ? 'bg-gray-850' : ''} ${isActivelyDragging ? 'cursor-grabbing' : ''}`}
+            } ${isActivelyDragging ? 'cursor-grabbing' : ''}`}
             style={{
               height: `${trackHeight}px`,
               minHeight: `${trackHeight}px`,
@@ -966,44 +1041,42 @@ function TrackList({
                 </button>
               </div>
 
-              <div className={`flex-1 min-w-0 flex flex-col ${track.locked ? 'justify-center gap-3' : 'gap-1'}`}>
-                {!track.locked && (
-                  <div
-                    className="flex items-center min-w-0"
-                    onClick={() => selectRow(row)}
-                  >
-                    {editingName === track.id ? (
-                      <input
-                        type="text"
-                        defaultValue={track.name}
-                        autoFocus
-                        onBlur={(e) => handleNameChange(track.id, e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            handleNameChange(track.id, e.target.value);
-                          } else if (e.key === 'Escape') {
-                            setEditingName(null);
-                          }
-                        }}
-                        data-track-interactive="true"
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onClick={(e) => e.stopPropagation()}
-                        className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-lg font-semibold leading-none focus:outline-none min-w-0 h-[28px]"
-                      />
-                    ) : (
-                      <span
-                        onDoubleClick={(e) => {
-                          e.stopPropagation();
-                          setEditingName(track.id);
-                        }}
-                        className="flex-1 text-lg font-semibold truncate min-w-0 h-[28px] flex items-center select-none"
-                        title="Double-click to edit"
-                      >
-                        {track.name}
-                      </span>
-                    )}
-                  </div>
-                )}
+              <div className="flex-1 min-w-0 flex flex-col gap-1">
+                <div
+                  className="flex items-center min-w-0"
+                  onClick={() => selectRow(row)}
+                >
+                  {editingName === track.id ? (
+                    <input
+                      type="text"
+                      defaultValue={track.name}
+                      autoFocus
+                      onBlur={(e) => handleNameChange(track.id, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleNameChange(track.id, e.target.value);
+                        } else if (e.key === 'Escape') {
+                          setEditingName(null);
+                        }
+                      }}
+                      data-track-interactive="true"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
+                      className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-lg font-semibold leading-none focus:outline-none min-w-0 h-[28px]"
+                    />
+                  ) : (
+                    <span
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        setEditingName(track.id);
+                      }}
+                      className="flex-1 text-lg font-semibold truncate min-w-0 h-[28px] flex items-center select-none"
+                      title="Double-click to edit"
+                    >
+                      {track.name}
+                    </span>
+                  )}
+                </div>
 
                 <div data-track-interactive="true" className="flex items-center gap-3">
                   <div className="flex items-center gap-0" onClick={(e) => e.stopPropagation()}>
@@ -1032,17 +1105,6 @@ function TrackList({
                       <Headphones size={16} />
                     </button>
                   </div>
-
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleToggleLock(track.id, track.locked);
-                    }}
-                    className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-600 transition-colors bg-gray-800 hover:bg-gray-600 text-gray-300 -ml-1"
-                    title={track.locked ? 'Unlock track' : 'Lock track'}
-                  >
-                    {track.locked ? <Lock size={16} /> : <Unlock size={16} />}
-                  </button>
 
                   <div
                     className="flex-1 flex items-center relative"
@@ -1206,23 +1268,29 @@ function TrackList({
                 Rename track
               </button>
 
-              <div className="relative">
-                <div
-                  className={`${menuItemClass} select-none cursor-pointer`}
-                  onMouseEnter={openTypeMenu}
-                  onMouseLeave={() => setIsTypeTriggerHover(false)}
-                  style={{
-                    backgroundColor: (isTypeTriggerHover || isTypeMenuHover || isChoirTriggerHover || isChoirMenuHover)
-                      ? '#374151'
-                      : undefined,
-                  }}
-                >
-                  <div className="flex items-center justify-between w-full">
-                    <span>Change track type</span>
-                    <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+              {getInheritedParentGroupRole(contextMenu.row) ? (
+                <div className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-500 whitespace-nowrap select-none">
+                  Change track type (inherited)
+                </div>
+              ) : (
+                <div className="relative">
+                  <div
+                    className={`${menuItemClass} select-none cursor-pointer`}
+                    onMouseEnter={openTypeMenu}
+                    onMouseLeave={() => setIsTypeTriggerHover(false)}
+                    style={{
+                      backgroundColor: (isTypeTriggerHover || isTypeMenuHover || isChoirTriggerHover || isChoirMenuHover)
+                        ? '#374151'
+                        : undefined,
+                    }}
+                  >
+                    <div className="flex items-center justify-between w-full">
+                      <span>Change track type</span>
+                      <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
 
               {isChoirRole(contextMenu.track.role) && (
                 <div className="relative">
@@ -1289,94 +1357,36 @@ function TrackList({
               >
                 Rename group
               </button>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.INSTRUMENT });
-                  setContextMenu(null);
-                }}
-              >
-                Type: Instrument
-              </button>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.LEAD });
-                  setContextMenu(null);
-                }}
-              >
-                Type: Lead
-              </button>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.CHOIR });
-                  setContextMenu(null);
-                }}
-              >
-                Type: Choir
-              </button>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.OTHER });
-                  setContextMenu(null);
-                }}
-              >
-                Type: Other
-              </button>
-              {autoPanManualChoirParts && (
-                <>
-                  {[1, 2, 3, 4, 5].map((part) => (
-                    <button
-                      key={`group-choir-${part}`}
-                      className={menuItemClass}
-                      onClick={() => {
-                        onUpdateGroup?.(contextMenu.group.nodeId, { role: `choir-part-${part}` });
-                        setContextMenu(null);
-                      }}
-                    >
-                      Choir part {part}
-                    </button>
-                  ))}
-                </>
+              {getInheritedParentGroupRole(contextMenu.group) ? (
+                <div className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-500 whitespace-nowrap select-none">
+                  Change track type (inherited)
+                </div>
+              ) : (
+                <div className="relative">
+                  <div
+                    className={`${menuItemClass} select-none cursor-pointer`}
+                    onMouseEnter={openGroupTypeMenu}
+                    onMouseLeave={() => setIsGroupTypeTriggerHover(false)}
+                    style={{
+                      backgroundColor: (
+                        isGroupTypeTriggerHover
+                        || isGroupTypeMenuHover
+                        || isGroupTrackTypeTriggerHover
+                        || isGroupTrackTypeMenuHover
+                        || isGroupPartTypeTriggerHover
+                        || isGroupPartTypeMenuHover
+                      )
+                        ? '#374151'
+                        : undefined,
+                    }}
+                  >
+                    <div className="flex items-center justify-between w-full">
+                      <span>Change track type</span>
+                      <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+                    </div>
+                  </div>
+                </div>
               )}
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onUpdateGroup?.(contextMenu.group.nodeId, { role: GROUP_ROLE_INSTRUMENTS });
-                  setContextMenu(null);
-                }}
-              >
-                Parent: Instruments
-              </button>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onUpdateGroup?.(contextMenu.group.nodeId, { role: GROUP_ROLE_LEADS });
-                  setContextMenu(null);
-                }}
-              >
-                Parent: Leads
-              </button>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onUpdateGroup?.(contextMenu.group.nodeId, { role: GROUP_ROLE_CHOIRS });
-                  setContextMenu(null);
-                }}
-              >
-                Parent: Choir
-              </button>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onUpdateGroup?.(contextMenu.group.nodeId, { role: GROUP_ROLE_NONE });
-                  setContextMenu(null);
-                }}
-              >
-                Clear type
-              </button>
               <button
                 className={menuItemClass}
                 onClick={() => {
@@ -1438,7 +1448,7 @@ function TrackList({
         </div>
       )}
 
-      {contextMenu && contextMenu.type === 'track' && contextMenu.track && typeMenuOpen && (
+      {contextMenu && contextMenu.type === 'track' && contextMenu.track && typeMenuOpen && !getInheritedParentGroupRole(contextMenu.row) && (
         <div
           className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[120px]"
           style={{ left: typeMenuPos.x, top: typeMenuPos.y }}
@@ -1474,7 +1484,7 @@ function TrackList({
               setContextMenu(null);
             }}
           >
-            Choir
+            Choir Part
           </button>
 
           {autoPanManualChoirParts && (
@@ -1503,7 +1513,7 @@ function TrackList({
         </div>
       )}
 
-      {contextMenu && contextMenu.type === 'track' && contextMenu.track && choirMenuOpen && autoPanManualChoirParts && (
+      {contextMenu && contextMenu.type === 'track' && contextMenu.track && choirMenuOpen && autoPanManualChoirParts && !getInheritedParentGroupRole(contextMenu.row) && (
         <div
           className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[25px]"
           style={{ left: choirMenuPos.x, top: choirMenuPos.y }}
@@ -1558,6 +1568,176 @@ function TrackList({
             }}
           >
             5
+          </button>
+        </div>
+      )}
+
+      {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupTypeMenuOpen && !getInheritedParentGroupRole(contextMenu.group) && (
+        <div
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[140px]"
+          style={{ left: groupTypeMenuPos.x, top: groupTypeMenuPos.y }}
+          onMouseEnter={() => setIsGroupTypeMenuHover(true)}
+          onMouseLeave={() => setIsGroupTypeMenuHover(false)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+        >
+          {!contextMenu.group.parentId ? (
+            <>
+              <div
+                className={`${menuItemClass} select-none cursor-pointer`}
+                onMouseEnter={openGroupTrackTypeMenu}
+                onMouseLeave={() => setIsGroupTrackTypeTriggerHover(false)}
+                style={{ backgroundColor: (isGroupTrackTypeTriggerHover || isGroupTrackTypeMenuHover) ? '#374151' : undefined }}
+              >
+                <div className="flex items-center justify-between w-full">
+                  <span>Group track</span>
+                  <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+                </div>
+              </div>
+              <div
+                className={`${menuItemClass} select-none cursor-pointer`}
+                onMouseEnter={openGroupPartTypeMenu}
+                onMouseLeave={() => setIsGroupPartTypeTriggerHover(false)}
+                style={{ backgroundColor: (isGroupPartTypeTriggerHover || isGroupPartTypeMenuHover) ? '#374151' : undefined }}
+              >
+                <div className="flex items-center justify-between w-full">
+                  <span>Part track</span>
+                  <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+                </div>
+              </div>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.OTHER });
+                  setContextMenu(null);
+                }}
+              >
+                Other
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.INSTRUMENT });
+                  setContextMenu(null);
+                }}
+              >
+                Instrument
+              </button>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.LEAD });
+                  setContextMenu(null);
+                }}
+              >
+                Lead
+              </button>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.CHOIR });
+                  setContextMenu(null);
+                }}
+              >
+                Choir Part
+              </button>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.OTHER });
+                  setContextMenu(null);
+                }}
+              >
+                Other
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupTrackTypeMenuOpen && !contextMenu.group.parentId && (
+        <div
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[130px]"
+          style={{ left: groupTrackTypeMenuPos.x, top: groupTrackTypeMenuPos.y }}
+          onMouseEnter={() => setIsGroupTrackTypeMenuHover(true)}
+          onMouseLeave={() => setIsGroupTrackTypeMenuHover(false)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+        >
+          <button
+            className={menuItemClass}
+            onClick={() => {
+              onUpdateGroup?.(contextMenu.group.nodeId, { role: GROUP_ROLE_INSTRUMENTS });
+              setContextMenu(null);
+            }}
+          >
+            Instruments
+          </button>
+          <button
+            className={menuItemClass}
+            onClick={() => {
+              onUpdateGroup?.(contextMenu.group.nodeId, { role: GROUP_ROLE_LEADS });
+              setContextMenu(null);
+            }}
+          >
+            Leads
+          </button>
+          <button
+            className={menuItemClass}
+            onClick={() => {
+              onUpdateGroup?.(contextMenu.group.nodeId, { role: GROUP_ROLE_CHOIRS });
+              setContextMenu(null);
+            }}
+          >
+            Choir
+          </button>
+        </div>
+      )}
+
+      {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupPartTypeMenuOpen && !contextMenu.group.parentId && (
+        <div
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[120px]"
+          style={{ left: groupPartTypeMenuPos.x, top: groupPartTypeMenuPos.y }}
+          onMouseEnter={() => setIsGroupPartTypeMenuHover(true)}
+          onMouseLeave={() => setIsGroupPartTypeMenuHover(false)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+        >
+          <button
+            className={menuItemClass}
+            onClick={() => {
+              onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.INSTRUMENT });
+              setContextMenu(null);
+            }}
+          >
+            Instrument
+          </button>
+          <button
+            className={menuItemClass}
+            onClick={() => {
+              onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.LEAD });
+              setContextMenu(null);
+            }}
+          >
+            Lead
+          </button>
+          <button
+            className={menuItemClass}
+            onClick={() => {
+              onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.CHOIR });
+              setContextMenu(null);
+            }}
+          >
+            Choir Part
           </button>
         </div>
       )}

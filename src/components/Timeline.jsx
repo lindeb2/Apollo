@@ -153,6 +153,9 @@ function Timeline({
       height: getTrackHeight(track),
     }));
 
+  const effectiveMix = useMemo(() => getEffectiveTrackMix(project), [project]);
+  const trackStateById = effectiveMix.statesByTrackId;
+
   const trackRowByTrackId = useMemo(() => {
     const map = new Map();
     timelineRows.forEach((row) => {
@@ -177,15 +180,11 @@ function Timeline({
   const groupTimelinePreviewByNodeId = useMemo(() => {
     const groupTrackIdsByNodeId = getGroupDescendantTrackIdsByGroup(project);
     const trackById = new Map((project.tracks || []).map((track) => [track.id, track]));
-    const effectiveMix = getEffectiveTrackMix(project);
-    const trackStateById = effectiveMix.statesByTrackId;
     const byGroupNodeId = new Map();
 
     for (const [groupNodeId, trackIds] of groupTrackIdsByNodeId.entries()) {
       const clips = [];
       for (const trackId of trackIds) {
-        const trackState = trackStateById.get(trackId);
-        if (!trackState?.audible) continue;
         const track = trackById.get(trackId);
         if (!track?.clips?.length) continue;
         for (const clip of track.clips) {
@@ -357,8 +356,8 @@ function Timeline({
       const currentDuration = projectDurationMs;
       
       if (prevDuration !== currentDuration) {
-        const lockedDuration = Math.max(prevDuration, MIN_VISIBLE_DURATION_MS);
-        setVisibleDurationMs(lockedDuration);
+        const preservedDuration = Math.max(prevDuration, MIN_VISIBLE_DURATION_MS);
+        setVisibleDurationMs(preservedDuration);
       }
     }
     
@@ -395,7 +394,6 @@ function Timeline({
   const handleClipRightClick = (e, clip, track) => {
     e.preventDefault();
     e.stopPropagation();
-    if (track.locked) return;
     if (rightClickDragRef.current) {
       rightClickDragRef.current = false;
       return;
@@ -404,7 +402,6 @@ function Timeline({
   };
 
   const handleClipMouseDown = (e, clip, track) => {
-    if (track.locked) return;
     if (e.button === 2) {
       e.preventDefault();
     }
@@ -591,7 +588,7 @@ function Timeline({
       if (e.code === 'KeyT' && (e.ctrlKey || e.metaKey) && selectedClip && hasTrackSelection) {
         e.preventDefault();
         const track = project.tracks.find(t => t.id === selectedTrackId);
-        if (!track || track.locked) return;
+        if (!track) return;
 
         const clipStartMs = selectedClip.timelineStartMs;
         const clipDurationMs = selectedClip.cropEndMs - selectedClip.cropStartMs;
@@ -648,20 +645,6 @@ function Timeline({
             t.id === selectedTrackId ? { ...t, soloed: !t.soloed } : t
           ),
         }), 'Toggle solo');
-        return;
-      }
-
-      if (e.code === 'KeyL' && hasTrackSelection) {
-        e.preventDefault();
-        const track = project.tracks.find(t => t.id === selectedTrackId);
-        if (!track) return;
-        onSelectTrack(selectedTrackId);
-        updateProject((proj) => ({
-          ...proj,
-          tracks: proj.tracks.map(t =>
-            t.id === selectedTrackId ? { ...t, locked: !t.locked } : t
-          ),
-        }), 'Toggle lock');
         return;
       }
 
@@ -1277,12 +1260,12 @@ function Timeline({
                 const trackY = getTrackYPosition(timelineRows, rowIndex);
                 if (row.kind === 'group') {
                   const groupPreview = groupTimelinePreviewByNodeId.get(row.nodeId);
-                  const rowPadding = row.collapsed ? 4 : 8;
+                  const rowPadding = 8;
                   const rowInternalHeight = Math.max(0, row.height - (rowPadding * 2));
                   return (
                     <div
                       key={row.nodeId}
-                      className={`border-b border-gray-700 relative ${row.collapsed ? 'bg-gray-850' : 'bg-gray-900/80'}`}
+                      className="border-b border-gray-700 relative bg-gray-900/80"
                       onClick={(e) => {
                         e.stopPropagation();
                         if (!dragState) {
@@ -1305,12 +1288,6 @@ function Timeline({
                         width: '100%',
                       }}
                     >
-                      {row.collapsed && (
-                        <div className="absolute inset-y-0 left-3 right-3 flex items-center text-4xl text-gray-200 font-semibold pointer-events-none z-10">
-                          <span className="sticky left-3">{row.name}</span>
-                        </div>
-                      )}
-
                       {groupPreview?.activeSegments?.map((segment, idx) => {
                         const leftPx = segment.startMs * pixelsPerMs;
                         const widthPx = Math.max(0, (segment.endMs - segment.startMs) * pixelsPerMs);
@@ -1366,11 +1343,16 @@ function Timeline({
 
                 const track = row.track;
                 const trackHeight = row.height;
+                const trackState = trackStateById.get(track.id);
+                const hasAnyAudibleClip = track.clips.some((clip) => !clip.muted);
+                const trackInactive = Boolean(
+                  !trackState?.audible || (track.clips.length > 0 && !hasAnyAudibleClip)
+                );
 
                 return (
                   <div
                     key={track.id}
-                    className={`border-b border-gray-700 relative ${track.locked ? 'bg-gray-850' : ''}`}
+                    className={`border-b border-gray-700 relative ${trackInactive ? 'bg-gray-850' : ''}`}
                     style={{
                       height: `${trackHeight}px`,
                       top: `${trackY}px`,
@@ -1378,18 +1360,12 @@ function Timeline({
                       width: '100%'
                     }}
                   >
-                    {track.locked && (
-                      <div className="absolute inset-y-0 left-3 right-3 flex items-center text-4xl text-gray-200 font-semibold pointer-events-none z-10">
-                        <span className="sticky left-3">{track.name}</span>
-                      </div>
-                    )}
-
                     {track.clips.map(clip => {
                       const clipDurationMs = clip.cropEndMs - clip.cropStartMs;
                       const clipWidthPx = clipDurationMs * pixelsPerMs;
                       const clipLeftPx = clip.timelineStartMs * pixelsPerMs;
                       const audioBuffer = audioManager.mediaCache.get(clip.blobId);
-                      const clipPadding = track.locked ? 4 : 8;
+                      const clipPadding = 8;
                       const clipInternalHeight = trackHeight - (clipPadding * 2);
                       const labelPadding = 8;
                       const gainLabelText = `${clip.gainDb > 0 ? '+' : ''}${clip.gainDb.toFixed(1)} dB`;
@@ -1404,8 +1380,6 @@ function Timeline({
                         <div
                           key={clip.id}
                           className={`absolute rounded overflow-hidden ${
-                            track.locked ? 'cursor-not-allowed opacity-50' : ''
-                          } ${
                             selectedClipId === clip.id
                               ? 'ring-2 ring-blue-500'
                               : 'hover:ring-2 hover:ring-gray-500'
@@ -1423,15 +1397,13 @@ function Timeline({
                           onMouseDown={(e) => handleClipMouseDown(e, clip, track)}
                           onContextMenu={(e) => handleClipRightClick(e, clip, track)}
                         >
-                          {!track.locked && (
-                            <div
-                              className="absolute inset-0 cursor-move"
-                              style={{
-                                pointerEvents: 'none',
-                                zIndex: 1,
-                              }}
-                            />
-                          )}
+                          <div
+                            className="absolute inset-0 cursor-move"
+                            style={{
+                              pointerEvents: 'none',
+                              zIndex: 1,
+                            }}
+                          />
                           {audioBuffer && (
                             <Waveform
                               audioBuffer={audioBuffer}
@@ -1445,7 +1417,7 @@ function Timeline({
                             />
                           )}
 
-                          {!track.locked && labelFits && (clip.muted || Math.abs(clip.gainDb) >= 0.1) && (
+                          {labelFits && (clip.muted || Math.abs(clip.gainDb) >= 0.1) && (
                             <div className="absolute top-1 left-0 right-0 text-xs font-medium pointer-events-none">
                               <span
                                 className="absolute text-yellow-400 whitespace-nowrap overflow-hidden text-ellipsis inline-flex items-center"
@@ -1459,26 +1431,24 @@ function Timeline({
                             </div>
                           )}
 
-                          {!track.locked && (
-                            <>
-                              <div
-                                className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize group"
-                                style={{
-                                  zIndex: 10,
-                                }}
-                              >
-                                <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-400 opacity-0 group-hover:opacity-70 transition-opacity"></div>
-                              </div>
-                              <div
-                                className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize group"
-                                style={{
-                                  zIndex: 10,
-                                }}
-                              >
-                                <div className="absolute right-0 top-0 bottom-0 w-1 bg-blue-400 opacity-0 group-hover:opacity-70 transition-opacity"></div>
-                              </div>
-                            </>
-                          )}
+                          <>
+                            <div
+                              className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize group"
+                              style={{
+                                zIndex: 10,
+                              }}
+                            >
+                              <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-400 opacity-0 group-hover:opacity-70 transition-opacity"></div>
+                            </div>
+                            <div
+                              className="absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize group"
+                              style={{
+                                zIndex: 10,
+                              }}
+                            >
+                              <div className="absolute right-0 top-0 bottom-0 w-1 bg-blue-400 opacity-0 group-hover:opacity-70 transition-opacity"></div>
+                            </div>
+                          </>
                         </div>
                       );
                     })}
@@ -1491,7 +1461,7 @@ function Timeline({
                       const recordingDurationMs = Math.max(0, effectiveEndMs - recordingStartMs);
                       const recordingWidthPx = recordingDurationMs * pixelsPerMs;
                       const recordingLeftPx = recordingStartMs * pixelsPerMs;
-                      const clipPadding = track.locked ? 4 : 8;
+                      const clipPadding = 8;
                       const clipInternalHeight = trackHeight - (clipPadding * 2);
 
                       return (
@@ -1502,17 +1472,15 @@ function Timeline({
                             left: `${recordingLeftPx}px`,
                             top: `${clipPadding}px`,
                             width: `${recordingWidthPx}px`,
-                            height: `${clipInternalHeight}px`,
-                            backgroundColor: 'rgba(239, 68, 68, 0.3)',
-                            border: '2px solid rgb(239, 68, 68)',
-                          }}
-                        >
-                          {!track.locked && (
-                            <div className="absolute top-1 left-2 text-xs text-red-500 font-bold pointer-events-none flex items-center gap-1">
-                              <span className="inline-block w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
-                              REC {recordingSegments.length > 1 && `(${recordingSegments.length})`}
-                            </div>
-                          )}
+                          height: `${clipInternalHeight}px`,
+                          backgroundColor: 'rgba(239, 68, 68, 0.3)',
+                          border: '2px solid rgb(239, 68, 68)',
+                        }}
+                      >
+                          <div className="absolute top-1 left-2 text-xs text-red-500 font-bold pointer-events-none flex items-center gap-1">
+                            <span className="inline-block w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+                            REC {recordingSegments.length > 1 && `(${recordingSegments.length})`}
+                          </div>
                         </div>
                       );
                     })()}

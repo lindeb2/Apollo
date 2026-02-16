@@ -13,8 +13,7 @@ import {
   toCategoryRole,
 } from './trackRoles';
 
-const GROUP_EXPANDED_HEIGHT = 100;
-const GROUP_COLLAPSED_HEIGHT = 70;
+const GROUP_HEIGHT = 100;
 const ROOT_PARENT_ID = null;
 
 function toNumber(value, fallback = 0) {
@@ -44,11 +43,11 @@ function makeTrackNode(trackId, order = 0, parentId = ROOT_PARENT_ID) {
 }
 
 export function getTrackHeight(track) {
-  return track?.locked ? 70 : 100;
+  return 100;
 }
 
 function getGroupHeight(groupNode) {
-  return groupNode?.collapsed ? GROUP_COLLAPSED_HEIGHT : GROUP_EXPANDED_HEIGHT;
+  return GROUP_HEIGHT;
 }
 
 export function normalizeTrackTree(project) {

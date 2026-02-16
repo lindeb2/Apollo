@@ -17,6 +17,8 @@ function useKeyboardShortcuts({
   onAddSubtrack,
   onIndentRight,
   onIndentLeft,
+  onToggleFold,
+  onToggleFoldRecursive,
 }) {
   useEffect(() => {
     if (!enabled) return;
@@ -92,6 +94,19 @@ function useKeyboardShortcuts({
           onAddTrack?.();
         }
       }
+
+      // F - Toggle fold for selected/parent group
+      if (e.code === 'KeyF' && !e.ctrlKey && !e.metaKey) {
+        if (e.altKey && e.shiftKey) {
+          e.preventDefault();
+          onToggleFoldRecursive?.();
+          return;
+        }
+        if (!e.altKey && !e.shiftKey) {
+          e.preventDefault();
+          onToggleFold?.();
+        }
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -112,6 +127,8 @@ function useKeyboardShortcuts({
     onAddSubtrack,
     onIndentRight,
     onIndentLeft,
+    onToggleFold,
+    onToggleFoldRecursive,
   ]);
 }
 

@@ -67,7 +67,6 @@ export function normalizeExportSettings(settings = {}) {
  * @property {string} name - Track name
  * @property {string} role - Track role (from TRACK_ROLES)
  * @property {string} icon - Track icon key
- * @property {boolean} locked - Lock state (locked tracks are non-draggable)
  * @property {number} volume - Volume (0-100, maps to -60dB to 0dB)
  * @property {number} pan - Pan (-100 to +100, maps to -1 to +1)
  * @property {boolean} muted - Mute state
@@ -134,13 +133,12 @@ export function createEmptyProject(
 /**
  * Create a new track
  */
-export function createTrack(name, role = TRACK_ROLES.OTHER, locked = false) {
+export function createTrack(name, role = TRACK_ROLES.OTHER) {
   return {
     id: crypto.randomUUID(),
     name,
     role,
     icon: getDefaultIconByRole(role),
-    locked,
     volume: dbToVolume(0),
     pan: 0,
     muted: false,
