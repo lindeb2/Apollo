@@ -16,6 +16,12 @@ import { processRecordingOverwrites } from '../utils/clipCollision';
 import { normalizeProjectName } from '../utils/naming';
 import { measureTuttiPeak } from '../lib/exportEngine';
 import {
+  GROUP_ROLE_CHOIRS,
+  isChoirRole,
+  isGroupParentRole,
+  groupRoleToTrackRole,
+} from '../utils/trackRoles';
+import {
   attachTrackNode,
   createGroupNode,
   getEffectiveTrackMix,
@@ -898,7 +904,7 @@ function Editor({ onBackToDashboard }) {
     let nextProjectAfter = null;
     updateProject((proj) => {
       const previousTrack = proj.tracks.find((track) => track.id === trackId);
-      const wasChoirTrack = previousTrack?.role?.startsWith('choir-part-');
+      const wasChoirTrack = isChoirRole(previousTrack?.role);
       const nextTracks = proj.tracks.map((track) =>
         track.id === trackId ? { ...track, ...updates } : track
       );
@@ -947,10 +953,14 @@ function Editor({ onBackToDashboard }) {
     updateProject((proj) => {
       let nextProject = updateGroupNode(proj, groupNodeId, updates);
       const wasChoirGroup = (proj.trackTree || []).some(
-        (node) => node.id === groupNodeId && node.kind === 'group' && node.role?.startsWith('choir-part-')
+        (node) => node.id === groupNodeId && node.kind === 'group' && (
+          isChoirRole(node.role) || (isGroupParentRole(node.role) && node.role === GROUP_ROLE_CHOIRS)
+        )
       );
       const nextChoirGroup = (nextProject.trackTree || []).some(
-        (node) => node.id === groupNodeId && node.kind === 'group' && node.role?.startsWith('choir-part-')
+        (node) => node.id === groupNodeId && node.kind === 'group' && (
+          isChoirRole(node.role) || (isGroupParentRole(node.role) && node.role === GROUP_ROLE_CHOIRS)
+        )
       );
       if (updates.pan !== undefined && wasChoirGroup && proj.autoPan?.enabled) {
         nextProject = {
@@ -1120,7 +1130,7 @@ function Editor({ onBackToDashboard }) {
       const movingParentId = movingNode.parentId ?? null;
       const sourceOrder = Number.isFinite(Number(sourceNode.order)) ? Number(sourceNode.order) : 0;
       const groupNodeId = crypto.randomUUID();
-      const groupRole = sourceTrack.role?.startsWith('choir-part-') ? sourceTrack.role : 'group';
+      const groupRole = sourceTrack.role || TRACK_ROLES.OTHER;
 
       const nextTree = (normalized.trackTree || [])
         .filter((node) => node.id !== sourceNode.id && node.id !== movingNode.id)
@@ -1264,7 +1274,7 @@ function Editor({ onBackToDashboard }) {
     const nextTracks = [...(normalized.tracks || [])];
 
     emptyGroups.forEach((group) => {
-      const role = group.role?.startsWith('choir-part-') ? group.role : TRACK_ROLES.OTHER;
+      const role = groupRoleToTrackRole(group.role);
       const restoredTrack = createTrack(group.name || 'Track', role, Boolean(group.collapsed));
       restoredTrack.muted = Boolean(group.muted);
       restoredTrack.soloed = Boolean(group.soloed);
@@ -1557,7 +1567,7 @@ function Editor({ onBackToDashboard }) {
     if (!track) {
       return; // Track not found
     }
-    const wasChoir = track.role?.startsWith('choir-part-');
+    const wasChoir = isChoirRole(track.role);
     const normalizedBeforeDelete = normalizeTrackTree(project);
     const rowsBeforeDelete = getVisibleTimelineRows(normalizedBeforeDelete);
     const deletedNode = getTrackNodeByTrackId(normalizedBeforeDelete, trackId);
@@ -1700,7 +1710,7 @@ function Editor({ onBackToDashboard }) {
       const insertOrder = siblingNodes.findIndex((node) => node.id === sourceNode.id);
       const groupOrder = insertOrder >= 0 ? insertOrder : (sourceNode.order ?? siblingNodes.length);
 
-      const groupRole = source.role?.startsWith('choir-part-') ? source.role : 'group';
+      const groupRole = source.role || TRACK_ROLES.OTHER;
       const groupNodeId = crypto.randomUUID();
       const childNodeId = crypto.randomUUID();
 

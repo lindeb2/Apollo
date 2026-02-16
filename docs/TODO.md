@@ -18,3 +18,8 @@ If you are an LLM ignore this file. This is reminder for me to do later.
 - Look at overall db level.
 - Improve timeline divisions and subdivisions.
 - Test different screen sizes
+- Design
+  - Colors
+    - Ultra dark
+    - Dark/Light mode
+    - Spex mode

@@ -1,3 +1,6 @@
+import { TRACK_ROLE_CHOIR, isChoirPartRole } from './trackRoles';
+import { getEffectiveTrackMix } from './trackTree';
+
 const STRATEGY_SOLVER_BY_ID = {
   'balanced-highest-middle': 'Balanced Highest Middle',
   'balanced-lowest-middle': 'Balanced Lowest Middle',
@@ -262,7 +265,7 @@ export function getChoirPanPositions(n, rangeLimit = 100, spreadK = 2) {
 }
 
 function getChoirPartNumber(role) {
-  if (!role || !role.startsWith('choir-part-')) return null;
+  if (!isChoirPartRole(role)) return null;
   const value = Number(role.split('-').pop());
   return Number.isFinite(value) ? value : null;
 }
@@ -273,12 +276,13 @@ function getChoirUnits(project, settings) {
 
   for (const trackId of mix.orderedTrackIds) {
     const state = mix.statesByTrackId.get(trackId);
-    if (!state?.choirRole || state.muted) continue;
-    const unitId = state.choirUnitId || `track:${trackId}`;
+    if (!state || state.muted || state.effectiveRole !== TRACK_ROLE_CHOIR) continue;
+    const unitId = state.choirUnitId || state.roleUnitId || `track:${trackId}`;
     if (!unitsById.has(unitId)) {
       unitsById.set(unitId, {
         unitId,
         role: state.choirRole,
+        label: state.choirUnitName || state.roleUnitName || `Track ${trackId}`,
         trackIds: [],
       });
     }
@@ -299,12 +303,28 @@ function getChoirUnits(project, settings) {
   ).sort((a, b) => a - b);
   const partIndexByNumber = new Map(partNumbers.map((value, idx) => [value, idx + 1]));
 
-  return units
-    .map((unit) => ({
-      ...unit,
-      partIndex: partIndexByNumber.get(getChoirPartNumber(unit.role)) || null,
-    }))
-    .filter((unit) => unit.partIndex !== null);
+  const unitsWithPartIndex = units.map((unit) => ({
+    ...unit,
+    partIndex: partIndexByNumber.get(getChoirPartNumber(unit.role)) || null,
+  }));
+
+  const assigned = new Set(
+    unitsWithPartIndex
+      .map((unit) => unit.partIndex)
+      .filter((value) => Number.isFinite(value))
+  );
+
+  let nextPartIndex = 1;
+  return unitsWithPartIndex.map((unit) => {
+    if (unit.partIndex !== null) return unit;
+    while (assigned.has(nextPartIndex)) {
+      nextPartIndex += 1;
+    }
+    const filled = { ...unit, partIndex: nextPartIndex };
+    assigned.add(nextPartIndex);
+    nextPartIndex += 1;
+    return filled;
+  });
 }
 
 export function applyChoirAutoPanToProject(project, settingsOverride = {}) {
@@ -380,4 +400,3 @@ export function applyChoirAutoPanToProject(project, settingsOverride = {}) {
     panUpdates,
   };
 }
-import { getEffectiveTrackMix } from './trackTree';

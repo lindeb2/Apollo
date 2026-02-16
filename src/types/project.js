@@ -1,5 +1,13 @@
 import { dbToVolume, normalizePanLawDb, DEFAULT_PAN_LAW_DB } from '../utils/audio';
 import { DEFAULT_AUTO_PAN_SETTINGS } from '../utils/choirAutoPan';
+import {
+  TRACK_ROLE_INSTRUMENT,
+  TRACK_ROLE_LEAD,
+  TRACK_ROLE_CHOIR,
+  TRACK_ROLE_OTHER,
+  TRACK_CHOIR_PART_ROLES,
+  getDefaultIconByRole,
+} from '../utils/trackRoles';
 
 /**
  * Project data model types (authoritative)
@@ -7,14 +15,15 @@ import { DEFAULT_AUTO_PAN_SETTINGS } from '../utils/choirAutoPan';
  */
 
 export const TRACK_ROLES = {
-  INSTRUMENT: 'instrument',
-  LEAD: 'lead',
-  CHOIR_PART_1: 'choir-part-1',
-  CHOIR_PART_2: 'choir-part-2',
-  CHOIR_PART_3: 'choir-part-3',
-  CHOIR_PART_4: 'choir-part-4',
-  CHOIR_PART_5: 'choir-part-5',
-  OTHER: 'other',
+  INSTRUMENT: TRACK_ROLE_INSTRUMENT,
+  LEAD: TRACK_ROLE_LEAD,
+  CHOIR: TRACK_ROLE_CHOIR,
+  CHOIR_PART_1: TRACK_CHOIR_PART_ROLES[0],
+  CHOIR_PART_2: TRACK_CHOIR_PART_ROLES[1],
+  CHOIR_PART_3: TRACK_CHOIR_PART_ROLES[2],
+  CHOIR_PART_4: TRACK_CHOIR_PART_ROLES[3],
+  CHOIR_PART_5: TRACK_CHOIR_PART_ROLES[4],
+  OTHER: TRACK_ROLE_OTHER,
 };
 
 export const SAMPLE_RATE = 44100;
@@ -126,22 +135,11 @@ export function createEmptyProject(
  * Create a new track
  */
 export function createTrack(name, role = TRACK_ROLES.OTHER, locked = false) {
-  const defaultIconByRole = {
-    [TRACK_ROLES.INSTRUMENT]: 'music',
-    [TRACK_ROLES.LEAD]: 'mic',
-    [TRACK_ROLES.CHOIR_PART_1]: 'users',
-    [TRACK_ROLES.CHOIR_PART_2]: 'users',
-    [TRACK_ROLES.CHOIR_PART_3]: 'users',
-    [TRACK_ROLES.CHOIR_PART_4]: 'users',
-    [TRACK_ROLES.CHOIR_PART_5]: 'users',
-    [TRACK_ROLES.OTHER]: 'wave',
-  };
-
   return {
     id: crypto.randomUUID(),
     name,
     role,
-    icon: defaultIconByRole[role] || 'wave',
+    icon: getDefaultIconByRole(role),
     locked,
     volume: dbToVolume(0),
     pan: 0,

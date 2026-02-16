@@ -15,6 +15,14 @@ import { TRACK_ROLES } from '../types/project';
 import { dbToVolume, volumeToDb } from '../utils/audio';
 import { AUTO_PAN_STRATEGIES } from '../utils/choirAutoPan';
 import { normalizeTrackName } from '../utils/naming';
+import {
+  GROUP_ROLE_CHOIRS,
+  GROUP_ROLE_INSTRUMENTS,
+  GROUP_ROLE_LEADS,
+  GROUP_ROLE_NONE,
+  getDefaultIconByRole,
+  isChoirRole,
+} from '../utils/trackRoles';
 
 const TRACK_HEIGHT = 100;
 const LOCKED_TRACK_HEIGHT = 70;
@@ -270,10 +278,7 @@ function TrackList({
   };
 
   const getDefaultIconKey = (role) => {
-    if (role === TRACK_ROLES.INSTRUMENT) return 'music';
-    if (role === TRACK_ROLES.LEAD) return 'mic';
-    if (role?.startsWith('choir-part')) return 'users';
-    return 'wave';
+    return getDefaultIconByRole(role);
   };
 
   const getIconForTrack = (track) => {
@@ -572,12 +577,17 @@ function TrackList({
     const colors = {
       instrument: 'bg-purple-600',
       lead: 'bg-blue-600',
+      choir: 'bg-green-600',
       'choir-part-1': 'bg-green-600',
       'choir-part-2': 'bg-green-500',
       'choir-part-3': 'bg-green-400',
       'choir-part-4': 'bg-teal-500',
       'choir-part-5': 'bg-teal-400',
+      instruments: 'bg-purple-700',
+      leads: 'bg-blue-700',
+      choirs: 'bg-green-700',
       other: 'bg-gray-600',
+      group: 'bg-gray-600',
     };
     return colors[role] || 'bg-gray-600';
   };
@@ -625,7 +635,10 @@ function TrackList({
 
         if (row.kind === 'group') {
           const groupIsLocked = Boolean(row.collapsed);
-          const GroupIcon = row.role?.startsWith('choir-part-') ? Users : Waves;
+          const groupIconKey = getDefaultIconKey(row.role);
+          const GroupIcon = groupIconKey === 'music'
+            ? Music
+            : (groupIconKey === 'mic' ? Mic : (groupIconKey === 'users' ? Users : Waves));
           const isSelectedRow = selectedNodeId === row.nodeId;
 
           return (
@@ -1211,7 +1224,7 @@ function TrackList({
                 </div>
               </div>
 
-              {contextMenu.track.role?.startsWith('choir-part-') && (
+              {isChoirRole(contextMenu.track.role) && (
                 <div className="relative">
                   <div
                     className={`${menuItemClass} select-none cursor-pointer`}
@@ -1276,7 +1289,43 @@ function TrackList({
               >
                 Rename group
               </button>
-              {autoPanManualChoirParts ? (
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.INSTRUMENT });
+                  setContextMenu(null);
+                }}
+              >
+                Type: Instrument
+              </button>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.LEAD });
+                  setContextMenu(null);
+                }}
+              >
+                Type: Lead
+              </button>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.CHOIR });
+                  setContextMenu(null);
+                }}
+              >
+                Type: Choir
+              </button>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.OTHER });
+                  setContextMenu(null);
+                }}
+              >
+                Type: Other
+              </button>
+              {autoPanManualChoirParts && (
                 <>
                   {[1, 2, 3, 4, 5].map((part) => (
                     <button
@@ -1287,31 +1336,47 @@ function TrackList({
                         setContextMenu(null);
                       }}
                     >
-                      Set choir part {part}
+                      Choir part {part}
                     </button>
                   ))}
-                  <button
-                    className={menuItemClass}
-                    onClick={() => {
-                      onUpdateGroup?.(contextMenu.group.nodeId, { role: 'group' });
-                      setContextMenu(null);
-                    }}
-                  >
-                    Clear choir part
-                  </button>
                 </>
-              ) : (
-                <button
-                  className={menuItemClass}
-                  onClick={() => {
-                    const nextRole = contextMenu.group.role?.startsWith('choir-part-') ? 'group' : 'choir-part-1';
-                    onUpdateGroup?.(contextMenu.group.nodeId, { role: nextRole });
-                    setContextMenu(null);
-                  }}
-                >
-                  {contextMenu.group.role?.startsWith('choir-part-') ? 'Clear choir part' : 'Set as choir part'}
-                </button>
               )}
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onUpdateGroup?.(contextMenu.group.nodeId, { role: GROUP_ROLE_INSTRUMENTS });
+                  setContextMenu(null);
+                }}
+              >
+                Parent: Instruments
+              </button>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onUpdateGroup?.(contextMenu.group.nodeId, { role: GROUP_ROLE_LEADS });
+                  setContextMenu(null);
+                }}
+              >
+                Parent: Leads
+              </button>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onUpdateGroup?.(contextMenu.group.nodeId, { role: GROUP_ROLE_CHOIRS });
+                  setContextMenu(null);
+                }}
+              >
+                Parent: Choir
+              </button>
+              <button
+                className={menuItemClass}
+                onClick={() => {
+                  onUpdateGroup?.(contextMenu.group.nodeId, { role: GROUP_ROLE_NONE });
+                  setContextMenu(null);
+                }}
+              >
+                Clear type
+              </button>
               <button
                 className={menuItemClass}
                 onClick={() => {
@@ -1402,8 +1467,17 @@ function TrackList({
           >
             Lead
           </button>
+          <button
+            className={menuItemClass}
+            onClick={() => {
+              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR });
+              setContextMenu(null);
+            }}
+          >
+            Choir
+          </button>
 
-          {autoPanManualChoirParts ? (
+          {autoPanManualChoirParts && (
             <div
               className={`${menuItemClass} select-none cursor-pointer`}
               onMouseEnter={openChoirMenu}
@@ -1415,16 +1489,6 @@ function TrackList({
                 <ChevronRight size={14} className="text-gray-400 ml-0.5" />
               </div>
             </div>
-          ) : (
-            <button
-              className={menuItemClass}
-              onClick={() => {
-                onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_1 });
-                setContextMenu(null);
-              }}
-            >
-              Choir part
-            </button>
           )}
 
           <button

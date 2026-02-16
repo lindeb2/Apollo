@@ -10,12 +10,17 @@ import {
 import lamejs from 'lamejs';
 import {
   SAMPLE_RATE,
-  TRACK_ROLES,
   DEFAULT_EXPORT_SETTINGS,
   normalizeExportSettings,
 } from '../types/project';
 import { applyChoirAutoPanToProject, normalizeAutoPanSettings } from '../utils/choirAutoPan';
 import { getEffectiveTrackMix } from '../utils/trackTree';
+import {
+  TRACK_ROLE_CHOIR,
+  TRACK_ROLE_INSTRUMENT,
+  TRACK_ROLE_LEAD,
+  toCategoryRole,
+} from '../utils/trackRoles';
 
 export const EXPORT_PRESETS = {
   TUTTI: 'tutti',
@@ -51,18 +56,6 @@ export const EXPORT_PRESET_DEFINITIONS = [
 
 const VALID_PRESETS = new Set(EXPORT_PRESET_DEFINITIONS.map((preset) => preset.id));
 const PRACTICE_FOCUS_PEAK_DB = -1;
-
-function isInstrumentTrack(track) {
-  return track.role === TRACK_ROLES.INSTRUMENT;
-}
-
-function isLeadTrack(track) {
-  return track.role === TRACK_ROLES.LEAD;
-}
-
-function isChoirRole(role) {
-  return typeof role === 'string' && role.startsWith('choir-part-');
-}
 
 function clampPan(pan) {
   return Math.max(-100, Math.min(100, Number(pan) || 0));
@@ -252,7 +245,14 @@ function getAutoPannedChoirPanMap(project, choirTracks) {
       ...project.autoPan,
       enabled: true,
     }),
-    tracks: choirTracks.map((track) => ({ ...track })),
+    tracks: choirTracks.map((track) => ({ ...track, role: TRACK_ROLE_CHOIR })),
+    trackTree: choirTracks.map((track, idx) => ({
+      id: `auto-pan-${track.id}`,
+      kind: 'track',
+      parentId: null,
+      order: idx,
+      trackId: track.id,
+    })),
   };
 
   const result = applyChoirAutoPanToProject(tempProject, { enabled: true });
@@ -270,16 +270,34 @@ function createFileName(projectBase, label = '', format = 'wav') {
     : `${projectBase}.${format}`;
 }
 
+function getRoleUnits(activeTracks, trackStateById, role) {
+  const unitsById = new Map();
+  for (const track of activeTracks) {
+    const state = trackStateById.get(track.id);
+    if (state?.effectiveRole !== role) continue;
+    const unitId = state.roleUnitId || `track:${track.id}`;
+    if (!unitsById.has(unitId)) {
+      unitsById.set(unitId, {
+        unitId,
+        label: state.roleUnitName || track.name,
+        trackIds: [],
+      });
+    }
+    unitsById.get(unitId).trackIds.push(track.id);
+  }
+  return Array.from(unitsById.values());
+}
+
 function getChoirUnits(activeTracks, trackStateById) {
   const unitsById = new Map();
   for (const track of activeTracks) {
     const state = trackStateById.get(track.id);
-    if (!state?.choirRole) continue;
-    const unitId = state.choirUnitId || `track:${track.id}`;
+    if (state?.effectiveRole !== TRACK_ROLE_CHOIR) continue;
+    const unitId = state.choirUnitId || state.roleUnitId || `track:${track.id}`;
     if (!unitsById.has(unitId)) {
       unitsById.set(unitId, {
         unitId,
-        label: state.choirUnitName || track.name,
+        label: state.choirUnitName || state.roleUnitName || track.name,
         trackIds: [],
       });
     }
@@ -352,10 +370,12 @@ export async function exportProject(
   const mix = getEffectiveTrackMix(project);
   const trackStateById = mix.statesByTrackId;
   const activeTracks = allTracks.filter((track) => trackStateById.get(track.id)?.audible);
-  const effectiveRole = (track) => trackStateById.get(track.id)?.choirRole || track.role;
-  const instrumentTracks = activeTracks.filter((track) => effectiveRole(track) === TRACK_ROLES.INSTRUMENT);
-  const leadTracks = activeTracks.filter((track) => effectiveRole(track) === TRACK_ROLES.LEAD);
-  const choirTracks = activeTracks.filter((track) => isChoirRole(effectiveRole(track)));
+  const effectiveRole = (track) => trackStateById.get(track.id)?.effectiveRole || toCategoryRole(track.role);
+  const instrumentTracks = activeTracks.filter((track) => effectiveRole(track) === TRACK_ROLE_INSTRUMENT);
+  const leadTracks = activeTracks.filter((track) => effectiveRole(track) === TRACK_ROLE_LEAD);
+  const choirTracks = activeTracks.filter((track) => effectiveRole(track) === TRACK_ROLE_CHOIR);
+  const instrumentUnits = getRoleUnits(activeTracks, trackStateById, TRACK_ROLE_INSTRUMENT);
+  const leadUnits = getRoleUnits(activeTracks, trackStateById, TRACK_ROLE_LEAD);
   const choirUnits = getChoirUnits(activeTracks, trackStateById);
   const projectBase = exportBaseName || project.projectName || 'project';
   const files = [];
@@ -375,7 +395,7 @@ export async function exportProject(
 
     if (presetId === EXPORT_PRESETS.ACAPELLA) {
       const tracks = activeTracks.filter((track) => (
-        effectiveRole(track) === TRACK_ROLES.LEAD || isChoirRole(effectiveRole(track))
+        effectiveRole(track) === TRACK_ROLE_LEAD || effectiveRole(track) === TRACK_ROLE_CHOIR
       ));
       files.push({
         presetId,
@@ -390,7 +410,7 @@ export async function exportProject(
 
     if (presetId === EXPORT_PRESETS.NO_LEAD) {
       const tracks = activeTracks.filter((track) => (
-        effectiveRole(track) === TRACK_ROLES.INSTRUMENT || isChoirRole(effectiveRole(track))
+        effectiveRole(track) === TRACK_ROLE_INSTRUMENT || effectiveRole(track) === TRACK_ROLE_CHOIR
       ));
       files.push({
         presetId,
@@ -405,7 +425,7 @@ export async function exportProject(
 
     if (presetId === EXPORT_PRESETS.NO_CHOIR) {
       const tracks = activeTracks.filter((track) => (
-        effectiveRole(track) === TRACK_ROLES.INSTRUMENT || effectiveRole(track) === TRACK_ROLES.LEAD
+        effectiveRole(track) === TRACK_ROLE_INSTRUMENT || effectiveRole(track) === TRACK_ROLE_LEAD
       ));
       files.push({
         presetId,
@@ -455,11 +475,12 @@ export async function exportProject(
     }
 
     if (presetId === EXPORT_PRESETS.INSTRUMENT_PARTS) {
-      for (const targetTrack of instrumentTracks) {
+      for (const targetUnit of instrumentUnits) {
+        const targetTrackIds = targetUnit.trackIds;
         const basePanByTrackId = Object.fromEntries(activeTracks.map((track) => [track.id, clampPan(trackStateById.get(track.id)?.effectivePan ?? track.pan)]));
         const panAdjustments = buildPracticePanMap({
           tracks: activeTracks,
-          targetTrackIds: [targetTrack.id],
+          targetTrackIds,
           basePanByTrackId,
           transformedPanRange: exportSettings.transformedPanRange,
         });
@@ -468,7 +489,7 @@ export async function exportProject(
           tracks: activeTracks,
           audioBuffers,
           panAdjustments,
-          targetTrackIds: [targetTrack.id],
+          targetTrackIds,
           trackStateById,
           practiceFocusDiffDb: exportSettings.practiceFocusDiffDb,
         });
@@ -476,8 +497,8 @@ export async function exportProject(
           presetId,
           branch: 'normal',
           subgroup: 'Instruments',
-          subgroupCount: instrumentTracks.length,
-          filename: createFileName(projectBase, targetTrack.name, outputFormat),
+          subgroupCount: instrumentUnits.length,
+          filename: createFileName(projectBase, targetUnit.label, outputFormat),
           blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat, trackStateById),
         });
       }
@@ -485,11 +506,12 @@ export async function exportProject(
     }
 
     if (presetId === EXPORT_PRESETS.LEAD_PARTS) {
-      for (const targetTrack of leadTracks) {
+      for (const targetUnit of leadUnits) {
+        const targetTrackIds = targetUnit.trackIds;
         const basePanByTrackId = Object.fromEntries(activeTracks.map((track) => [track.id, clampPan(trackStateById.get(track.id)?.effectivePan ?? track.pan)]));
         const panAdjustments = buildPracticePanMap({
           tracks: activeTracks,
-          targetTrackIds: [targetTrack.id],
+          targetTrackIds,
           basePanByTrackId,
           transformedPanRange: exportSettings.transformedPanRange,
         });
@@ -498,7 +520,7 @@ export async function exportProject(
           tracks: activeTracks,
           audioBuffers,
           panAdjustments,
-          targetTrackIds: [targetTrack.id],
+          targetTrackIds,
           trackStateById,
           practiceFocusDiffDb: exportSettings.practiceFocusDiffDb,
         });
@@ -506,8 +528,8 @@ export async function exportProject(
           presetId,
           branch: 'normal',
           subgroup: 'Leads',
-          subgroupCount: leadTracks.length,
-          filename: createFileName(projectBase, targetTrack.name, outputFormat),
+          subgroupCount: leadUnits.length,
+          filename: createFileName(projectBase, targetUnit.label, outputFormat),
           blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat, trackStateById),
         });
       }
@@ -550,14 +572,14 @@ export async function exportProject(
     }
 
     if (presetId === EXPORT_PRESETS.INSTRUMENT_PARTS_OMITTED) {
-      for (const omittedTrack of instrumentTracks) {
-        const tracks = activeTracks.filter((track) => track.id !== omittedTrack.id);
+      for (const omittedUnit of instrumentUnits) {
+        const tracks = activeTracks.filter((track) => !omittedUnit.trackIds.includes(track.id));
         files.push({
           presetId,
           branch: 'omitted',
           subgroup: 'Instruments',
-          subgroupCount: instrumentTracks.length,
-          filename: createFileName(projectBase, `${omittedTrack.name} Omitted`, outputFormat),
+          subgroupCount: instrumentUnits.length,
+          filename: createFileName(projectBase, `${omittedUnit.label} Omitted`, outputFormat),
           blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById),
         });
       }
@@ -565,14 +587,14 @@ export async function exportProject(
     }
 
     if (presetId === EXPORT_PRESETS.LEAD_PARTS_OMITTED) {
-      for (const omittedTrack of leadTracks) {
-        const tracks = activeTracks.filter((track) => track.id !== omittedTrack.id);
+      for (const omittedUnit of leadUnits) {
+        const tracks = activeTracks.filter((track) => !omittedUnit.trackIds.includes(track.id));
         files.push({
           presetId,
           branch: 'omitted',
           subgroup: 'Leads',
-          subgroupCount: leadTracks.length,
-          filename: createFileName(projectBase, `${omittedTrack.name} Omitted`, outputFormat),
+          subgroupCount: leadUnits.length,
+          filename: createFileName(projectBase, `${omittedUnit.label} Omitted`, outputFormat),
           blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById),
         });
       }

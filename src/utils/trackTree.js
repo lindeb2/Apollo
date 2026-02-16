@@ -1,4 +1,17 @@
 import { volumeToGain } from './audio';
+import {
+  TRACK_ROLE_CHOIR,
+  TRACK_ROLE_INSTRUMENT,
+  TRACK_ROLE_LEAD,
+  TRACK_ROLE_OTHER,
+  GROUP_ROLE_NONE,
+  isChoirPartRole,
+  isChoirRole,
+  isGroupParentRole,
+  mapGroupParentRoleToTrackRole,
+  normalizeGroupRole,
+  toCategoryRole,
+} from './trackRoles';
 
 const GROUP_EXPANDED_HEIGHT = 100;
 const GROUP_COLLAPSED_HEIGHT = 70;
@@ -16,8 +29,8 @@ function clampPan(value) {
   return Math.max(-100, Math.min(100, toNumber(value, 0)));
 }
 
-function isChoirRole(role) {
-  return typeof role === 'string' && role.startsWith('choir-part-');
+function isCountableRole(role) {
+  return role === TRACK_ROLE_INSTRUMENT || role === TRACK_ROLE_LEAD || role === TRACK_ROLE_CHOIR;
 }
 
 function makeTrackNode(trackId, order = 0, parentId = ROOT_PARENT_ID) {
@@ -88,7 +101,7 @@ export function normalizeTrackTree(project) {
       soloed: Boolean(rawNode.soloed),
       volume: Math.max(0, Math.min(100, toNumber(rawNode.volume, 100))),
       pan: clampPan(rawNode.pan),
-      role: isChoirRole(rawNode.role) ? rawNode.role : 'group',
+      role: normalizeGroupRole(rawNode.role),
     });
   }
 
@@ -169,7 +182,7 @@ export function getVisibleTimelineRows(project) {
           soloed: Boolean(node.soloed),
           volume: Math.max(0, Math.min(100, toNumber(node.volume, 100))),
           pan: clampPan(node.pan),
-          role: isChoirRole(node.role) ? node.role : 'group',
+          role: normalizeGroupRole(node.role),
         });
         if (!node.collapsed) {
           walk(node.id, depth + 1);
@@ -349,7 +362,7 @@ export function createGroupNode(project, name = 'Group', parentId = ROOT_PARENT_
     soloed: false,
     volume: 100,
     pan: 0,
-    role: 'group',
+    role: GROUP_ROLE_NONE,
   };
   return { ...normalized, trackTree: [...normalized.trackTree, nextNode] };
 }
@@ -361,7 +374,7 @@ export function updateGroupNode(project, groupNodeId, updates = {}) {
     trackTree: normalized.trackTree.map((node) => {
       if (node.id !== groupNodeId || node.kind !== 'group') return node;
       const nextRole = updates.role !== undefined
-        ? (isChoirRole(updates.role) ? updates.role : 'group')
+        ? normalizeGroupRole(updates.role)
         : node.role;
       return {
         ...node,
@@ -495,16 +508,72 @@ export function getEffectiveTrackMix(project) {
     const key = parentId || '__root__';
     const children = childrenMap.get(key) || [];
     for (const node of children) {
+      const nodeParentRole = inherited.parentRole;
+      const isImmediateChildOfParentRole = Boolean(nodeParentRole && inherited.parentGroupId === parentId);
+
       if (node.kind === 'group') {
         const next = {
           muted: inherited.muted || Boolean(node.muted),
           solo: inherited.solo || Boolean(node.soloed),
           gain: inherited.gain * volumeToGain(Math.max(0, Math.min(100, toNumber(node.volume, 100)))),
           pan: clampPan(inherited.pan + clampPan(node.pan)),
-          choirRole: isChoirRole(node.role) ? node.role : inherited.choirRole,
-          choirUnitId: isChoirRole(node.role) ? node.id : inherited.choirUnitId,
-          choirUnitName: isChoirRole(node.role) ? node.name : inherited.choirUnitName,
+          parentRole: inherited.parentRole,
+          parentGroupId: inherited.parentGroupId,
+          parentUnitId: inherited.parentUnitId,
+          parentUnitName: inherited.parentUnitName,
+          forcedRole: inherited.forcedRole,
+          forcedUnitId: inherited.forcedUnitId,
+          forcedUnitName: inherited.forcedUnitName,
+          choirRole: inherited.choirRole,
+          choirUnitId: inherited.choirUnitId,
+          choirUnitName: inherited.choirUnitName,
         };
+
+        if (isImmediateChildOfParentRole) {
+          next.parentUnitId = `group:${node.id}`;
+          next.parentUnitName = node.name;
+          if (nodeParentRole === TRACK_ROLE_CHOIR) {
+            next.choirRole = next.choirRole || TRACK_ROLE_CHOIR;
+            next.choirUnitId = next.parentUnitId;
+            next.choirUnitName = next.parentUnitName;
+          }
+        }
+
+        const groupRole = normalizeGroupRole(node.role);
+        if (isGroupParentRole(groupRole)) {
+          const mappedRole = mapGroupParentRoleToTrackRole(groupRole);
+          next.parentRole = mappedRole;
+          next.parentGroupId = node.id;
+          next.parentUnitId = null;
+          next.parentUnitName = null;
+          next.forcedRole = null;
+          next.forcedUnitId = null;
+          next.forcedUnitName = null;
+          if (mappedRole === TRACK_ROLE_CHOIR) {
+            next.choirRole = TRACK_ROLE_CHOIR;
+            next.choirUnitId = null;
+            next.choirUnitName = null;
+          } else {
+            next.choirRole = null;
+            next.choirUnitId = null;
+            next.choirUnitName = null;
+          }
+        } else if (groupRole !== GROUP_ROLE_NONE && !nodeParentRole) {
+          const categoryRole = toCategoryRole(groupRole);
+          next.forcedRole = categoryRole;
+          next.forcedUnitId = `group:${node.id}`;
+          next.forcedUnitName = node.name;
+          if (categoryRole === TRACK_ROLE_CHOIR) {
+            next.choirRole = isChoirPartRole(groupRole) ? groupRole : TRACK_ROLE_CHOIR;
+            next.choirUnitId = next.forcedUnitId;
+            next.choirUnitName = next.forcedUnitName;
+          } else {
+            next.choirRole = null;
+            next.choirUnitId = null;
+            next.choirUnitName = null;
+          }
+        }
+
         if (node.soloed) {
           anySolo = true;
         }
@@ -518,8 +587,48 @@ export function getEffectiveTrackMix(project) {
       if (track.soloed) {
         anySolo = true;
       }
-      const ownChoirRole = isChoirRole(track.role) ? track.role : null;
-      const choirRole = inherited.choirRole || ownChoirRole;
+      const ownRole = toCategoryRole(track.role);
+      const effectiveRole = inherited.parentRole || inherited.forcedRole || ownRole;
+      const isImmediateTrackChildOfParentRole = Boolean(inherited.parentRole && inherited.parentGroupId === parentId);
+
+      let roleUnitId = null;
+      let roleUnitName = null;
+      if (isCountableRole(effectiveRole)) {
+        if (inherited.parentRole && effectiveRole === inherited.parentRole) {
+          roleUnitId = isImmediateTrackChildOfParentRole
+            ? `track:${track.id}`
+            : (inherited.parentUnitId || `track:${track.id}`);
+          roleUnitName = isImmediateTrackChildOfParentRole
+            ? track.name
+            : (inherited.parentUnitName || track.name);
+        } else if (inherited.forcedRole && effectiveRole === inherited.forcedRole) {
+          roleUnitId = inherited.forcedUnitId || `track:${track.id}`;
+          roleUnitName = inherited.forcedUnitName || track.name;
+        } else {
+          roleUnitId = `track:${track.id}`;
+          roleUnitName = track.name;
+        }
+      }
+
+      let choirRole = null;
+      let choirUnitId = null;
+      let choirUnitName = null;
+      if (effectiveRole === TRACK_ROLE_CHOIR) {
+        const explicitChoirRole = isChoirPartRole(track.role) ? track.role : null;
+        choirRole = inherited.choirRole || explicitChoirRole || TRACK_ROLE_CHOIR;
+        if (inherited.parentRole === TRACK_ROLE_CHOIR) {
+          choirUnitId = isImmediateTrackChildOfParentRole
+            ? `track:${track.id}`
+            : (inherited.parentUnitId || roleUnitId || `track:${track.id}`);
+          choirUnitName = isImmediateTrackChildOfParentRole
+            ? track.name
+            : (inherited.parentUnitName || roleUnitName || track.name);
+        } else {
+          choirUnitId = inherited.choirUnitId || roleUnitId || `track:${track.id}`;
+          choirUnitName = inherited.choirUnitName || roleUnitName || track.name;
+        }
+      }
+
       statesByTrackId.set(track.id, {
         trackId: track.id,
         nodeId: node.id,
@@ -527,9 +636,12 @@ export function getEffectiveTrackMix(project) {
         soloPath: trackSoloPath,
         effectiveGain: inherited.gain * volumeToGain(Math.max(0, Math.min(100, toNumber(track.volume, 100)))),
         effectivePan: clampPan(inherited.pan + clampPan(track.pan)),
+        effectiveRole,
+        roleUnitId,
+        roleUnitName,
         choirRole,
-        choirUnitId: inherited.choirUnitId || (ownChoirRole ? `track:${track.id}` : null),
-        choirUnitName: inherited.choirUnitName || track.name,
+        choirUnitId,
+        choirUnitName,
       });
       orderedTrackIds.push(track.id);
     }
@@ -540,6 +652,13 @@ export function getEffectiveTrackMix(project) {
     solo: false,
     gain: 1,
     pan: 0,
+    parentRole: null,
+    parentGroupId: null,
+    parentUnitId: null,
+    parentUnitName: null,
+    forcedRole: null,
+    forcedUnitId: null,
+    forcedUnitName: null,
     choirRole: null,
     choirUnitId: null,
     choirUnitName: null,

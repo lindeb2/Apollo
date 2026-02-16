@@ -86,13 +86,14 @@ function FileImport({ onImport, onClose, manualChoirPartsEnabled = false }) {
 
   const choirRoleOptions = manualChoirPartsEnabled
     ? [
+      { value: TRACK_ROLES.CHOIR, label: 'Choir' },
       { value: TRACK_ROLES.CHOIR_PART_1, label: 'Choir Part 1' },
       { value: TRACK_ROLES.CHOIR_PART_2, label: 'Choir Part 2' },
       { value: TRACK_ROLES.CHOIR_PART_3, label: 'Choir Part 3' },
       { value: TRACK_ROLES.CHOIR_PART_4, label: 'Choir Part 4' },
       { value: TRACK_ROLES.CHOIR_PART_5, label: 'Choir Part 5' },
     ]
-    : [{ value: TRACK_ROLES.CHOIR_PART_1, label: 'Choir Part' }];
+    : [{ value: TRACK_ROLES.CHOIR, label: 'Choir' }];
 
   const roleOptions = [
     { value: TRACK_ROLES.INSTRUMENT, label: 'Instrument' },
