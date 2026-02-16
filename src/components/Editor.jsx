@@ -14,6 +14,7 @@ import { AUTO_PAN_STRATEGIES, applyChoirAutoPanToProject } from '../utils/choirA
 import useKeyboardShortcuts from '../utils/useKeyboardShortcuts';
 import { processRecordingOverwrites } from '../utils/clipCollision';
 import { normalizeProjectName } from '../utils/naming';
+import { measureTuttiPeak } from '../lib/exportEngine';
 import {
   attachTrackNode,
   createGroupNode,
@@ -72,6 +73,8 @@ function Editor({ onBackToDashboard }) {
   const [mediaMap, setMediaMap] = useState(new Map());
   const [recordingSegments, setRecordingSegments] = useState([]);
   const [recordingOffsetMs, setRecordingOffsetMs] = useState(0);
+  const lastMasterRightClickRef = useRef(0);
+  const isNormalizingMasterRef = useRef(false);
   const recordingOriginalClipsRef = useRef(null);
   const previousTimeRef = useRef(0);
   const recordingStartTimeRef = useRef(0);
@@ -429,6 +432,11 @@ function Editor({ onBackToDashboard }) {
   const treeProject = normalizeTrackTree(project);
   const timelineRows = getVisibleTimelineRows(treeProject);
   const hasNoTracks = !project.tracks || project.tracks.length === 0;
+  const practiceFocusDiffDb = Number.isFinite(Number(project?.exportSettings?.practiceFocusDiffDb))
+    ? Number(project.exportSettings.practiceFocusDiffDb)
+    : 6;
+  const practiceFocusDiffRatio = practiceFocusDiffDb / 10;
+  const practiceFocusDiffLabelLeft = `calc(15px + ${practiceFocusDiffRatio} * (100% - 30px))`;
 
   const handleSelectRow = (row) => {
     if (!row) return;
@@ -1406,7 +1414,55 @@ function Editor({ onBackToDashboard }) {
     setMasterEditTooltip({ text: display });
   };
 
+  const handleNormalizeMasterVolume = async () => {
+    if (!project) return;
+    if (isNormalizingMasterRef.current) return;
+    isNormalizingMasterRef.current = true;
+
+    try {
+      const confirmed = window.confirm('Normalize audio by adjusting master volume to 0 dBFS peak (no clipping)?');
+      if (!confirmed) return;
+
+      await loadProjectAudio();
+      const { peak } = await measureTuttiPeak(projectRef.current, audioManager.mediaCache);
+      if (!Number.isFinite(peak) || peak <= 0) {
+        alert('Nothing to normalize (no audible audio found).');
+        return;
+      }
+
+      // Target just under 0 dBFS to avoid tiny overs from floating point math.
+      const targetPeak = 0.9999;
+      const gainFactor = targetPeak / peak;
+
+      const currentDb = volumeToDb(masterVolume);
+      const desiredDb = currentDb + (20 * Math.log10(gainFactor));
+      const nextVolume = dbToVolume(Math.max(-60, Math.min(6, desiredDb)));
+
+      applyMasterVolume(nextVolume);
+
+      if (gainFactor > 1 && nextVolume >= 100) {
+        alert('Master volume is already at maximum; could not reach 0 dBFS peak without exceeding limits.');
+      }
+    } catch (error) {
+      console.error('Master normalize failed:', error);
+      alert(`Normalize failed: ${error.message || error}`);
+    } finally {
+      isNormalizingMasterRef.current = false;
+    }
+  };
+
+  const handleMasterVolumeContextMenu = (e) => {
+    e.preventDefault();
+    const now = Date.now();
+    const delta = now - lastMasterRightClickRef.current;
+    lastMasterRightClickRef.current = now;
+    if (delta > 0 && delta < 350) {
+      handleNormalizeMasterVolume();
+    }
+  };
+
   const handleMasterVolumeMouseDown = (e) => {
+    if (e.button !== 0) return;
     e.preventDefault();
     if (masterEditTooltip) setMasterEditTooltip(null);
     const rect = e.currentTarget.getBoundingClientRect();
@@ -1866,6 +1922,7 @@ function Editor({ onBackToDashboard }) {
                       readOnly
                       onMouseDown={handleMasterVolumeMouseDown}
                       onDoubleClick={handleMasterVolumeDoubleClick}
+                      onContextMenu={handleMasterVolumeContextMenu}
                       className="w-28 volume-slider cursor-pointer block"
                       title="Master Volume (double-click for numeric input)"
                     />
@@ -2201,24 +2258,6 @@ function Editor({ onBackToDashboard }) {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1">dB gain</label>
-                  <input
-                    type="number"
-                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                    value={project?.exportSettings?.gainDb ?? 4}
-                    onChange={(e) => handleUpdateExportSettings({ gainDb: Number(e.target.value) })}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">dB attenuation</label>
-                  <input
-                    type="number"
-                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                    value={project?.exportSettings?.attenuationDb ?? 4}
-                    onChange={(e) => handleUpdateExportSettings({ attenuationDb: Number(e.target.value) })}
-                  />
-                </div>
-                <div>
                   <label className="block text-xs text-gray-400 mb-1">transformed pan range</label>
                   <input
                     type="number"
@@ -2226,6 +2265,45 @@ function Editor({ onBackToDashboard }) {
                     value={project?.exportSettings?.transformedPanRange ?? 100}
                     onChange={(e) => handleUpdateExportSettings({ transformedPanRange: Number(e.target.value) })}
                   />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">
+                    Practice focus difference (dB)
+                  </label>
+                  <div className="relative px-2 pt-5">
+                    <div
+                      className="absolute -top-0.5 text-[11px] tabular-nums whitespace-nowrap text-white font-medium leading-none pointer-events-none"
+                      style={{
+                        left: practiceFocusDiffLabelLeft,
+                        transform: 'translateX(-50%)',
+                      }}
+                    >
+                      {practiceFocusDiffDb}
+                    </div>
+                    <div className="relative h-6">
+                      <div className="absolute z-0 left-0 right-0 top-1/2 -translate-y-1/2 h-2 rounded-full border border-slate-700 bg-[#0b1528] pointer-events-none" />
+                      <div
+                        className="absolute z-10 left-0 right-0 top-1/2 -translate-y-1/2 flex items-center justify-between pointer-events-none"
+                        style={{ paddingLeft: '7px', paddingRight: '7px' }}
+                      >
+                        {Array.from({ length: 11 }, (_, idx) => (
+                          <span
+                            key={idx}
+                            className={`block w-px ${idx % 2 === 0 ? 'h-3 bg-slate-400/90' : 'h-2 bg-slate-500/90'}`}
+                          />
+                        ))}
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={10}
+                        step={1}
+                        className="relative z-20 w-full practice-diff-slider cursor-pointer"
+                        value={practiceFocusDiffDb}
+                        onChange={(e) => handleUpdateExportSettings({ practiceFocusDiffDb: Number(e.target.value) })}
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

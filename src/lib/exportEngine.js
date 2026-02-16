@@ -1,6 +1,7 @@
 import {
   volumeToGain,
   dbToGain,
+  gainToDb,
   msToSeconds,
   normalizePanLawDb,
   getPanLawCompensationGain,
@@ -49,6 +50,7 @@ export const EXPORT_PRESET_DEFINITIONS = [
 ];
 
 const VALID_PRESETS = new Set(EXPORT_PRESET_DEFINITIONS.map((preset) => preset.id));
+const PRACTICE_FOCUS_PEAK_DB = -1;
 
 function isInstrumentTrack(track) {
   return track.role === TRACK_ROLES.INSTRUMENT;
@@ -56,10 +58,6 @@ function isInstrumentTrack(track) {
 
 function isLeadTrack(track) {
   return track.role === TRACK_ROLES.LEAD;
-}
-
-function isChoirTrack(track) {
-  return typeof track.role === 'string' && track.role.startsWith('choir-part-');
 }
 
 function isChoirRole(role) {
@@ -130,16 +128,118 @@ function buildPracticePanMap({
   return panMap;
 }
 
-function buildPracticeGainMap({ tracks, targetTrackIds, gainDb, attenuationDb }) {
-  const targetSet = new Set(targetTrackIds || []);
-  const gainMap = {};
-  for (const track of tracks) {
-    if (targetSet.has(track.id)) {
-      gainMap[track.id] = dbToGain(gainDb);
-    } else {
-      gainMap[track.id] = dbToGain(-attenuationDb);
+function getAudioBufferPeak(audioBuffer) {
+  if (!audioBuffer) return 0;
+  let peak = 0;
+  for (let channel = 0; channel < audioBuffer.numberOfChannels; channel += 1) {
+    const data = audioBuffer.getChannelData(channel);
+    for (let i = 0; i < data.length; i += 1) {
+      const abs = Math.abs(data[i]);
+      if (abs > peak) peak = abs;
     }
   }
+  return peak;
+}
+
+function getAudioBufferChannelPeak(audioBuffer, channelIndex) {
+  if (!audioBuffer || channelIndex < 0 || channelIndex >= audioBuffer.numberOfChannels) {
+    return 0;
+  }
+  let peak = 0;
+  const data = audioBuffer.getChannelData(channelIndex);
+  for (let i = 0; i < data.length; i += 1) {
+    const abs = Math.abs(data[i]);
+    if (abs > peak) peak = abs;
+  }
+  return peak;
+}
+
+export async function measureTuttiPeak(project, audioBuffers) {
+  const mix = getEffectiveTrackMix(project);
+  const trackStateById = mix.statesByTrackId;
+  const activeTracks = (project.tracks || []).filter((track) => trackStateById.get(track.id)?.audible);
+  if (!activeTracks.length) {
+    return { peak: 0, peakDbfs: -Infinity };
+  }
+  const rendered = await renderTracksToAudioBuffer(project, activeTracks, audioBuffers, {}, {}, trackStateById);
+  const peak = getAudioBufferPeak(rendered);
+  return {
+    peak,
+    peakDbfs: peak > 0 ? gainToDb(peak) : -Infinity,
+  };
+}
+
+async function buildPracticePeakNormalizedGainMap({
+  project,
+  tracks,
+  audioBuffers,
+  panAdjustments,
+  targetTrackIds,
+  trackStateById,
+  practiceFocusDiffDb,
+}) {
+  const gainMap = {};
+  if (!tracks.length) return gainMap;
+
+  const targetSet = new Set(targetTrackIds || []);
+  const focusTracks = tracks.filter((track) => targetSet.has(track.id));
+  const backingTracks = tracks.filter((track) => !targetSet.has(track.id));
+
+  let focusScale = 1;
+  let backingScale = 1;
+  const diffDb = Math.max(0, Math.min(10, Number(practiceFocusDiffDb) || 0));
+  const backingTargetPeakDb = PRACTICE_FOCUS_PEAK_DB - diffDb;
+
+  if (focusTracks.length) {
+    const focusBuffer = await renderTracksToAudioBuffer(
+      project,
+      focusTracks,
+      audioBuffers,
+      {},
+      panAdjustments,
+      trackStateById
+    );
+    const focusPeakRight = getAudioBufferChannelPeak(focusBuffer, 1);
+    if (focusPeakRight > 0) {
+      focusScale = dbToGain(PRACTICE_FOCUS_PEAK_DB) / focusPeakRight;
+    }
+  }
+
+  if (backingTracks.length) {
+    const backingBuffer = await renderTracksToAudioBuffer(
+      project,
+      backingTracks,
+      audioBuffers,
+      {},
+      panAdjustments,
+      trackStateById
+    );
+    const backingPeakLeft = getAudioBufferChannelPeak(backingBuffer, 0);
+    if (backingPeakLeft > 0) {
+      backingScale = dbToGain(backingTargetPeakDb) / backingPeakLeft;
+    }
+  }
+
+  for (const track of tracks) {
+    gainMap[track.id] = targetSet.has(track.id) ? focusScale : backingScale;
+  }
+
+  const mixedBuffer = await renderTracksToAudioBuffer(
+    project,
+    tracks,
+    audioBuffers,
+    gainMap,
+    panAdjustments,
+    trackStateById
+  );
+  const mixedPeak = getAudioBufferPeak(mixedBuffer);
+  if (mixedPeak > 1) {
+    const safetyScale = 1 / mixedPeak;
+    for (const track of tracks) {
+      gainMap[track.id] *= safetyScale;
+    }
+  }
+
   return gainMap;
 }
 
@@ -363,11 +463,14 @@ export async function exportProject(
           basePanByTrackId,
           transformedPanRange: exportSettings.transformedPanRange,
         });
-        const gainAdjustments = buildPracticeGainMap({
+        const gainAdjustments = await buildPracticePeakNormalizedGainMap({
+          project,
           tracks: activeTracks,
+          audioBuffers,
+          panAdjustments,
           targetTrackIds: [targetTrack.id],
-          gainDb: exportSettings.gainDb,
-          attenuationDb: exportSettings.attenuationDb,
+          trackStateById,
+          practiceFocusDiffDb: exportSettings.practiceFocusDiffDb,
         });
         files.push({
           presetId,
@@ -390,11 +493,14 @@ export async function exportProject(
           basePanByTrackId,
           transformedPanRange: exportSettings.transformedPanRange,
         });
-        const gainAdjustments = buildPracticeGainMap({
+        const gainAdjustments = await buildPracticePeakNormalizedGainMap({
+          project,
           tracks: activeTracks,
+          audioBuffers,
+          panAdjustments,
           targetTrackIds: [targetTrack.id],
-          gainDb: exportSettings.gainDb,
-          attenuationDb: exportSettings.attenuationDb,
+          trackStateById,
+          practiceFocusDiffDb: exportSettings.practiceFocusDiffDb,
         });
         files.push({
           presetId,
@@ -422,11 +528,14 @@ export async function exportProject(
           basePanByTrackId,
           transformedPanRange: exportSettings.transformedPanRange,
         });
-        const gainAdjustments = buildPracticeGainMap({
+        const gainAdjustments = await buildPracticePeakNormalizedGainMap({
+          project,
           tracks: activeTracks,
+          audioBuffers,
+          panAdjustments,
           targetTrackIds,
-          gainDb: exportSettings.gainDb,
-          attenuationDb: exportSettings.attenuationDb,
+          trackStateById,
+          practiceFocusDiffDb: exportSettings.practiceFocusDiffDb,
         });
         files.push({
           presetId,
@@ -490,7 +599,7 @@ export async function exportProject(
   return withExportLayout(files);
 }
 
-async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {}, panAdjustments = {}, format = 'wav', trackStateById = null) {
+async function renderTracksToAudioBuffer(project, tracks, audioBuffers, gainAdjustments = {}, panAdjustments = {}, trackStateById = null) {
   let maxDurationMs = 0;
   for (const track of tracks) {
     for (const clip of track.clips) {
@@ -551,7 +660,18 @@ async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {},
     }
   }
 
-  const renderedBuffer = await offlineContext.startRendering();
+  return await offlineContext.startRendering();
+}
+
+async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {}, panAdjustments = {}, format = 'wav', trackStateById = null) {
+  const renderedBuffer = await renderTracksToAudioBuffer(
+    project,
+    tracks,
+    audioBuffers,
+    gainAdjustments,
+    panAdjustments,
+    trackStateById
+  );
   return audioBufferToBlob(renderedBuffer, format === 'mp3' ? 'mp3' : 'wav');
 }
 

@@ -27,9 +27,8 @@ function Dashboard({ onOpenProject, onNewProject }) {
     defaultInvertedAutoPan: false,
     defaultManualChoirParts: false,
     defaultPanLawDb: -3,
-    defaultExportGainDb: 4,
-    defaultExportAttenuationDb: 4,
     defaultExportPanRange: 100,
+    defaultExportPracticeDiffDb: 6,
   });
   const hasHydratedSettingsRef = useRef(false);
 
@@ -63,18 +62,14 @@ function Dashboard({ onOpenProject, onNewProject }) {
             ? parsed.defaultManualChoirParts
             : prev.defaultManualChoirParts,
         defaultPanLawDb: normalizePanLawDb(parsed.defaultPanLawDb),
-        defaultExportGainDb:
-          typeof parsed.defaultExportGainDb === 'number'
-            ? parsed.defaultExportGainDb
-            : prev.defaultExportGainDb,
-        defaultExportAttenuationDb:
-          typeof parsed.defaultExportAttenuationDb === 'number'
-            ? parsed.defaultExportAttenuationDb
-            : prev.defaultExportAttenuationDb,
         defaultExportPanRange:
           typeof parsed.defaultExportPanRange === 'number'
             ? parsed.defaultExportPanRange
             : prev.defaultExportPanRange,
+        defaultExportPracticeDiffDb:
+          typeof parsed.defaultExportPracticeDiffDb === 'number'
+            ? parsed.defaultExportPracticeDiffDb
+            : prev.defaultExportPracticeDiffDb,
       }));
     } catch {
       // Ignore invalid settings
@@ -85,6 +80,11 @@ function Dashboard({ onOpenProject, onNewProject }) {
     { id: 'off', label: 'Off' },
     ...AUTO_PAN_STRATEGIES,
   ];
+  const defaultPracticeDiffDb = Number.isFinite(Number(audioSettings.defaultExportPracticeDiffDb))
+    ? Number(audioSettings.defaultExportPracticeDiffDb)
+    : 6;
+  const defaultPracticeDiffRatio = defaultPracticeDiffDb / 10;
+  const defaultPracticeDiffLabelLeft = `calc(15px + ${defaultPracticeDiffRatio} * (100% - 30px))`;
 
   useEffect(() => {
     if (!hasHydratedSettingsRef.current) {
@@ -555,34 +555,6 @@ function Dashboard({ onOpenProject, onNewProject }) {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1">dB gain</label>
-                  <input
-                    type="number"
-                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                    value={audioSettings.defaultExportGainDb}
-                    onChange={(e) =>
-                      setAudioSettings((prev) => ({
-                        ...prev,
-                        defaultExportGainDb: Number(e.target.value),
-                      }))
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">dB attenuation</label>
-                  <input
-                    type="number"
-                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                    value={audioSettings.defaultExportAttenuationDb}
-                    onChange={(e) =>
-                      setAudioSettings((prev) => ({
-                        ...prev,
-                        defaultExportAttenuationDb: Number(e.target.value),
-                      }))
-                    }
-                  />
-                </div>
-                <div>
                   <label className="block text-xs text-gray-400 mb-1">transformed pan range</label>
                   <input
                     type="number"
@@ -595,6 +567,50 @@ function Dashboard({ onOpenProject, onNewProject }) {
                       }))
                     }
                   />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">
+                    Practice focus difference (dB)
+                  </label>
+                  <div className="relative px-2 pt-5">
+                    <div
+                      className="absolute -top-0.5 text-[11px] tabular-nums whitespace-nowrap text-white font-medium leading-none pointer-events-none"
+                      style={{
+                        left: defaultPracticeDiffLabelLeft,
+                        transform: 'translateX(-50%)',
+                      }}
+                    >
+                      {defaultPracticeDiffDb}
+                    </div>
+                    <div className="relative h-6">
+                      <div className="absolute z-0 left-0 right-0 top-1/2 -translate-y-1/2 h-2 rounded-full border border-slate-700 bg-[#0b1528] pointer-events-none" />
+                      <div
+                        className="absolute z-10 left-0 right-0 top-1/2 -translate-y-1/2 flex items-center justify-between pointer-events-none"
+                        style={{ paddingLeft: '7px', paddingRight: '7px' }}
+                      >
+                        {Array.from({ length: 11 }, (_, idx) => (
+                          <span
+                            key={idx}
+                            className={`block w-px ${idx % 2 === 0 ? 'h-3 bg-slate-400/90' : 'h-2 bg-slate-500/90'}`}
+                          />
+                        ))}
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={10}
+                        step={1}
+                        className="relative z-20 w-full practice-diff-slider cursor-pointer"
+                        value={defaultPracticeDiffDb}
+                        onChange={(e) =>
+                          setAudioSettings((prev) => ({
+                            ...prev,
+                            defaultExportPracticeDiffDb: Number(e.target.value),
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

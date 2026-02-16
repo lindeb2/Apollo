@@ -19,9 +19,8 @@ export const TRACK_ROLES = {
 
 export const SAMPLE_RATE = 44100;
 export const DEFAULT_EXPORT_SETTINGS = {
-  gainDb: 4,
-  attenuationDb: 4,
   transformedPanRange: 100,
+  practiceFocusDiffDb: 6,
 };
 
 export function normalizeExportSettings(settings = {}) {
@@ -29,16 +28,14 @@ export function normalizeExportSettings(settings = {}) {
     ...DEFAULT_EXPORT_SETTINGS,
     ...settings,
   };
-  const gainDb = Number(next.gainDb);
-  const attenuationDb = Number(next.attenuationDb);
   const transformedPanRange = Number(next.transformedPanRange);
-  next.gainDb = Number.isFinite(gainDb) ? Math.max(0, Math.min(24, gainDb)) : DEFAULT_EXPORT_SETTINGS.gainDb;
-  next.attenuationDb = Number.isFinite(attenuationDb)
-    ? Math.max(0, Math.min(24, attenuationDb))
-    : DEFAULT_EXPORT_SETTINGS.attenuationDb;
+  const practiceFocusDiffDb = Number(next.practiceFocusDiffDb);
   next.transformedPanRange = Number.isFinite(transformedPanRange)
     ? Math.max(0, Math.min(200, transformedPanRange))
     : DEFAULT_EXPORT_SETTINGS.transformedPanRange;
+  next.practiceFocusDiffDb = Number.isFinite(practiceFocusDiffDb)
+    ? Math.max(0, Math.min(10, practiceFocusDiffDb))
+    : DEFAULT_EXPORT_SETTINGS.practiceFocusDiffDb;
   return next;
 }
 
@@ -92,9 +89,8 @@ export function normalizeExportSettings(settings = {}) {
  * @property {number} autoPan.spreadK - Spread factor
  * @property {number} panLawDb - Pan law in dB at center (0, -3, -4.5, -6)
  * @property {Object} exportSettings - Export configuration
- * @property {number} exportSettings.gainDb - Practice target gain boost in dB
- * @property {number} exportSettings.attenuationDb - Practice non-target attenuation in dB
  * @property {number} exportSettings.transformedPanRange - Pan transform range control (0-200)
+ * @property {number} exportSettings.practiceFocusDiffDb - Practice backing level difference from focus in dB (0-10)
  * @property {Array} trackTree - Hierarchy nodes for groups/tracks
  * @property {Track[]} tracks - Array of tracks
  * @property {Loop} loop - Loop configuration

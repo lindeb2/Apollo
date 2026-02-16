@@ -306,6 +306,7 @@ function TrackList({
   };
 
   const beginDrag = (e, entityId, type, startValue, onChange) => {
+    if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     if (editTooltip) setEditTooltip(null);

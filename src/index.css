@@ -220,3 +220,50 @@ input[type="range"].volume-slider::-webkit-slider-thumb:focus {
 input[type="range"].volume-slider::-moz-range-thumb:focus {
   box-shadow: none;
 }
+
+/* Settings slider: practice focus difference */
+input[type="range"].practice-diff-slider {
+  height: 24px;
+  background: transparent;
+  border-radius: 9999px;
+}
+
+input[type="range"].practice-diff-slider::-webkit-slider-runnable-track {
+  height: 8px;
+  background: transparent;
+  border: none;
+  border-radius: 9999px;
+}
+
+input[type="range"].practice-diff-slider::-moz-range-track {
+  height: 8px;
+  background: transparent;
+  border: none;
+  border-radius: 9999px;
+}
+
+input[type="range"].practice-diff-slider::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -4px;
+  background: #2563eb;
+  border: 2px solid #1f2937;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.45);
+}
+
+input[type="range"].practice-diff-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  transform: translateY(0);
+  background: #2563eb;
+  border: 2px solid #1f2937;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.45);
+}
+
+input[type="range"].practice-diff-slider::-webkit-slider-thumb:hover {
+  background: #3b82f6;
+}
+
+input[type="range"].practice-diff-slider::-moz-range-thumb:hover {
+  background: #3b82f6;
+}

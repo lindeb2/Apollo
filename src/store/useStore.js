@@ -63,9 +63,8 @@ const useStore = create((set, get) => ({
           manualChoirParts,
         });
         exportSettings = normalizeExportSettings({
-          gainDb: parsed?.defaultExportGainDb,
-          attenuationDb: parsed?.defaultExportAttenuationDb,
           transformedPanRange: parsed?.defaultExportPanRange,
+          practiceFocusDiffDb: parsed?.defaultExportPracticeDiffDb,
         });
         panLawDb = normalizePanLawDb(parsed?.defaultPanLawDb);
       }
