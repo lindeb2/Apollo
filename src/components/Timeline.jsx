@@ -1280,6 +1280,16 @@ function Timeline({
                       className={`border-b border-gray-700 relative ${row.collapsed ? 'bg-gray-850' : 'bg-gray-900/80'}`}
                       onClick={(e) => {
                         e.stopPropagation();
+                        if (!dragState) {
+                          const rect = timelineRef.current?.getBoundingClientRect();
+                          if (rect) {
+                            const x = e.clientX - rect.left + scrollLeft;
+                            const timeMs = x / pixelsPerMs;
+                            if (timeMs >= 0 && timeMs <= (projectDurationMs || minZoomDurationMs)) {
+                              onSeek(timeMs);
+                            }
+                          }
+                        }
                         selectRow(row);
                         setSelectedClipId(null);
                       }}
