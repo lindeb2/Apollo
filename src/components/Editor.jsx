@@ -1455,7 +1455,39 @@ function Editor({ onBackToDashboard }) {
   };
 
   const handleToggleGroupCollapse = (groupNodeId) => {
-    updateProject((proj) => toggleGroupCollapsed(proj, groupNodeId), 'Toggle group collapse');
+    let shouldSelectCollapsedGroup = false;
+    updateProject((proj) => {
+      const normalized = normalizeTrackTree(proj);
+      const targetGroup = (normalized.trackTree || []).find(
+        (node) => node.kind === 'group' && node.id === groupNodeId
+      );
+      if (!targetGroup) return normalized;
+
+      const willCollapse = !Boolean(targetGroup.collapsed);
+      if (willCollapse && selectedNodeId) {
+        if (selectedNodeId === groupNodeId) {
+          shouldSelectCollapsedGroup = true;
+        } else {
+          const nodeById = new Map((normalized.trackTree || []).map((node) => [node.id, node]));
+          let current = nodeById.get(selectedNodeId);
+          while (current && current.parentId) {
+            if (current.parentId === groupNodeId) {
+              shouldSelectCollapsedGroup = true;
+              break;
+            }
+            current = nodeById.get(current.parentId);
+          }
+        }
+      }
+
+      return toggleGroupCollapsed(normalized, groupNodeId);
+    }, 'Toggle group collapse');
+
+    if (shouldSelectCollapsedGroup) {
+      setSelectedNodeId(groupNodeId);
+      setSelectedRowKind('group');
+      selectTrack(null);
+    }
   };
 
   const handleMasterVolumeDoubleClick = () => {

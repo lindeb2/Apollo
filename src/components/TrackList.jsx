@@ -766,7 +766,10 @@ function TrackList({
                 <div className="flex-1 min-w-0 flex flex-col gap-1">
                   <div
                     className="flex items-center min-w-0"
-                    onClick={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      selectRow(row);
+                    }}
                   >
                     {editingName === `group:${row.nodeId}` ? (
                       <input
