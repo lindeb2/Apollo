@@ -10,7 +10,7 @@ import {
 import { audioManager } from '../lib/audioManager';
 import Waveform from './Waveform';
 import { calculateGlobalPeakAmplitude } from '../utils/waveformUtils';
-import { getEffectiveTrackMix, getGroupDescendantTrackIdsByGroup, getTrackHeight } from '../utils/trackTree';
+import { getEffectiveTrackMix, getGroupDescendantTrackIdsByGroup, getTrackHeight, normalizeTrackTree } from '../utils/trackTree';
 import { 
   constrainClipMove, 
   constrainCropStart, 
@@ -352,10 +352,15 @@ function Timeline({
   const totalTimelineHeight = timelineRows.reduce((sum, row) => sum + row.height, 0);
 
   const groupTimelinePreviewByNodeId = useMemo(() => {
-    const groupTrackIdsByNodeId = getGroupDescendantTrackIdsByGroup(project);
-    const trackById = new Map((project.tracks || []).map((track) => [track.id, track]));
-    const mix = getEffectiveTrackMix(project);
-    const trackStateById = mix.statesByTrackId;
+    const normalized = normalizeTrackTree(project);
+    const groupTrackIdsByNodeId = getGroupDescendantTrackIdsByGroup(normalized);
+    const trackById = new Map((normalized.tracks || []).map((track) => [track.id, track]));
+    const nodeById = new Map((normalized.trackTree || []).map((node) => [node.id, node]));
+    const trackNodeByTrackId = new Map(
+      (normalized.trackTree || [])
+        .filter((node) => node.kind === 'track')
+        .map((node) => [node.trackId, node])
+    );
     const byGroupNodeId = new Map();
 
     for (const [groupNodeId, trackIds] of groupTrackIdsByNodeId.entries()) {
@@ -363,8 +368,21 @@ function Timeline({
       for (const trackId of trackIds) {
         const track = trackById.get(trackId);
         if (!track?.clips?.length) continue;
-        const state = trackStateById.get(trackId);
-        if (state?.muted) continue;
+        // Group preview should ignore this group's own mute flag, but respect muted descendants.
+        let mutedByDescendantPath = false;
+        const trackNode = trackNodeByTrackId.get(trackId);
+        let currentParentId = trackNode?.parentId ?? null;
+        while (currentParentId && currentParentId !== groupNodeId) {
+          const parentNode = nodeById.get(currentParentId);
+          if (!parentNode) break;
+          if (parentNode.muted) {
+            mutedByDescendantPath = true;
+            break;
+          }
+          currentParentId = parentNode.parentId ?? null;
+        }
+        if (mutedByDescendantPath) continue;
+        if (track.muted) continue;
         for (const clip of track.clips) {
           if (clip?.muted) continue;
           const durationMs = Math.max(0, (clip.cropEndMs || 0) - (clip.cropStartMs || 0));
