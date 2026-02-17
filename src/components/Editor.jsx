@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { ArrowLeft, Upload, Play, Pause, Square, Volume2, Circle, Download, SkipBack, SkipForward, Settings } from 'lucide-react';
 import useStore from '../store/useStore';
 import { audioManager } from '../lib/audioManager';
@@ -20,7 +20,6 @@ import {
   GROUP_ROLE_CHOIRS,
   isChoirRole,
   isGroupParentRole,
-  mapGroupParentRoleToTrackRole,
   groupRoleToTrackRole,
 } from '../utils/trackRoles';
 import {
@@ -36,6 +35,7 @@ import {
   removeTrackNode,
   renameGroupNode,
   reorderTracksByTree,
+  syncDirectChildRolesFromGroupCategories,
   toggleGroupCollapsed,
 } from '../utils/trackTree';
 
@@ -455,6 +455,14 @@ function Editor({ onBackToDashboard }) {
 
   const treeProject = normalizeTrackTree(project);
   const timelineRows = getVisibleTimelineRows(treeProject);
+  const trackEffectiveRoleById = useMemo(() => {
+    const mix = getEffectiveTrackMix(treeProject);
+    const map = {};
+    mix.statesByTrackId.forEach((state, trackId) => {
+      map[trackId] = state.effectiveRole;
+    });
+    return map;
+  }, [treeProject]);
   const hasNoTracks = !project.tracks || project.tracks.length === 0;
   const practiceFocusDiffDb = Number.isFinite(Number(project?.exportSettings?.practiceFocusDiffDb))
     ? Number(project.exportSettings.practiceFocusDiffDb)
@@ -895,6 +903,7 @@ function Editor({ onBackToDashboard }) {
       for (const track of newTracks) {
         nextProject = attachTrackNode(nextProject, track.id);
       }
+      nextProject = syncDirectChildRolesFromGroupCategories(nextProject);
       return reorderTracksByTree(nextProject);
     }, 'Import audio files');
 
@@ -1011,6 +1020,7 @@ function Editor({ onBackToDashboard }) {
         });
       }
 
+      nextProject = syncDirectChildRolesFromGroupCategories(nextProject);
       return reorderTracksByTree(nextProject);
     }, 'Drop import audio files');
   };
@@ -1054,6 +1064,15 @@ function Editor({ onBackToDashboard }) {
     updateProject((proj) => {
       const previousTrack = proj.tracks.find((track) => track.id === trackId);
       const wasChoirTrack = isChoirRole(previousTrack?.role);
+      const previousMix = getEffectiveTrackMix(proj);
+      const previousState = previousMix.statesByTrackId.get(trackId);
+      const previousChoirUnitId = previousState?.choirUnitId
+        || previousState?.roleUnitId
+        || `track:${trackId}`;
+      const isDirectChoirPartTrack = (
+        previousState?.effectiveRole === TRACK_ROLES.CHOIR
+        && previousChoirUnitId === `track:${trackId}`
+      );
       const nextTracks = proj.tracks.map((track) =>
         track.id === trackId ? { ...track, ...updates } : track
       );
@@ -1062,7 +1081,7 @@ function Editor({ onBackToDashboard }) {
         tracks: nextTracks,
       };
 
-      if (updates.pan !== undefined && wasChoirTrack && proj.autoPan?.enabled) {
+      if (updates.pan !== undefined && wasChoirTrack && proj.autoPan?.enabled && isDirectChoirPartTrack) {
         nextProject = {
           ...nextProject,
           autoPan: {
@@ -1097,47 +1116,37 @@ function Editor({ onBackToDashboard }) {
     }
   };
 
+  const getDirectChildRoleSnapshot = (proj, groupNodeId) => {
+    const normalized = normalizeTrackTree(proj);
+    const tracksById = new Map((normalized.tracks || []).map((track) => [track.id, track]));
+    return (normalized.trackTree || [])
+      .filter((node) => (node.parentId ?? null) === groupNodeId)
+      .map((node) => {
+        if (node.kind === 'track') {
+          return {
+            kind: 'track',
+            nodeId: node.id,
+            trackId: node.trackId,
+            role: tracksById.get(node.trackId)?.role ?? null,
+          };
+        }
+        return {
+          kind: 'group',
+          nodeId: node.id,
+          role: node.role,
+        };
+      });
+  };
+
   const handleUpdateGroup = (groupNodeId, updates) => {
     let nextProjectAfter = null;
+    const beforeChildren = updates.role !== undefined
+      ? getDirectChildRoleSnapshot(project, groupNodeId)
+      : null;
     updateProject((proj) => {
       let nextProject = updateGroupNode(proj, groupNodeId, updates);
-      if (updates.role !== undefined && isGroupParentRole(updates.role)) {
-        const inheritedTrackRole = mapGroupParentRoleToTrackRole(updates.role);
-        if (inheritedTrackRole) {
-          const descendantGroupIds = new Set();
-          const descendantTrackIds = new Set();
-          const stack = [groupNodeId];
-          while (stack.length > 0) {
-            const currentGroupId = stack.pop();
-            const children = (nextProject.trackTree || []).filter(
-              (node) => (node.parentId ?? null) === currentGroupId
-            );
-            for (const child of children) {
-              if (child.kind === 'track' && child.trackId) {
-                descendantTrackIds.add(child.trackId);
-              } else if (child.kind === 'group') {
-                descendantGroupIds.add(child.id);
-                stack.push(child.id);
-              }
-            }
-          }
-
-          if (descendantGroupIds.size > 0 || descendantTrackIds.size > 0) {
-            nextProject = {
-              ...nextProject,
-              tracks: (nextProject.tracks || []).map((track) => (
-                descendantTrackIds.has(track.id)
-                  ? { ...track, role: inheritedTrackRole }
-                  : track
-              )),
-              trackTree: (nextProject.trackTree || []).map((node) => (
-                node.kind === 'group' && descendantGroupIds.has(node.id)
-                  ? { ...node, role: inheritedTrackRole }
-                  : node
-              )),
-            };
-          }
-        }
+      if (updates.role !== undefined) {
+        nextProject = syncDirectChildRolesFromGroupCategories(nextProject);
       }
       const wasChoirGroup = (proj.trackTree || []).some(
         (node) => node.id === groupNodeId && node.kind === 'group' && (
@@ -1164,6 +1173,21 @@ function Editor({ onBackToDashboard }) {
       nextProjectAfter = nextProject;
       return nextProject;
     }, 'Update group');
+
+    if (updates.role !== undefined && nextProjectAfter) {
+      const afterChildren = getDirectChildRoleSnapshot(nextProjectAfter, groupNodeId);
+      const updatedGroup = (nextProjectAfter.trackTree || []).find(
+        (node) => node.id === groupNodeId && node.kind === 'group'
+      );
+      console.debug('[GroupRoleApply]', {
+        groupNodeId,
+        groupName: updatedGroup?.name,
+        requestedRole: updates.role,
+        appliedGroupRole: updatedGroup?.role,
+        beforeChildren,
+        afterChildren,
+      });
+    }
 
     if (isPlaying && nextProjectAfter) {
       const shouldRestart = updates.muted !== undefined || updates.soloed !== undefined;
@@ -1284,6 +1308,7 @@ function Editor({ onBackToDashboard }) {
     let panUpdates = null;
     updateProject((proj) => {
       let nextProject = moveTrackTreeNode(proj, nodeId, targetNodeId, placement);
+      nextProject = syncDirectChildRolesFromGroupCategories(nextProject);
       nextProject = collapseEmptyGroupsToTracks(nextProject);
       nextProject = reorderTracksByTree(nextProject);
       if (nextProject.autoPan?.enabled && !nextProject.autoPan?.manualChoirParts) {
@@ -1376,6 +1401,7 @@ function Editor({ onBackToDashboard }) {
         trackTree: nextTree,
       };
 
+      nextProject = syncDirectChildRolesFromGroupCategories(nextProject);
       nextProject = collapseEmptyGroupsToTracks(nextProject);
       nextProject = reorderTracksByTree(nextProject);
 
@@ -1731,6 +1757,7 @@ function Editor({ onBackToDashboard }) {
     const trackNumber = project.tracks.length + 1;
     const trackName = `Track ${trackNumber}`;
     const newTrack = createTrack(trackName, 'other');
+    let panUpdates = null;
 
     let preferredParentId = null;
     let preferredInsertIndex = null;
@@ -1770,8 +1797,23 @@ function Editor({ onBackToDashboard }) {
       }
 
       nextProject = attachTrackNode(nextProject, newTrack.id, targetParentId, targetInsertIndex);
-      return reorderTracksByTree(nextProject);
+      nextProject = syncDirectChildRolesFromGroupCategories(nextProject);
+      nextProject = reorderTracksByTree(nextProject);
+
+      if (nextProject.autoPan?.enabled) {
+        const result = applyChoirAutoPanToProject(nextProject);
+        panUpdates = result.panUpdates;
+        nextProject = result.project;
+      }
+
+      return nextProject;
     }, 'Add empty track');
+
+    if (isPlaying && panUpdates) {
+      Object.entries(panUpdates).forEach(([id, pan]) => {
+        audioManager.updateTrackPan(id, pan);
+      });
+    }
     
     // Select the new track
     selectTrackAndRow(newTrack.id);
@@ -1912,6 +1954,7 @@ function Editor({ onBackToDashboard }) {
 
     const newTrackNumber = project.tracks.length + 1;
     const newTrack = createTrack(`Track ${newTrackNumber}`, 'other');
+    let panUpdates = null;
 
     updateProject((proj) => {
       const normalized = normalizeTrackTree(proj);
@@ -1966,12 +2009,27 @@ function Editor({ onBackToDashboard }) {
         },
       ];
 
-      return reorderTracksByTree({
+      let nextProject = syncDirectChildRolesFromGroupCategories({
         ...normalized,
         tracks: nextTracks,
         trackTree: nextTree,
       });
+      nextProject = reorderTracksByTree(nextProject);
+
+      if (nextProject.autoPan?.enabled) {
+        const result = applyChoirAutoPanToProject(nextProject);
+        panUpdates = result.panUpdates;
+        nextProject = result.project;
+      }
+
+      return nextProject;
     }, 'Create subtrack');
+
+    if (isPlaying && panUpdates) {
+      Object.entries(panUpdates).forEach(([id, pan]) => {
+        audioManager.updateTrackPan(id, pan);
+      });
+    }
 
     selectTrackAndRow(newTrack.id);
   };
@@ -2381,6 +2439,7 @@ function Editor({ onBackToDashboard }) {
                     <TrackList
                       tracks={treeProject.tracks}
                       rows={timelineRows}
+                      trackEffectiveRoleById={trackEffectiveRoleById}
                       onUpdateTrack={handleUpdateTrack}
                       onUpdateGroup={handleUpdateGroup}
                       onCreateSubtrack={handleCreateSubtrackFromTrack}

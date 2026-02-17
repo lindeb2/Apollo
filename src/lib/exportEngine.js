@@ -256,9 +256,11 @@ function getAutoPannedChoirPanMap(project, choirTracks) {
   };
 
   const result = applyChoirAutoPanToProject(tempProject, { enabled: true });
+  const mix = getEffectiveTrackMix(result.project);
   const panMap = {};
-  for (const track of result.project.tracks) {
-    panMap[track.id] = clampPan(track.pan);
+  for (const track of choirTracks) {
+    const state = mix.statesByTrackId.get(track.id);
+    panMap[track.id] = clampPan(Number.isFinite(state?.effectivePan) ? state.effectivePan : track.pan);
   }
   return panMap;
 }

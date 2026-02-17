@@ -8,6 +8,7 @@ import {
   isChoirPartRole,
   isChoirRole,
   isGroupParentRole,
+  getDefaultIconByRole,
   mapGroupParentRoleToTrackRole,
   normalizeGroupRole,
   toCategoryRole,
@@ -387,6 +388,89 @@ export function updateGroupNode(project, groupNodeId, updates = {}) {
         role: nextRole,
       };
     }),
+  };
+}
+
+export function syncDirectChildRolesFromGroupCategories(project) {
+  const normalized = normalizeTrackTree(project);
+  const nextTracks = (normalized.tracks || []).map((track) => ({ ...track }));
+  const nextTrackTree = (normalized.trackTree || []).map((node) => ({ ...node }));
+  const trackIndexById = new Map(nextTracks.map((track, idx) => [track.id, idx]));
+  let changed = false;
+  const applied = [];
+
+  for (const groupNode of nextTrackTree) {
+    if (groupNode.kind !== 'group') continue;
+    const groupRole = groupNode.role;
+    let inheritedRole = null;
+    if (isGroupParentRole(groupRole)) {
+      inheritedRole = mapGroupParentRoleToTrackRole(groupRole);
+    } else {
+      const categoryRole = toCategoryRole(groupRole);
+      if (
+        categoryRole === TRACK_ROLE_INSTRUMENT
+        || categoryRole === TRACK_ROLE_LEAD
+        || categoryRole === TRACK_ROLE_CHOIR
+      ) {
+        inheritedRole = categoryRole;
+      }
+    }
+    if (!inheritedRole) continue;
+    if (inheritedRole === TRACK_ROLE_OTHER) continue;
+
+    for (let idx = 0; idx < nextTrackTree.length; idx += 1) {
+      const child = nextTrackTree[idx];
+      if ((child.parentId || ROOT_PARENT_ID) !== groupNode.id) continue;
+
+      if (child.kind === 'track') {
+        const trackIdx = trackIndexById.get(child.trackId);
+        if (trackIdx === undefined) continue;
+        const track = nextTracks[trackIdx];
+        if (track.role !== inheritedRole) {
+          const previousRole = track.role;
+          nextTracks[trackIdx].role = inheritedRole;
+          nextTracks[trackIdx].icon = getDefaultIconByRole(inheritedRole);
+          applied.push({
+            parentGroupId: groupNode.id,
+            childKind: 'track',
+            childNodeId: child.id,
+            trackId: child.trackId,
+            fromRole: previousRole,
+            toRole: inheritedRole,
+          });
+          changed = true;
+        }
+        continue;
+      }
+
+      if (child.kind === 'group' && child.role !== inheritedRole) {
+        const previousRole = child.role;
+        nextTrackTree[idx].role = inheritedRole;
+        applied.push({
+          parentGroupId: groupNode.id,
+          childKind: 'group',
+          childNodeId: child.id,
+          fromRole: previousRole,
+          toRole: inheritedRole,
+        });
+        changed = true;
+      }
+    }
+  }
+
+  if (!changed) {
+    return normalized;
+  }
+
+  console.debug('[GroupRoleSync]', {
+    appliedCount: applied.length,
+    applied,
+  });
+
+  return {
+    ...normalized,
+    tracks: nextTracks,
+    trackTree: nextTrackTree,
   };
 }
 

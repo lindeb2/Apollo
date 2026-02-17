@@ -2,9 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
+  FileMusic,
+  Guitar,
   Headphones,
   Mic,
   Music,
+  User,
   Users,
   Volume2,
   VolumeX,
@@ -15,12 +18,15 @@ import { dbToVolume, volumeToDb } from '../utils/audio';
 import { AUTO_PAN_STRATEGIES } from '../utils/choirAutoPan';
 import { normalizeTrackName } from '../utils/naming';
 import {
+  GROUP_ROLE_NONE,
   GROUP_ROLE_CHOIRS,
   GROUP_ROLE_INSTRUMENTS,
   GROUP_ROLE_LEADS,
+  GROUP_ROLE_OTHERS,
   getDefaultIconByRole,
   isChoirRole,
   isGroupParentRole,
+  mapGroupParentRoleToTrackRole,
 } from '../utils/trackRoles';
 
 const TRACK_HEIGHT = 100;
@@ -28,6 +34,7 @@ const TRACK_HEIGHT = 100;
 function TrackList({
   tracks,
   rows,
+  trackEffectiveRoleById = {},
   onUpdateTrack,
   onUpdateGroup,
   onCreateSubtrack,
@@ -108,6 +115,9 @@ function TrackList({
   );
 
   const iconOptions = useMemo(() => [
+    { key: 'guitar', Icon: Guitar },
+    { key: 'user', Icon: User },
+    { key: 'file-music', Icon: FileMusic },
     { key: 'mic', Icon: Mic },
     { key: 'music', Icon: Music },
     { key: 'users', Icon: Users },
@@ -134,6 +144,38 @@ function TrackList({
         return parentRow.role;
       }
       parentId = parentRow.parentId ?? null;
+    }
+    return null;
+  };
+
+  const hasDirectParentTypeLock = (row) => {
+    const parentId = row?.parentId ?? null;
+    if (!parentId) return false;
+    const parentRow = rowByNodeId.get(parentId);
+    if (!parentRow || parentRow.kind !== 'group') return false;
+    const role = parentRow.role;
+    return (
+      isGroupParentRole(role)
+      || role === TRACK_ROLES.INSTRUMENT
+      || role === TRACK_ROLES.LEAD
+      || role === TRACK_ROLES.CHOIR
+    );
+  };
+
+  const getDirectParentForcedRole = (row) => {
+    const parentId = row?.parentId ?? null;
+    if (!parentId) return null;
+    const parentRow = rowByNodeId.get(parentId);
+    if (!parentRow || parentRow.kind !== 'group') return null;
+    if (isGroupParentRole(parentRow.role)) {
+      return mapGroupParentRoleToTrackRole(parentRow.role);
+    }
+    if (
+      parentRow.role === TRACK_ROLES.INSTRUMENT
+      || parentRow.role === TRACK_ROLES.LEAD
+      || parentRow.role === TRACK_ROLES.CHOIR
+    ) {
+      return parentRow.role;
     }
     return null;
   };
@@ -361,17 +403,87 @@ function TrackList({
     return getDefaultIconByRole(role);
   };
 
-  const getIconForTrack = (track) => {
-    const iconKey = track.icon || getDefaultIconKey(track.role);
+  const hasPartTrackAncestor = (row) => {
+    let parentId = row?.parentId ?? null;
+    while (parentId) {
+      const parentRow = rowByNodeId.get(parentId);
+      if (!parentRow || parentRow.kind !== 'group') return false;
+      if (
+        parentRow.role === TRACK_ROLES.INSTRUMENT
+        || parentRow.role === TRACK_ROLES.LEAD
+        || parentRow.role === TRACK_ROLES.OTHER
+        || isChoirRole(parentRow.role)
+      ) {
+        return true;
+      }
+      parentId = parentRow.parentId ?? null;
+    }
+    return false;
+  };
+
+  const getIconForTrack = (track, row) => {
+    const effectiveRole = trackEffectiveRoleById[track.id] || track.role;
+    const limitedToPartIcons = hasPartTrackAncestor(row);
+    const allowedIconKeys = limitedToPartIcons ? ['mic', 'file-music'] : null;
+    const defaultIconKey = limitedToPartIcons ? 'mic' : getDefaultIconKey(effectiveRole);
+    const iconKey = allowedIconKeys
+      ? (allowedIconKeys.includes(track.icon) ? track.icon : defaultIconKey)
+      : (track.icon || defaultIconKey);
     const option = iconOptions.find((opt) => opt.key === iconKey);
     return option || iconOptions[0];
   };
 
-  const cycleIcon = (track) => {
-    const iconKey = track.icon || getDefaultIconKey(track.role);
-    const currentIndex = iconOptions.findIndex((opt) => opt.key === iconKey);
-    const nextIndex = (currentIndex + 1) % iconOptions.length;
-    onUpdateTrack(track.id, { icon: iconOptions[nextIndex].key });
+  const cycleIcon = (track, row) => {
+    const limitedToPartIcons = hasPartTrackAncestor(row);
+    const options = limitedToPartIcons
+      ? iconOptions.filter((opt) => opt.key === 'mic' || opt.key === 'file-music')
+      : iconOptions;
+    const defaultIconKey = limitedToPartIcons ? 'mic' : getDefaultIconKey(track.role);
+    const iconKey = options.some((opt) => opt.key === track.icon) ? track.icon : defaultIconKey;
+    const currentIndex = options.findIndex((opt) => opt.key === iconKey);
+    const nextIndex = (currentIndex + 1) % options.length;
+    onUpdateTrack(track.id, { icon: options[nextIndex].key });
+  };
+
+  const commitGroupRoleChange = (source, groupRow, nextRole) => {
+    console.debug('[GroupRoleUI]', {
+      source,
+      groupNodeId: groupRow?.nodeId,
+      groupName: groupRow?.name,
+      fromRole: groupRow?.role,
+      toRole: nextRole,
+      parentId: groupRow?.parentId ?? null,
+    });
+    onUpdateGroup?.(groupRow.nodeId, { role: nextRole });
+  };
+
+  const isGroupTrackModeGroup = (role) => (
+    role === GROUP_ROLE_NONE
+    || role === GROUP_ROLE_OTHERS
+    || isGroupParentRole(role)
+  );
+
+  const cycleGroupRole = (groupRow) => {
+    if (hasDirectParentTypeLock(groupRow)) return;
+    const isGroupMode = isGroupTrackModeGroup(groupRow.role);
+    const groupRoles = [
+      GROUP_ROLE_INSTRUMENTS,
+      GROUP_ROLE_LEADS,
+      GROUP_ROLE_CHOIRS,
+      GROUP_ROLE_NONE,
+    ];
+    const partRoles = [
+      TRACK_ROLES.INSTRUMENT,
+      TRACK_ROLES.LEAD,
+      TRACK_ROLES.CHOIR,
+      TRACK_ROLES.OTHER,
+    ];
+    const options = isGroupMode ? groupRoles : partRoles;
+    const currentIndex = options.findIndex((role) => role === groupRow.role);
+    const nextRole = currentIndex >= 0
+      ? options[(currentIndex + 1) % options.length]
+      : options[0];
+    commitGroupRoleChange('icon-cycle', groupRow, nextRole);
   };
 
   const handleVolumeChange = (trackId, value) => {
@@ -712,10 +824,10 @@ function TrackList({
 
         if (row.kind === 'group') {
           const groupCollapsed = Boolean(row.collapsed);
-          const groupIconKey = getDefaultIconKey(row.role);
-          const GroupIcon = groupIconKey === 'music'
-            ? Music
-            : (groupIconKey === 'mic' ? Mic : (groupIconKey === 'users' ? Users : Waves));
+          const directParentForcedRole = getDirectParentForcedRole(row);
+          const displayGroupRole = directParentForcedRole || row.role;
+          const groupIconKey = getDefaultIconKey(displayGroupRole);
+          const GroupIcon = iconOptions.find((opt) => opt.key === groupIconKey)?.Icon || Waves;
           const isSelectedRow = selectedNodeId === row.nodeId;
 
           return (
@@ -758,9 +870,17 @@ function TrackList({
                   className="flex-shrink-0"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <div className={`w-14 h-14 rounded-lg ${getRoleColor(row.role)} text-white flex items-center justify-center`}>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (hasDirectParentTypeLock(row)) return;
+                      cycleGroupRole(row);
+                    }}
+                    className={`w-14 h-14 rounded-lg ${getRoleColor(displayGroupRole)} text-white flex items-center justify-center ${hasDirectParentTypeLock(row) ? 'opacity-80 cursor-not-allowed' : ''}`}
+                    title="Click to cycle group category"
+                  >
                     <GroupIcon size={22} />
-                  </div>
+                  </button>
                 </div>
 
                 <div className="flex-1 min-w-0 flex flex-col gap-1">
@@ -986,9 +1106,12 @@ function TrackList({
 
         const track = row.track || trackMap.get(row.trackId);
         if (!track) return null;
+        const displayTrackRole = trackEffectiveRoleById[track.id] || track.role;
+        const isInPartTrackChain = hasPartTrackAncestor(row);
+        const canEditTrackIcon = isInPartTrackChain || !hasDirectParentTypeLock(row);
 
         const trackHeight = row.height || TRACK_HEIGHT;
-        const { Icon: TrackIcon } = getIconForTrack(track);
+        const { Icon: TrackIcon } = getIconForTrack(track, row);
         const isSelectedRow = selectedNodeId
           ? selectedNodeId === row.nodeId
           : selectedTrackId === track.id;
@@ -1035,9 +1158,10 @@ function TrackList({
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    cycleIcon(track);
+                    if (!canEditTrackIcon) return;
+                    cycleIcon(track, row);
                   }}
-                  className={`w-14 h-14 rounded-lg ${getRoleColor(track.role)} text-white flex items-center justify-center`}
+                  className={`w-14 h-14 rounded-lg ${getRoleColor(displayTrackRole)} text-white flex items-center justify-center ${canEditTrackIcon ? '' : 'opacity-80 cursor-not-allowed'}`}
                   title="Click to change icon"
                 >
                   <TrackIcon size={22} />
@@ -1271,7 +1395,7 @@ function TrackList({
                 Rename track
               </button>
 
-              {getInheritedParentGroupRole(contextMenu.row) ? (
+              {hasDirectParentTypeLock(contextMenu.row) ? (
                 <div className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-500 whitespace-nowrap select-none">
                   Change track type (inherited)
                 </div>
@@ -1360,7 +1484,7 @@ function TrackList({
               >
                 Rename group
               </button>
-              {getInheritedParentGroupRole(contextMenu.group) ? (
+              {hasDirectParentTypeLock(contextMenu.group) ? (
                 <div className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-500 whitespace-nowrap select-none">
                   Change track type (inherited)
                 </div>
@@ -1451,7 +1575,7 @@ function TrackList({
         </div>
       )}
 
-      {contextMenu && contextMenu.type === 'track' && contextMenu.track && typeMenuOpen && !getInheritedParentGroupRole(contextMenu.row) && (
+      {contextMenu && contextMenu.type === 'track' && contextMenu.track && typeMenuOpen && !hasDirectParentTypeLock(contextMenu.row) && (
         <div
           className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[120px]"
           style={{ left: typeMenuPos.x, top: typeMenuPos.y }}
@@ -1516,7 +1640,7 @@ function TrackList({
         </div>
       )}
 
-      {contextMenu && contextMenu.type === 'track' && contextMenu.track && choirMenuOpen && autoPanManualChoirParts && !getInheritedParentGroupRole(contextMenu.row) && (
+      {contextMenu && contextMenu.type === 'track' && contextMenu.track && choirMenuOpen && autoPanManualChoirParts && !hasDirectParentTypeLock(contextMenu.row) && (
         <div
           className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[25px]"
           style={{ left: choirMenuPos.x, top: choirMenuPos.y }}
@@ -1575,7 +1699,7 @@ function TrackList({
         </div>
       )}
 
-      {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupTypeMenuOpen && !getInheritedParentGroupRole(contextMenu.group) && (
+      {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupTypeMenuOpen && !hasDirectParentTypeLock(contextMenu.group) && (
         <div
           className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[140px]"
           style={{ left: groupTypeMenuPos.x, top: groupTypeMenuPos.y }}
@@ -1586,84 +1710,46 @@ function TrackList({
             e.stopPropagation();
           }}
         >
-          {!contextMenu.group.parentId ? (
-            <>
-              <div
-                className={`${menuItemClass} select-none cursor-pointer`}
-                onMouseEnter={openGroupTrackTypeMenu}
-                onMouseLeave={() => setIsGroupTrackTypeTriggerHover(false)}
-                style={{ backgroundColor: (isGroupTrackTypeTriggerHover || isGroupTrackTypeMenuHover) ? '#374151' : undefined }}
-              >
-                <div className="flex items-center justify-between w-full">
-                  <span>Group track</span>
-                  <ChevronRight size={14} className="text-gray-400 ml-0.5" />
-                </div>
-              </div>
-              <div
-                className={`${menuItemClass} select-none cursor-pointer`}
-                onMouseEnter={openGroupPartTypeMenu}
-                onMouseLeave={() => setIsGroupPartTypeTriggerHover(false)}
-                style={{ backgroundColor: (isGroupPartTypeTriggerHover || isGroupPartTypeMenuHover) ? '#374151' : undefined }}
-              >
-                <div className="flex items-center justify-between w-full">
-                  <span>Part track</span>
-                  <ChevronRight size={14} className="text-gray-400 ml-0.5" />
-                </div>
-              </div>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.OTHER });
-                  setContextMenu(null);
-                }}
-              >
-                Other
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.INSTRUMENT });
-                  setContextMenu(null);
-                }}
-              >
-                Instrument
-              </button>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.LEAD });
-                  setContextMenu(null);
-                }}
-              >
-                Lead
-              </button>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.CHOIR });
-                  setContextMenu(null);
-                }}
-              >
-                Choir Part
-              </button>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.OTHER });
-                  setContextMenu(null);
-                }}
-              >
-                Other
-              </button>
-            </>
-          )}
+          <div
+            className={`${menuItemClass} select-none cursor-pointer`}
+            onMouseEnter={openGroupTrackTypeMenu}
+            onMouseLeave={() => setIsGroupTrackTypeTriggerHover(false)}
+            style={{ backgroundColor: (isGroupTrackTypeTriggerHover || isGroupTrackTypeMenuHover) ? '#374151' : undefined }}
+          >
+            <div className="flex items-center justify-between w-full">
+              <span>Group track</span>
+              <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+            </div>
+          </div>
+          <div
+            className={`${menuItemClass} select-none cursor-pointer`}
+            onMouseEnter={openGroupPartTypeMenu}
+            onMouseLeave={() => setIsGroupPartTypeTriggerHover(false)}
+            style={{ backgroundColor: (isGroupPartTypeTriggerHover || isGroupPartTypeMenuHover) ? '#374151' : undefined }}
+          >
+            <div className="flex items-center justify-between w-full">
+              <span>Part track</span>
+              <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+            </div>
+          </div>
+          <button
+            className={menuItemClass}
+            onClick={() => {
+              const mode = isGroupTrackModeGroup(contextMenu.group.role) ? 'group' : 'part';
+              commitGroupRoleChange(
+                'context-menu/other',
+                contextMenu.group,
+                mode === 'group' ? GROUP_ROLE_NONE : TRACK_ROLES.OTHER
+              );
+              setContextMenu(null);
+            }}
+          >
+            Other
+          </button>
         </div>
       )}
 
-      {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupTrackTypeMenuOpen && !contextMenu.group.parentId && (
+      {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupTrackTypeMenuOpen && (
         <div
           className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[130px]"
           style={{ left: groupTrackTypeMenuPos.x, top: groupTrackTypeMenuPos.y }}
@@ -1677,7 +1763,7 @@ function TrackList({
           <button
             className={menuItemClass}
             onClick={() => {
-              onUpdateGroup?.(contextMenu.group.nodeId, { role: GROUP_ROLE_INSTRUMENTS });
+              commitGroupRoleChange('context-menu/group/instruments', contextMenu.group, GROUP_ROLE_INSTRUMENTS);
               setContextMenu(null);
             }}
           >
@@ -1686,7 +1772,7 @@ function TrackList({
           <button
             className={menuItemClass}
             onClick={() => {
-              onUpdateGroup?.(contextMenu.group.nodeId, { role: GROUP_ROLE_LEADS });
+              commitGroupRoleChange('context-menu/group/leads', contextMenu.group, GROUP_ROLE_LEADS);
               setContextMenu(null);
             }}
           >
@@ -1695,7 +1781,7 @@ function TrackList({
           <button
             className={menuItemClass}
             onClick={() => {
-              onUpdateGroup?.(contextMenu.group.nodeId, { role: GROUP_ROLE_CHOIRS });
+              commitGroupRoleChange('context-menu/group/choir', contextMenu.group, GROUP_ROLE_CHOIRS);
               setContextMenu(null);
             }}
           >
@@ -1704,7 +1790,7 @@ function TrackList({
         </div>
       )}
 
-      {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupPartTypeMenuOpen && !contextMenu.group.parentId && (
+      {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupPartTypeMenuOpen && (
         <div
           className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[120px]"
           style={{ left: groupPartTypeMenuPos.x, top: groupPartTypeMenuPos.y }}
@@ -1718,7 +1804,7 @@ function TrackList({
           <button
             className={menuItemClass}
             onClick={() => {
-              onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.INSTRUMENT });
+              commitGroupRoleChange('context-menu/part/instrument', contextMenu.group, TRACK_ROLES.INSTRUMENT);
               setContextMenu(null);
             }}
           >
@@ -1727,7 +1813,7 @@ function TrackList({
           <button
             className={menuItemClass}
             onClick={() => {
-              onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.LEAD });
+              commitGroupRoleChange('context-menu/part/lead', contextMenu.group, TRACK_ROLES.LEAD);
               setContextMenu(null);
             }}
           >
@@ -1736,7 +1822,7 @@ function TrackList({
           <button
             className={menuItemClass}
             onClick={() => {
-              onUpdateGroup?.(contextMenu.group.nodeId, { role: TRACK_ROLES.CHOIR });
+              commitGroupRoleChange('context-menu/part/choir', contextMenu.group, TRACK_ROLES.CHOIR);
               setContextMenu(null);
             }}
           >

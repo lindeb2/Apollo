@@ -93,13 +93,13 @@ export function getDefaultIconByRole(role) {
 
   if (isGroupParentRole(normalizedGroupRole)) {
     const mapped = mapGroupParentRoleToTrackRole(normalizedGroupRole);
-    if (mapped === TRACK_ROLE_INSTRUMENT) return 'music';
-    if (mapped === TRACK_ROLE_LEAD) return 'mic';
+    if (mapped === TRACK_ROLE_INSTRUMENT) return 'guitar';
+    if (mapped === TRACK_ROLE_LEAD) return 'user';
     if (mapped === TRACK_ROLE_CHOIR) return 'users';
   }
 
-  if (normalizedTrackRole === TRACK_ROLE_INSTRUMENT) return 'music';
-  if (normalizedTrackRole === TRACK_ROLE_LEAD) return 'mic';
+  if (normalizedTrackRole === TRACK_ROLE_INSTRUMENT) return 'guitar';
+  if (normalizedTrackRole === TRACK_ROLE_LEAD) return 'user';
   if (normalizedTrackRole === TRACK_ROLE_CHOIR) return 'users';
   return 'wave';
 }

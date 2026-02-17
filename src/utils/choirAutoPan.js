@@ -270,6 +270,25 @@ function getChoirPartNumber(role) {
   return Number.isFinite(value) ? value : null;
 }
 
+function parseUnitTarget(unitId, fallbackTrackId) {
+  if (typeof unitId === 'string' && unitId.startsWith('group:')) {
+    return {
+      kind: 'group',
+      id: unitId.slice('group:'.length),
+    };
+  }
+  if (typeof unitId === 'string' && unitId.startsWith('track:')) {
+    return {
+      kind: 'track',
+      id: unitId.slice('track:'.length),
+    };
+  }
+  return {
+    kind: 'track',
+    id: fallbackTrackId,
+  };
+}
+
 function getChoirUnits(project, settings) {
   const mix = getEffectiveTrackMix(project);
   const unitsById = new Map();
@@ -278,11 +297,14 @@ function getChoirUnits(project, settings) {
     const state = mix.statesByTrackId.get(trackId);
     if (!state || state.muted || state.effectiveRole !== TRACK_ROLE_CHOIR) continue;
     const unitId = state.choirUnitId || state.roleUnitId || `track:${trackId}`;
+    const target = parseUnitTarget(unitId, trackId);
     if (!unitsById.has(unitId)) {
       unitsById.set(unitId, {
         unitId,
         role: state.choirRole,
         label: state.choirUnitName || state.roleUnitName || `Track ${trackId}`,
+        targetKind: target.kind,
+        targetId: target.id,
         trackIds: [],
       });
     }
@@ -368,35 +390,67 @@ export function applyChoirAutoPanToProject(project, settingsOverride = {}) {
     panByPartIndex[partIndex] = pans[positionIndex];
   });
 
+  const beforeMix = getEffectiveTrackMix(project);
   const panUpdates = {};
-  const partIndexByTrackId = new Map();
+
+  const panByUnitId = new Map();
   choirUnits.forEach((unit, idx) => {
     const partIndex = nextSettings.manualChoirParts ? unit.partIndex : (idx + 1);
     if (!partIndex) return;
+    const nextPanRaw = panByPartIndex[partIndex];
+    if (!Number.isFinite(nextPanRaw)) return;
+    const nextPan = Math.max(-100, Math.min(100, nextSettings.inverted ? -nextPanRaw : nextPanRaw));
+    panByUnitId.set(unit.unitId, nextPan);
+  });
+
+  const panByTrackId = new Map();
+  const panByGroupNodeId = new Map();
+  choirUnits.forEach((unit) => {
+    const unitPan = panByUnitId.get(unit.unitId);
+    if (!Number.isFinite(unitPan)) return;
+    if (unit.targetKind === 'group' && unit.targetId) {
+      panByGroupNodeId.set(unit.targetId, unitPan);
+      return;
+    }
     for (const trackId of unit.trackIds) {
-      partIndexByTrackId.set(trackId, partIndex);
+      panByTrackId.set(trackId, unitPan);
     }
   });
 
   const nextTracks = project.tracks.map((track) => {
-    const partIndex = partIndexByTrackId.get(track.id);
-    if (!partIndex) return track;
-    const nextPanRaw = panByPartIndex[partIndex];
-    if (!Number.isFinite(nextPanRaw)) return track;
-    const nextPan = Math.max(-100, Math.min(100, nextSettings.inverted ? -nextPanRaw : nextPanRaw));
-    panUpdates[track.id] = nextPan;
+    if (!panByTrackId.has(track.id)) return track;
     return {
       ...track,
-      pan: nextPan,
+      pan: panByTrackId.get(track.id),
+    };
+  });
+  const nextTrackTree = (project.trackTree || []).map((node) => {
+    if (node.kind !== 'group' || !panByGroupNodeId.has(node.id)) return node;
+    return {
+      ...node,
+      pan: panByGroupNodeId.get(node.id),
     };
   });
 
+  const nextProject = {
+    ...project,
+    autoPan: nextSettings,
+    tracks: nextTracks,
+    trackTree: nextTrackTree,
+  };
+
+  const afterMix = getEffectiveTrackMix(nextProject);
+  for (const trackId of afterMix.orderedTrackIds) {
+    const afterState = afterMix.statesByTrackId.get(trackId);
+    const beforeState = beforeMix.statesByTrackId.get(trackId);
+    if (!afterState || afterState.effectiveRole !== TRACK_ROLE_CHOIR) continue;
+    if (!beforeState || beforeState.effectivePan !== afterState.effectivePan) {
+      panUpdates[trackId] = afterState.effectivePan;
+    }
+  }
+
   return {
-    project: {
-      ...project,
-      autoPan: nextSettings,
-      tracks: nextTracks,
-    },
-    panUpdates,
+    project: nextProject,
+    panUpdates: Object.keys(panUpdates).length > 0 ? panUpdates : null,
   };
 }
