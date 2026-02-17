@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { isPrimaryModifierPressed } from './keyboard';
 
 /**
  * Keyboard shortcuts hook
@@ -52,34 +53,34 @@ function useKeyboardShortcuts({
       }
 
       // Ctrl/Cmd + Z - Undo
-      if (e.code === 'KeyZ' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+      if (e.code === 'KeyZ' && isPrimaryModifierPressed(e) && !e.shiftKey) {
         e.preventDefault();
         onUndo?.();
       }
 
       // Ctrl/Cmd + Y or Ctrl/Cmd + Shift + Z - Redo
       if (
-        (e.code === 'KeyY' && (e.ctrlKey || e.metaKey)) ||
-        (e.code === 'KeyZ' && (e.ctrlKey || e.metaKey) && e.shiftKey)
+        (e.code === 'KeyY' && isPrimaryModifierPressed(e)) ||
+        (e.code === 'KeyZ' && isPrimaryModifierPressed(e) && e.shiftKey)
       ) {
         e.preventDefault();
         onRedo?.();
       }
 
       // Ctrl/Cmd + Backspace - Delete selected track
-      if (e.code === 'Backspace' && (e.ctrlKey || e.metaKey)) {
+      if (e.code === 'Backspace' && isPrimaryModifierPressed(e)) {
         e.preventDefault();
         onDeleteTrack?.();
       }
 
       // Ctrl/Cmd + Right - Indent selected row
-      if (e.code === 'ArrowRight' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+      if (e.code === 'ArrowRight' && isPrimaryModifierPressed(e) && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         onIndentRight?.();
       }
 
       // Ctrl/Cmd + Left - Outdent selected row
-      if (e.code === 'ArrowLeft' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+      if (e.code === 'ArrowLeft' && isPrimaryModifierPressed(e) && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         onIndentLeft?.();
       }

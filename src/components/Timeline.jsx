@@ -18,6 +18,7 @@ import {
   canAddClip,
   findSafePosition 
 } from '../utils/clipCollision';
+import { isPrimaryModifierPressed } from '../utils/keyboard';
 
 const TIMELINE_VIEWPORT_WIDTH = 1920; // Default viewport width (updated dynamically)
 const MIN_VISIBLE_DURATION_MS = 8000; // Minimum duration to show when zoomed out
@@ -391,14 +392,9 @@ function Timeline({
     }
   };
 
-  const handleClipRightClick = (e, clip, track) => {
+  const handleClipRightClick = (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (rightClickDragRef.current) {
-      rightClickDragRef.current = false;
-      return;
-    }
-    onUpdateClip(track.id, clip.id, { muted: !clip.muted }, 'update');
   };
 
   const handleClipMouseDown = (e, clip, track) => {
@@ -507,7 +503,7 @@ function Timeline({
         updates.cropEndMs = constrainedCropEndMs;
 
       } else if (dragState.type === 'gain') {
-        if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+        if (deltaX !== 0 || deltaY !== 0) {
           rightClickDragRef.current = true;
         }
         const gainDragPixels = 300;
@@ -528,6 +524,16 @@ function Timeline({
     };
 
     const handleMouseUp = () => {
+      if (dragState.type === 'gain') {
+        if (!rightClickDragRef.current) {
+          const targetTrack = project.tracks.find((t) => t.id === dragState.trackId);
+          const targetClip = targetTrack?.clips.find((c) => c.id === dragState.clipId);
+          if (targetTrack && targetClip) {
+            onUpdateClip(targetTrack.id, targetClip.id, { muted: !targetClip.muted }, 'update');
+          }
+        }
+        rightClickDragRef.current = false;
+      }
       setDragState(null);
     };
 
@@ -585,7 +591,7 @@ function Timeline({
         return;
       }
 
-      if (e.code === 'KeyT' && (e.ctrlKey || e.metaKey) && selectedClip && hasTrackSelection) {
+      if (e.code === 'KeyT' && isPrimaryModifierPressed(e) && selectedClip && hasTrackSelection) {
         e.preventDefault();
         const track = project.tracks.find(t => t.id === selectedTrackId);
         if (!track) return;
@@ -671,7 +677,7 @@ function Timeline({
 
       if (!shortcutsEnabled) return;
 
-      if (e.code === 'KeyX' && (e.ctrlKey || e.metaKey) && selectedClip && hasTrackSelection) {
+      if (e.code === 'KeyX' && isPrimaryModifierPressed(e) && selectedClip && hasTrackSelection) {
         e.preventDefault();
         setClipboardClip({ ...selectedClip });
         onUpdateClip(selectedTrackId, selectedClipId, null, 'delete');
@@ -679,12 +685,12 @@ function Timeline({
         return;
       }
 
-      if (e.code === 'KeyC' && (e.ctrlKey || e.metaKey) && selectedClip) {
+      if (e.code === 'KeyC' && isPrimaryModifierPressed(e) && selectedClip) {
         e.preventDefault();
         setClipboardClip({ ...selectedClip });
       }
 
-      if (e.code === 'KeyV' && (e.ctrlKey || e.metaKey) && clipboardClip && hasTrackSelection) {
+      if (e.code === 'KeyV' && isPrimaryModifierPressed(e) && clipboardClip && hasTrackSelection) {
         e.preventDefault();
         const track = project.tracks.find(t => t.id === selectedTrackId);
         if (!track) return;
@@ -706,7 +712,7 @@ function Timeline({
         }
       }
 
-      if (e.code === 'KeyD' && (e.ctrlKey || e.metaKey) && selectedClip && hasTrackSelection) {
+      if (e.code === 'KeyD' && isPrimaryModifierPressed(e) && selectedClip && hasTrackSelection) {
         e.preventDefault();
         const track = project.tracks.find(t => t.id === selectedTrackId);
         if (!track) return;
@@ -948,8 +954,8 @@ function Timeline({
     };
 
     const handleWheel = (e) => {
-      // Ctrl/Cmd + Wheel = Zoom in/out
-      if (e.ctrlKey || e.metaKey) {
+      // Primary modifier + wheel = Zoom in/out
+      if (isPrimaryModifierPressed(e)) {
         e.preventDefault();
         const delta = e.deltaY * 0.001; // Inverted: scroll up = zoom in, scroll down = zoom out
         const newSliderValue = Math.max(0, Math.min(1, zoomSliderValue + delta));
@@ -1403,7 +1409,7 @@ function Timeline({
                           }}
                           onClick={(e) => handleClipClick(e, clip.id, track.id)}
                           onMouseDown={(e) => handleClipMouseDown(e, clip, track)}
-                          onContextMenu={(e) => handleClipRightClick(e, clip, track)}
+                          onContextMenu={handleClipRightClick}
                         >
                           <div
                             className="absolute inset-0 cursor-move"

@@ -13,6 +13,7 @@ import { dbToVolume, volumeToDb, PAN_LAW_OPTIONS_DB, normalizePanLawDb } from '.
 import { AUTO_PAN_STRATEGIES, applyChoirAutoPanToProject } from '../utils/choirAutoPan';
 import useKeyboardShortcuts from '../utils/useKeyboardShortcuts';
 import { processRecordingOverwrites } from '../utils/clipCollision';
+import { isPrimaryModifierPressed } from '../utils/keyboard';
 import { normalizeProjectName } from '../utils/naming';
 import { measureTuttiPeak } from '../lib/exportEngine';
 import {
@@ -2355,7 +2356,7 @@ function Editor({ onBackToDashboard }) {
                 className="col-span-2 min-h-0 overflow-y-auto scrollbar-hidden relative z-10"
                 onWheel={(e) => {
                   if (e.defaultPrevented) return;
-                  if (e.ctrlKey || e.metaKey) return;
+                  if (isPrimaryModifierPressed(e)) return;
                   if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
                     const scrollElement = timelineScrollRef.current;
                     if (scrollElement && scrollElement.scrollWidth > scrollElement.clientWidth) {
