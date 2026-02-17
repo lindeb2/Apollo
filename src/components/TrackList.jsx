@@ -821,6 +821,15 @@ function TrackList({
               willChange: 'transform',
             }
           : {};
+        const getVolumeSliderWidth = (isGroupRow) => {
+          if (isGroupRow) {
+            if (previewDepth <= 1) return 123;
+            // Fold button starts constraining layout from indent level 2.
+            return Math.max(72, 123 - ((previewDepth - 1) * 14));
+          }
+          if (previewDepth <= 3) return 123;
+          return Math.max(72, 123 - ((previewDepth - 3) * 14));
+        };
 
         if (row.kind === 'group') {
           const groupCollapsed = Boolean(row.collapsed);
@@ -923,51 +932,55 @@ function TrackList({
                     )}
                   </div>
 
-                  <div data-track-interactive="true" className="flex items-center gap-3">
-                    <div className="flex items-center gap-0" onClick={(e) => e.stopPropagation()}>
+                  <div data-track-interactive="true" className="flex w-full items-center gap-2">
+                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center gap-0">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleGroupMute(row.nodeId, row.muted);
+                          }}
+                          className={`w-7 h-7 flex items-center justify-center rounded-l-md rounded-r-none border border-gray-600 transition-colors ${
+                            row.muted ? 'bg-red-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
+                          }`}
+                          title={row.muted ? 'Unmute group' : 'Mute group'}
+                        >
+                          {row.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleGroupSolo(row.nodeId, row.soloed);
+                          }}
+                          className={`w-7 h-7 flex items-center justify-center rounded-r-md rounded-l-none border border-l-0 border-gray-600 transition-colors ${
+                            row.soloed ? 'bg-yellow-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
+                          }`}
+                          title={row.soloed ? 'Unsolo group' : 'Solo group'}
+                        >
+                          <Headphones size={16} />
+                        </button>
+                      </div>
+
                       <button
+                        data-track-interactive="true"
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleToggleGroupMute(row.nodeId, row.muted);
+                          onToggleGroupCollapse?.(row.nodeId);
                         }}
-                        className={`w-7 h-7 flex items-center justify-center rounded-l-md rounded-r-none border border-gray-600 transition-colors ${
-                          row.muted ? 'bg-red-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
-                        }`}
-                        title={row.muted ? 'Unmute group' : 'Mute group'}
+                        className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-600 transition-colors bg-gray-800 hover:bg-gray-600 text-gray-300"
+                        title={groupCollapsed ? 'Expand group' : 'Collapse group'}
                       >
-                        {row.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleToggleGroupSolo(row.nodeId, row.soloed);
-                        }}
-                        className={`w-7 h-7 flex items-center justify-center rounded-r-md rounded-l-none border border-l-0 border-gray-600 transition-colors ${
-                          row.soloed ? 'bg-yellow-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
-                        }`}
-                        title={row.soloed ? 'Unsolo group' : 'Solo group'}
-                      >
-                        <Headphones size={16} />
+                        {groupCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
                       </button>
                     </div>
 
-                    <button
-                      data-track-interactive="true"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onToggleGroupCollapse?.(row.nodeId);
-                      }}
-                      className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-600 transition-colors bg-gray-800 hover:bg-gray-600 text-gray-300 -ml-1"
-                      title={groupCollapsed ? 'Expand group' : 'Collapse group'}
-                    >
-                      {groupCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-                    </button>
-
-                    <div
-                      className="flex-1 flex items-center relative"
-                      onClick={(e) => e.stopPropagation()}
-                      onMouseDown={(e) => e.stopPropagation()}
-                    >
+                    <div className="ml-auto flex items-center gap-2">
+                      <div
+                        className="flex items-center relative"
+                        style={{ width: `${getVolumeSliderWidth(true)}px` }}
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => e.stopPropagation()}
+                      >
                       <input
                         type="range"
                         min="0"
@@ -1024,13 +1037,13 @@ function TrackList({
                           autoFocus
                         />
                       )}
-                    </div>
+                      </div>
 
-                    <div
-                      className="relative w-8 h-8 flex-shrink-0"
-                      onClick={(e) => e.stopPropagation()}
-                      onMouseDown={(e) => e.stopPropagation()}
-                    >
+                      <div
+                        className="relative w-8 h-8 flex-shrink-0"
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => e.stopPropagation()}
+                      >
                       <div className="absolute inset-0 overflow-hidden">
                         <div className="absolute inset-0 pan-ring pointer-events-none" />
                         <div className="absolute left-1/2 top-1/2 w-6 h-6 rounded-full bg-gray-700 border border-gray-600 -translate-x-1/2 -translate-y-1/2 pointer-events-none" />
@@ -1096,6 +1109,7 @@ function TrackList({
                           autoFocus
                         />
                       )}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1205,39 +1219,43 @@ function TrackList({
                   )}
                 </div>
 
-                <div data-track-interactive="true" className="flex items-center gap-3">
-                  <div className="flex items-center gap-0" onClick={(e) => e.stopPropagation()}>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleToggleMute(track.id, track.muted);
-                      }}
-                      className={`w-7 h-7 flex items-center justify-center rounded-l-md rounded-r-none border border-gray-600 transition-colors ${
-                        track.muted ? 'bg-red-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
-                      }`}
-                      title={track.muted ? 'Unmute' : 'Mute'}
-                    >
-                      {track.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleToggleSolo(track.id, track.soloed);
-                      }}
-                      className={`w-7 h-7 flex items-center justify-center rounded-r-md rounded-l-none border border-l-0 border-gray-600 transition-colors ${
-                        track.soloed ? 'bg-yellow-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
-                      }`}
-                      title={track.soloed ? 'Unsolo' : 'Solo'}
-                    >
-                      <Headphones size={16} />
-                    </button>
+                <div data-track-interactive="true" className="flex w-full items-center gap-2">
+                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center gap-0">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleToggleMute(track.id, track.muted);
+                        }}
+                        className={`w-7 h-7 flex items-center justify-center rounded-l-md rounded-r-none border border-gray-600 transition-colors ${
+                          track.muted ? 'bg-red-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
+                        }`}
+                        title={track.muted ? 'Unmute' : 'Mute'}
+                      >
+                        {track.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleToggleSolo(track.id, track.soloed);
+                        }}
+                        className={`w-7 h-7 flex items-center justify-center rounded-r-md rounded-l-none border border-l-0 border-gray-600 transition-colors ${
+                          track.soloed ? 'bg-yellow-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
+                        }`}
+                        title={track.soloed ? 'Unsolo' : 'Solo'}
+                      >
+                        <Headphones size={16} />
+                      </button>
+                    </div>
                   </div>
 
-                  <div
-                    className="flex-1 flex items-center relative"
-                    onClick={(e) => e.stopPropagation()}
-                    onMouseDown={(e) => e.stopPropagation()}
-                  >
+                  <div className="ml-auto flex items-center gap-2">
+                    <div
+                      className="flex items-center relative"
+                      style={{ width: `${getVolumeSliderWidth(false)}px` }}
+                      onClick={(e) => e.stopPropagation()}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
                     <input
                       type="range"
                       min="0"
@@ -1294,13 +1312,13 @@ function TrackList({
                         autoFocus
                       />
                     )}
-                  </div>
+                    </div>
 
-                  <div
-                    className="relative w-8 h-8 flex-shrink-0"
-                    onClick={(e) => e.stopPropagation()}
-                    onMouseDown={(e) => e.stopPropagation()}
-                  >
+                    <div
+                      className="relative w-8 h-8 flex-shrink-0"
+                      onClick={(e) => e.stopPropagation()}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
                     <div className="absolute inset-0 overflow-hidden">
                       <div className="absolute inset-0 pan-ring pointer-events-none" />
                       <div className="absolute left-1/2 top-1/2 w-6 h-6 rounded-full bg-gray-700 border border-gray-600 -translate-x-1/2 -translate-y-1/2 pointer-events-none" />
@@ -1366,6 +1384,7 @@ function TrackList({
                         autoFocus
                       />
                     )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1376,7 +1395,7 @@ function TrackList({
 
       {contextMenu && (
         <div
-          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden"
+          className="fixed z-[120] bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onContextMenu={(e) => {
             e.preventDefault();
@@ -1577,7 +1596,7 @@ function TrackList({
 
       {contextMenu && contextMenu.type === 'track' && contextMenu.track && typeMenuOpen && !hasDirectParentTypeLock(contextMenu.row) && (
         <div
-          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[120px]"
+          className="fixed z-[120] bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[120px]"
           style={{ left: typeMenuPos.x, top: typeMenuPos.y }}
           onMouseEnter={() => setIsTypeMenuHover(true)}
           onMouseLeave={() => setIsTypeMenuHover(false)}
@@ -1642,7 +1661,7 @@ function TrackList({
 
       {contextMenu && contextMenu.type === 'track' && contextMenu.track && choirMenuOpen && autoPanManualChoirParts && !hasDirectParentTypeLock(contextMenu.row) && (
         <div
-          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[25px]"
+          className="fixed z-[120] bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[25px]"
           style={{ left: choirMenuPos.x, top: choirMenuPos.y }}
           onMouseEnter={() => setIsChoirMenuHover(true)}
           onMouseLeave={() => setIsChoirMenuHover(false)}
@@ -1701,7 +1720,7 @@ function TrackList({
 
       {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupTypeMenuOpen && !hasDirectParentTypeLock(contextMenu.group) && (
         <div
-          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[140px]"
+          className="fixed z-[120] bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[140px]"
           style={{ left: groupTypeMenuPos.x, top: groupTypeMenuPos.y }}
           onMouseEnter={() => setIsGroupTypeMenuHover(true)}
           onMouseLeave={() => setIsGroupTypeMenuHover(false)}
@@ -1751,7 +1770,7 @@ function TrackList({
 
       {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupTrackTypeMenuOpen && (
         <div
-          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[130px]"
+          className="fixed z-[120] bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[130px]"
           style={{ left: groupTrackTypeMenuPos.x, top: groupTrackTypeMenuPos.y }}
           onMouseEnter={() => setIsGroupTrackTypeMenuHover(true)}
           onMouseLeave={() => setIsGroupTrackTypeMenuHover(false)}
@@ -1792,7 +1811,7 @@ function TrackList({
 
       {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupPartTypeMenuOpen && (
         <div
-          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[120px]"
+          className="fixed z-[120] bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[120px]"
           style={{ left: groupPartTypeMenuPos.x, top: groupPartTypeMenuPos.y }}
           onMouseEnter={() => setIsGroupPartTypeMenuHover(true)}
           onMouseLeave={() => setIsGroupPartTypeMenuHover(false)}
@@ -1833,7 +1852,7 @@ function TrackList({
 
       {contextMenu && contextMenu.type === 'track' && contextMenu.track && autoPanMenuOpen && (
         <div
-          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[140px]"
+          className="fixed z-[120] bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[140px]"
           style={{ left: autoPanMenuPos.x, top: autoPanMenuPos.y }}
           onMouseEnter={() => setIsAutoPanMenuHover(true)}
           onMouseLeave={() => setIsAutoPanMenuHover(false)}

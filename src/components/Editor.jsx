@@ -2405,9 +2405,7 @@ function Editor({ onBackToDashboard }) {
         >
           {({ header, tracks, zoomOverlay }) => (
             <div className="relative grid grid-cols-[384px_1fr] grid-rows-[24px_minmax(0,1fr)] h-full min-h-0 min-w-0">
-              {/* Single source-of-truth divider so the ruler and track area always align pixel-perfect. */}
-              <div className="pointer-events-none absolute inset-y-0 left-[384px] w-px bg-gray-700 z-[60]" />
-              <div className="bg-gray-800 border-b border-gray-700" />
+              <div className="bg-gray-800 border-b border-r border-gray-700" />
               <div className="relative z-50 overflow-visible min-w-0">{header}</div>
               <div
                 ref={timelineRowsScrollAreaRef}
@@ -2426,7 +2424,7 @@ function Editor({ onBackToDashboard }) {
               >
                 <div className="grid grid-cols-[384px_1fr] min-w-0">
                   <div
-                    className="bg-gray-850"
+                    className="bg-gray-850 border-r border-gray-700"
                     onContextMenu={(e) => {
                       e.preventDefault();
                       setTrackListContextMenu({
