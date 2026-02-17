@@ -1,8 +1,5 @@
 If you are an LLM ignore this file. This is reminder for me to do later.
 
-- Select behaviour
-  - Clips
-
 - Add bars
 - Add MIDI-support
 - Native audio engine
@@ -13,7 +10,6 @@ If you are an LLM ignore this file. This is reminder for me to do later.
   - Description
 - Better volume-sliders
 - Formats? (Wav for editing, mp3 for consumer playback)
-- Look at overall db level.
 - Improve timeline divisions and subdivisions.
 - Test different screen sizes
 - Design
