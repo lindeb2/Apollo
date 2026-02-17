@@ -23,6 +23,9 @@ import { isPrimaryModifierPressed } from '../utils/keyboard';
 const TIMELINE_VIEWPORT_WIDTH = 1920; // Default viewport width (updated dynamically)
 const MIN_VISIBLE_DURATION_MS = 8000; // Minimum duration to show when zoomed out
 const MAX_ZOOM_VISIBLE_MS = 100; // At max zoom, show 100ms across viewport
+const MIN_CLIP_DURATION_MS = 100;
+const MIN_CLIP_GAIN_DB = -24;
+const MAX_CLIP_GAIN_DB = 24;
 
 // Helper to calculate cumulative Y position for a row index
 const getTrackYPosition = (rows, rowIndex) => {
@@ -67,16 +70,47 @@ function Timeline({
   const [visibleDurationMs, setVisibleDurationMs] = useState(null);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [dragState, setDragState] = useState(null);
+  const [selectedClipIds, setSelectedClipIds] = useState([]);
+  const [selectedClipHistory, setSelectedClipHistory] = useState([]);
   const [selectedClipId, setSelectedClipId] = useState(null);
   const [clipboardClip, setClipboardClip] = useState(null);
   const [rulerDragState, setRulerDragState] = useState(null);
   const [loopMarkerDragState, setLoopMarkerDragState] = useState(null);
+  const [timelineSelectionState, setTimelineSelectionState] = useState(null);
   const rightClickDragRef = useRef(false);
+  const timelineSelectionRef = useRef(null);
+  const timelineSelectionSuppressClickRef = useRef(false);
   const prevProjectDurationRef = useRef(null);
   const shouldCenterOnPlayheadAfterZoomRef = useRef(false);
   const [containerWidth, setContainerWidth] = useState(TIMELINE_VIEWPORT_WIDTH);
   const [globalPeakAmplitude, setGlobalPeakAmplitude] = useState(1.0);
   const [loadedClipIds, setLoadedClipIds] = useState(new Set());
+  const errorBeepContextRef = useRef(null);
+  const selectedClipIdSet = useMemo(() => new Set(selectedClipIds), [selectedClipIds]);
+
+  const playErrorBeep = () => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      if (!errorBeepContextRef.current) {
+        errorBeepContextRef.current = new AudioCtx();
+      }
+      const ctx = errorBeepContextRef.current;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(220, ctx.currentTime);
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.03, ctx.currentTime + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.08);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.09);
+    } catch {
+      // no-op
+    }
+  };
 
   // Track actual container width
   useEffect(() => {
@@ -167,12 +201,151 @@ function Timeline({
     return map;
   }, [timelineRows]);
 
+  const clipLocationById = useMemo(() => {
+    const map = new Map();
+    project.tracks.forEach((track) => {
+      track.clips.forEach((clip) => {
+        map.set(clip.id, { trackId: track.id, clip });
+      });
+    });
+    return map;
+  }, [project.tracks]);
+
+  const visibleTrackIndexByTrackId = useMemo(() => {
+    const map = new Map();
+    timelineRows.forEach((row, idx) => {
+      if (row.kind === 'track' && row.trackId) {
+        map.set(row.trackId, idx);
+      }
+    });
+    return map;
+  }, [timelineRows]);
+
+  const visibleTrackIdByRowIndex = useMemo(() => {
+    const map = new Map();
+    timelineRows.forEach((row, idx) => {
+      if (row.kind === 'track' && row.trackId) {
+        map.set(idx, row.trackId);
+      }
+    });
+    return map;
+  }, [timelineRows]);
+
   const selectRow = (row) => {
     if (!row) return;
     onSelectRow?.(row);
     if (row.kind === 'track' && row.trackId) {
       onSelectTrack?.(row.trackId);
     }
+  };
+
+  const clearSelectedClips = () => {
+    setSelectedClipIds([]);
+    setSelectedClipHistory([]);
+    setSelectedClipId(null);
+  };
+
+  const getLastSelectedFromHistory = (selectedIds, history) => {
+    const selectedSet = new Set(selectedIds);
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      if (selectedSet.has(history[i])) {
+        return history[i];
+      }
+    }
+    return null;
+  };
+
+  const getShiftRangeSelection = (anchorClipId, targetClipId) => {
+    const anchor = clipLocationById.get(anchorClipId);
+    const target = clipLocationById.get(targetClipId);
+    if (!anchor || !target) return [targetClipId];
+
+    const anchorTrackIndex = visibleTrackIndexByTrackId.get(anchor.trackId);
+    const targetTrackIndex = visibleTrackIndexByTrackId.get(target.trackId);
+    if (anchorTrackIndex === undefined || targetTrackIndex === undefined) {
+      return [targetClipId];
+    }
+
+    const minTrackIndex = Math.min(anchorTrackIndex, targetTrackIndex);
+    const maxTrackIndex = Math.max(anchorTrackIndex, targetTrackIndex);
+    const anchorStartMs = anchor.clip.timelineStartMs;
+    const targetStartMs = target.clip.timelineStartMs;
+    const anchorEndMs = anchor.clip.timelineStartMs + (anchor.clip.cropEndMs - anchor.clip.cropStartMs);
+    const targetEndMs = target.clip.timelineStartMs + (target.clip.cropEndMs - target.clip.cropStartMs);
+    const minTimeMs = Math.min(anchorStartMs, targetStartMs);
+    const maxTimeMs = Math.max(anchorEndMs, targetEndMs);
+
+    const selection = [];
+    project.tracks.forEach((track) => {
+      const trackIndex = visibleTrackIndexByTrackId.get(track.id);
+      if (trackIndex === undefined || trackIndex < minTrackIndex || trackIndex > maxTrackIndex) {
+        return;
+      }
+      track.clips.forEach((clip) => {
+        const clipStartMs = clip.timelineStartMs;
+        const clipEndMs = clip.timelineStartMs + (clip.cropEndMs - clip.cropStartMs);
+        if (clipStartMs >= minTimeMs && clipEndMs <= maxTimeMs) {
+          selection.push(clip.id);
+        }
+      });
+    });
+
+    if (!selection.includes(anchorClipId)) selection.push(anchorClipId);
+    if (!selection.includes(targetClipId)) selection.push(targetClipId);
+    return selection;
+  };
+
+  const getClipDurationMs = (clip) => clip.cropEndMs - clip.cropStartMs;
+
+  const getSelectedClipEntries = (clipIds = selectedClipIds) => {
+    const entries = [];
+    project.tracks.forEach((track) => {
+      const rowIndex = visibleTrackIndexByTrackId.get(track.id);
+      if (rowIndex === undefined) return;
+      track.clips.forEach((clip) => {
+        if (!clipIds.includes(clip.id)) return;
+        entries.push({
+          trackId: track.id,
+          trackRowIndex: rowIndex,
+          clip,
+        });
+      });
+    });
+    entries.sort((a, b) => (
+      a.trackRowIndex - b.trackRowIndex ||
+      a.clip.timelineStartMs - b.clip.timelineStartMs ||
+      a.clip.id.localeCompare(b.clip.id)
+    ));
+    return entries;
+  };
+
+  const getActiveSelectionForClip = (clipId) => (
+    selectedClipIdSet.has(clipId) && selectedClipIds.length > 0 ? selectedClipIds : [clipId]
+  );
+
+  const buildClipboardPayload = (clipIds = selectedClipIds) => {
+    const entries = getSelectedClipEntries(clipIds);
+    if (!entries.length) return null;
+
+    const anchor = entries[0];
+    const anchorTrackIndex = anchor.trackRowIndex;
+    const anchorStartMs = anchor.clip.timelineStartMs;
+
+    if (entries.length === 1) {
+      return {
+        type: 'single',
+        clip: { ...anchor.clip },
+      };
+    }
+
+    return {
+      type: 'multi',
+      items: entries.map((entry) => ({
+        clip: { ...entry.clip },
+        trackOffset: entry.trackRowIndex - anchorTrackIndex,
+        startOffsetMs: entry.clip.timelineStartMs - anchorStartMs,
+      })),
+    };
   };
 
   // Calculate total timeline height based on rendered rows
@@ -365,25 +538,112 @@ function Timeline({
     prevProjectDurationRef.current = projectDurationMs;
   }, [projectDurationMs, visibleDurationMs]);
 
-  const handleTimelineClick = (e) => {
-    if (dragState) return;
+  const getTimelineContentPoint = (clientX, clientY) => {
+    const scrollElement = tracksScrollRef.current;
+    if (!scrollElement) return null;
+    const rect = scrollElement.getBoundingClientRect();
+    return {
+      x: clientX - rect.left + scrollElement.scrollLeft,
+      y: clientY - rect.top + scrollElement.scrollTop,
+    };
+  };
 
-    const rect = timelineRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left + scrollLeft;
-    const timeMs = x / pixelsPerMs;
+  const getSelectionRect = (state) => {
+    const left = Math.min(state.startX, state.currentX);
+    const right = Math.max(state.startX, state.currentX);
+    const top = Math.min(state.startY, state.currentY);
+    const bottom = Math.max(state.startY, state.currentY);
+    return {
+      left,
+      right,
+      top,
+      bottom,
+      width: right - left,
+      height: bottom - top,
+    };
+  };
 
-    // Unselect track and clip when clicking empty timeline space
-    setSelectedClipId(null);
+  const getClipIdsInSelectionRect = (selectionRect) => {
+    const selectedIds = [];
+    timelineRows.forEach((row, rowIndex) => {
+      if (row.kind !== 'track' || !row.track) return;
+      const trackY = getTrackYPosition(timelineRows, rowIndex);
+      const clipPadding = 8;
+      const clipTop = trackY + clipPadding;
+      const clipBottom = clipTop + Math.max(0, row.height - (clipPadding * 2));
+      if (clipBottom < selectionRect.top || clipTop > selectionRect.bottom) return;
 
-    // Seek to clicked time
-    if (timeMs >= 0 && timeMs <= (projectDurationMs || minZoomDurationMs)) {
-      onSeek(timeMs);
-    }
+      row.track.clips.forEach((clip) => {
+        const clipLeft = clip.timelineStartMs * pixelsPerMs;
+        const clipRight = clipLeft + (getClipDurationMs(clip) * pixelsPerMs);
+        const intersects = (
+          clipRight >= selectionRect.left &&
+          clipLeft <= selectionRect.right &&
+          clipBottom >= selectionRect.top &&
+          clipTop <= selectionRect.bottom
+        );
+        if (intersects) {
+          selectedIds.push(clip.id);
+        }
+      });
+    });
+    return selectedIds;
+  };
+
+  const handleTimelineMouseDown = (e) => {
+    if (e.button !== 0 || dragState) return;
+    const point = getTimelineContentPoint(e.clientX, e.clientY);
+    if (!point) return;
+
+    const nextState = {
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      currentClientX: e.clientX,
+      currentClientY: e.clientY,
+      startX: point.x,
+      startY: point.y,
+      currentX: point.x,
+      currentY: point.y,
+      moved: false,
+    };
+    timelineSelectionRef.current = nextState;
+    setTimelineSelectionState(nextState);
   };
 
   const handleClipClick = (e, clipId, trackId) => {
     e.stopPropagation();
-    setSelectedClipId(clipId);
+    const isToggleSelect = isPrimaryModifierPressed(e) && !e.shiftKey;
+    const isRangeSelect = e.shiftKey;
+
+    if (isRangeSelect) {
+      const anchorClipId = getLastSelectedFromHistory(selectedClipIds, selectedClipHistory) || selectedClipId || clipId;
+      const rangeSelected = getShiftRangeSelection(anchorClipId, clipId);
+      const nextSelected = Array.from(new Set([...selectedClipIds, ...rangeSelected]));
+      const nextHistory = [
+        ...selectedClipHistory.filter((id) => nextSelected.includes(id) && id !== clipId),
+        ...rangeSelected.filter((id) => id !== clipId && !selectedClipHistory.includes(id)),
+        clipId,
+      ];
+      setSelectedClipIds(nextSelected);
+      setSelectedClipHistory(nextHistory);
+      setSelectedClipId(clipId);
+    } else if (isToggleSelect) {
+      const isSelected = selectedClipIds.includes(clipId);
+      const nextSelected = isSelected
+        ? selectedClipIds.filter((id) => id !== clipId)
+        : [...selectedClipIds, clipId];
+      const nextHistory = isSelected
+        ? selectedClipHistory.filter((id) => id !== clipId)
+        : [...selectedClipHistory.filter((id) => id !== clipId), clipId];
+      setSelectedClipIds(nextSelected);
+      setSelectedClipHistory(nextHistory);
+      setSelectedClipId(getLastSelectedFromHistory(nextSelected, nextHistory));
+    } else {
+      setSelectedClipIds([clipId]);
+      setSelectedClipHistory([clipId]);
+      setSelectedClipId(clipId);
+    }
+
     const row = trackRowByTrackId.get(trackId);
     if (row) {
       selectRow(row);
@@ -403,6 +663,16 @@ function Timeline({
     }
 
     e.stopPropagation();
+
+    if (e.button === 0 && (e.shiftKey || isPrimaryModifierPressed(e))) {
+      const row = trackRowByTrackId.get(track.id);
+      if (row) {
+        selectRow(row);
+      } else {
+        onSelectTrack(track.id);
+      }
+      return;
+    }
 
     const rect = e.currentTarget.getBoundingClientRect();
     const offsetX = e.clientX - rect.left;
@@ -429,6 +699,23 @@ function Timeline({
       rightClickDragRef.current = false;
     }
 
+    const activeClipIds = getActiveSelectionForClip(clip.id);
+    const activeEntries = getSelectedClipEntries(activeClipIds);
+    const initialByClipId = {};
+    const initialTrackRowByClipId = {};
+    activeEntries.forEach((entry) => {
+      initialByClipId[entry.clip.id] = {
+        trackId: entry.trackId,
+        timelineStartMs: entry.clip.timelineStartMs,
+        cropStartMs: entry.clip.cropStartMs,
+        cropEndMs: entry.clip.cropEndMs,
+        sourceDurationMs: entry.clip.sourceDurationMs,
+        gainDb: entry.clip.gainDb,
+      };
+      initialTrackRowByClipId[entry.clip.id] = entry.trackRowIndex;
+    });
+    const clickedRowIndex = visibleTrackIndexByTrackId.get(track.id) ?? 0;
+
     setDragState({
       type: dragType,
       clipId: clip.id,
@@ -440,16 +727,46 @@ function Timeline({
       initialCropEndMs: clip.cropEndMs,
       initialGainDb: clip.gainDb,
       initialGainPosition: clipGainDbToPosition(clip.gainDb),
+      activeClipIds,
+      initialByClipId,
+      initialTrackRowByClipId,
+      clickedRowIndex,
+      trackRowOffset: 0,
       sourceDurationMs: clip.sourceDurationMs,  // Store for validation during drag
     });
 
-    setSelectedClipId(clip.id);
+    if (!selectedClipIdSet.has(clip.id)) {
+      setSelectedClipIds([clip.id]);
+      setSelectedClipHistory([clip.id]);
+      setSelectedClipId(clip.id);
+    }
     const row = trackRowByTrackId.get(track.id);
     if (row) {
       selectRow(row);
     } else {
       onSelectTrack(track.id);
     }
+  };
+
+  const getTrackRowAtClientY = (clientY) => {
+    const timelineElement = timelineRef.current;
+    const scrollElement = tracksScrollRef.current;
+    if (!timelineElement || !scrollElement) return null;
+
+    const rect = timelineElement.getBoundingClientRect();
+    const yWithinContent = clientY - rect.top + scrollElement.scrollTop;
+    if (yWithinContent < 0) return null;
+
+    let accumulatedHeight = 0;
+    for (const row of timelineRows) {
+      const rowEnd = accumulatedHeight + row.height;
+      if (yWithinContent >= accumulatedHeight && yWithinContent < rowEnd) {
+        return row.kind === 'track' ? row : null;
+      }
+      accumulatedHeight = rowEnd;
+    }
+
+    return null;
   };
 
   useEffect(() => {
@@ -469,32 +786,229 @@ function Timeline({
       const currentClip = track.clips.find(c => c.id === dragState.clipId);
       if (!currentClip) return;
 
+      const activeClipIds = dragState.activeClipIds?.length
+        ? dragState.activeClipIds
+        : [dragState.clipId];
+      const activeClipIdSet = new Set(activeClipIds);
+      const initialByClipId = dragState.initialByClipId || {
+        [dragState.clipId]: {
+          trackId: dragState.trackId,
+          timelineStartMs: dragState.initialTimelineStartMs,
+          cropStartMs: dragState.initialCropStartMs,
+          cropEndMs: dragState.initialCropEndMs,
+          sourceDurationMs: dragState.sourceDurationMs,
+          gainDb: dragState.initialGainDb,
+        },
+      };
+
       if (dragState.type === 'move') {
-        const proposedTimelineStartMs = Math.max(0, dragState.initialTimelineStartMs + deltaMs);
-        // Constrain move to avoid collisions
-        const constrainedTimelineStartMs = constrainClipMove(
-          { ...currentClip, timelineStartMs: dragState.initialTimelineStartMs },
-          proposedTimelineStartMs,
-          track.clips
-        );
-        updates.timelineStartMs = constrainedTimelineStartMs;
+        const desiredDeltaMs = deltaMs;
+
+        const computeCandidatesForOffset = (rowOffset) => {
+          const candidates = [];
+          for (const clipId of activeClipIds) {
+            const initial = initialByClipId[clipId];
+            const current = clipLocationById.get(clipId);
+            if (!initial || !current) return null;
+            const initialRowIndex = dragState.initialTrackRowByClipId?.[clipId];
+            if (initialRowIndex === undefined) return null;
+            const targetRowIndex = initialRowIndex + rowOffset;
+            const targetTrackId = visibleTrackIdByRowIndex.get(targetRowIndex);
+            if (!targetTrackId) return null;
+            candidates.push({
+              clipId,
+              targetTrackId,
+              clip: {
+                ...current.clip,
+                timelineStartMs: initial.timelineStartMs + desiredDeltaMs,
+              },
+            });
+          }
+          return candidates;
+        };
+
+        let desiredRowOffset = dragState.trackRowOffset ?? 0;
+        const hoveredRow = getTrackRowAtClientY(e.clientY);
+        if (hoveredRow?.trackId) {
+          const hoveredIndex = visibleTrackIndexByTrackId.get(hoveredRow.trackId);
+          if (hoveredIndex !== undefined) {
+            desiredRowOffset = hoveredIndex - (dragState.clickedRowIndex ?? 0);
+          }
+        }
+
+        let candidateEntries = computeCandidatesForOffset(desiredRowOffset);
+        let appliedRowOffset = desiredRowOffset;
+        if (!candidateEntries) {
+          appliedRowOffset = dragState.trackRowOffset ?? 0;
+          candidateEntries = computeCandidatesForOffset(appliedRowOffset);
+        }
+        if (!candidateEntries) {
+          return;
+        }
+
+        const staticClipsByTrack = new Map();
+        project.tracks.forEach((candidateTrack) => {
+          staticClipsByTrack.set(
+            candidateTrack.id,
+            candidateTrack.clips.filter((clip) => !activeClipIdSet.has(clip.id))
+          );
+        });
+
+        const candidateByTrack = new Map();
+        candidateEntries.forEach((entry) => {
+          if (!candidateByTrack.has(entry.targetTrackId)) {
+            candidateByTrack.set(entry.targetTrackId, []);
+          }
+          candidateByTrack.get(entry.targetTrackId).push(entry.clip);
+        });
+
+        let valid = true;
+        for (const entry of candidateEntries) {
+          if (entry.clip.timelineStartMs < 0) {
+            valid = false;
+            break;
+          }
+        }
+
+        if (valid) {
+          for (const [targetTrackId, movingClips] of candidateByTrack.entries()) {
+            const sortedMoving = [...movingClips].sort((a, b) => a.timelineStartMs - b.timelineStartMs);
+            for (let i = 1; i < sortedMoving.length; i += 1) {
+              const previous = sortedMoving[i - 1];
+              const current = sortedMoving[i];
+              const previousEnd = previous.timelineStartMs + getClipDurationMs(previous);
+              if (current.timelineStartMs < previousEnd) {
+                valid = false;
+                break;
+              }
+            }
+            if (!valid) break;
+
+            const staticClips = staticClipsByTrack.get(targetTrackId) || [];
+            for (const movingClip of movingClips) {
+              if (!canAddClip(movingClip, staticClips)) {
+                valid = false;
+                break;
+              }
+            }
+            if (!valid) break;
+          }
+        }
+
+        if (!valid) {
+          return;
+        }
+
+        const additionsByTrack = new Map();
+        candidateEntries.forEach((entry) => {
+          if (!additionsByTrack.has(entry.targetTrackId)) {
+            additionsByTrack.set(entry.targetTrackId, []);
+          }
+          additionsByTrack.get(entry.targetTrackId).push(entry.clip);
+        });
+
+        updateProject((proj) => ({
+          ...proj,
+          tracks: proj.tracks.map((candidateTrack) => {
+            const remaining = candidateTrack.clips.filter((clip) => !activeClipIdSet.has(clip.id));
+            const additions = additionsByTrack.get(candidateTrack.id) || [];
+            return {
+              ...candidateTrack,
+              clips: [...remaining, ...additions],
+            };
+          }),
+        }), activeClipIds.length > 1 ? 'Move clips' : 'Move clip');
+
+        const clickedCandidate = candidateEntries.find((entry) => entry.clipId === dragState.clipId);
+        if (clickedCandidate) {
+          const row = trackRowByTrackId.get(clickedCandidate.targetTrackId);
+          if (row) selectRow(row);
+          setDragState((prev) => ({
+            ...prev,
+            trackId: clickedCandidate.targetTrackId,
+            trackRowOffset: appliedRowOffset,
+          }));
+        }
+        return;
 
       } else if (dragState.type === 'crop-start') {
+        if (activeClipIds.length > 1) {
+          const desiredDeltaMs = deltaMs;
+          let minAllowedDelta = -Infinity;
+          let maxAllowedDelta = Infinity;
+          activeClipIds.forEach((clipId) => {
+            const initial = initialByClipId[clipId];
+            if (!initial) return;
+            minAllowedDelta = Math.max(minAllowedDelta, -initial.cropStartMs, -initial.timelineStartMs);
+            maxAllowedDelta = Math.min(
+              maxAllowedDelta,
+              initial.cropEndMs - MIN_CLIP_DURATION_MS - initial.cropStartMs
+            );
+          });
+          const appliedDeltaMs = Math.max(minAllowedDelta, Math.min(maxAllowedDelta, desiredDeltaMs));
+          updateProject((proj) => ({
+            ...proj,
+            tracks: proj.tracks.map((candidateTrack) => ({
+              ...candidateTrack,
+              clips: candidateTrack.clips.map((candidateClip) => {
+                if (!activeClipIdSet.has(candidateClip.id)) return candidateClip;
+                const initial = initialByClipId[candidateClip.id];
+                if (!initial) return candidateClip;
+                return {
+                  ...candidateClip,
+                  cropStartMs: initial.cropStartMs + appliedDeltaMs,
+                  timelineStartMs: initial.timelineStartMs + appliedDeltaMs,
+                };
+              }),
+            })),
+          }), 'Crop clips start');
+          return;
+        }
+
         const proposedCropStartMs = dragState.initialCropStartMs + deltaMs;
-        // Constrain crop start to avoid collisions
         const constrainedCropStartMs = constrainCropStart(
           { ...currentClip, cropStartMs: dragState.initialCropStartMs },
           proposedCropStartMs,
           track.clips
         );
         const cropDelta = constrainedCropStartMs - dragState.initialCropStartMs;
-        
         updates.cropStartMs = constrainedCropStartMs;
         updates.timelineStartMs = dragState.initialTimelineStartMs + cropDelta;
 
       } else if (dragState.type === 'crop-end') {
+        if (activeClipIds.length > 1) {
+          const desiredDeltaMs = deltaMs;
+          let minAllowedDelta = -Infinity;
+          let maxAllowedDelta = Infinity;
+          activeClipIds.forEach((clipId) => {
+            const initial = initialByClipId[clipId];
+            if (!initial) return;
+            minAllowedDelta = Math.max(
+              minAllowedDelta,
+              initial.cropStartMs + MIN_CLIP_DURATION_MS - initial.cropEndMs
+            );
+            maxAllowedDelta = Math.min(maxAllowedDelta, initial.sourceDurationMs - initial.cropEndMs);
+          });
+          const appliedDeltaMs = Math.max(minAllowedDelta, Math.min(maxAllowedDelta, desiredDeltaMs));
+          updateProject((proj) => ({
+            ...proj,
+            tracks: proj.tracks.map((candidateTrack) => ({
+              ...candidateTrack,
+              clips: candidateTrack.clips.map((candidateClip) => {
+                if (!activeClipIdSet.has(candidateClip.id)) return candidateClip;
+                const initial = initialByClipId[candidateClip.id];
+                if (!initial) return candidateClip;
+                return {
+                  ...candidateClip,
+                  cropEndMs: initial.cropEndMs + appliedDeltaMs,
+                };
+              }),
+            })),
+          }), 'Crop clips end');
+          return;
+        }
+
         const proposedCropEndMs = dragState.initialCropEndMs + deltaMs;
-        // Constrain crop end to avoid collisions
         const constrainedCropEndMs = constrainCropEnd(
           { ...currentClip, cropEndMs: dragState.initialCropEndMs, sourceDurationMs: dragState.sourceDurationMs },
           proposedCropEndMs,
@@ -515,7 +1029,40 @@ function Timeline({
           Math.min(1, dragState.initialGainPosition + deltaPosition)
         );
         const nextGainDb = positionToClipGainDb(nextPosition);
-        updates.gainDb = Math.abs(nextGainDb) < 0.1 ? 0 : nextGainDb;
+
+        if (activeClipIds.length > 1) {
+          const clickedInitial = initialByClipId[dragState.clipId]?.gainDb ?? dragState.initialGainDb;
+          const desiredDeltaDb = nextGainDb - clickedInitial;
+          let minAllowedDeltaDb = -Infinity;
+          let maxAllowedDeltaDb = Infinity;
+          activeClipIds.forEach((clipId) => {
+            const initial = initialByClipId[clipId];
+            if (!initial) return;
+            minAllowedDeltaDb = Math.max(minAllowedDeltaDb, MIN_CLIP_GAIN_DB - initial.gainDb);
+            maxAllowedDeltaDb = Math.min(maxAllowedDeltaDb, MAX_CLIP_GAIN_DB - initial.gainDb);
+          });
+          const appliedDeltaDb = Math.max(minAllowedDeltaDb, Math.min(maxAllowedDeltaDb, desiredDeltaDb));
+          updateProject((proj) => ({
+            ...proj,
+            tracks: proj.tracks.map((candidateTrack) => ({
+              ...candidateTrack,
+              clips: candidateTrack.clips.map((candidateClip) => {
+                if (!activeClipIdSet.has(candidateClip.id)) return candidateClip;
+                const initial = initialByClipId[candidateClip.id];
+                if (!initial) return candidateClip;
+                const nextDb = Math.max(MIN_CLIP_GAIN_DB, Math.min(MAX_CLIP_GAIN_DB, initial.gainDb + appliedDeltaDb));
+                return {
+                  ...candidateClip,
+                  gainDb: Math.abs(nextDb) < 0.1 ? 0 : nextDb,
+                };
+              }),
+            })),
+          }), 'Adjust clip gains');
+          return;
+        }
+
+        const clippedDb = Math.max(MIN_CLIP_GAIN_DB, Math.min(MAX_CLIP_GAIN_DB, nextGainDb));
+        updates.gainDb = Math.abs(clippedDb) < 0.1 ? 0 : clippedDb;
       }
 
       if (Object.keys(updates).length > 0) {
@@ -526,11 +1073,30 @@ function Timeline({
     const handleMouseUp = () => {
       if (dragState.type === 'gain') {
         if (!rightClickDragRef.current) {
-          const targetTrack = project.tracks.find((t) => t.id === dragState.trackId);
-          const targetClip = targetTrack?.clips.find((c) => c.id === dragState.clipId);
-          if (targetTrack && targetClip) {
-            onUpdateClip(targetTrack.id, targetClip.id, { muted: !targetClip.muted }, 'update');
-          }
+          const targetClipIds = dragState.activeClipIds?.length
+            ? dragState.activeClipIds
+            : [dragState.clipId];
+          const targetClipIdSet = new Set(targetClipIds);
+          const targetClips = [];
+          project.tracks.forEach((candidateTrack) => {
+            candidateTrack.clips.forEach((candidateClip) => {
+              if (targetClipIdSet.has(candidateClip.id)) {
+                targetClips.push(candidateClip);
+              }
+            });
+          });
+          const shouldMute = !targetClips.every((candidateClip) => candidateClip.muted);
+          updateProject((proj) => ({
+            ...proj,
+            tracks: proj.tracks.map((candidateTrack) => ({
+              ...candidateTrack,
+              clips: candidateTrack.clips.map((candidateClip) => (
+                targetClipIdSet.has(candidateClip.id)
+                  ? { ...candidateClip, muted: shouldMute }
+                  : candidateClip
+              )),
+            })),
+          }), shouldMute ? 'Mute clips' : 'Unmute clips');
         }
         rightClickDragRef.current = false;
       }
@@ -544,29 +1110,119 @@ function Timeline({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragState, pixelsPerMs, onUpdateClip]);
+  }, [dragState, pixelsPerMs, onUpdateClip, project.tracks, updateProject, timelineRows]);
+
+  useEffect(() => {
+    if (!timelineSelectionState) return;
+
+    const handleMouseMove = (e) => {
+      const current = timelineSelectionRef.current;
+      if (!current) return;
+      const point = getTimelineContentPoint(e.clientX, e.clientY);
+      if (!point) return;
+
+      const movedNow = (
+        e.clientX !== current.startClientX ||
+        e.clientY !== current.startClientY
+      );
+      const next = {
+        ...current,
+        currentClientX: e.clientX,
+        currentClientY: e.clientY,
+        currentX: point.x,
+        currentY: point.y,
+        moved: current.moved || movedNow,
+      };
+      if (next.moved) {
+        timelineSelectionSuppressClickRef.current = true;
+      }
+      timelineSelectionRef.current = next;
+      setTimelineSelectionState(next);
+
+      if (!next.moved) return;
+      const selectionRect = getSelectionRect(next);
+      const selectedIds = getClipIdsInSelectionRect(selectionRect);
+      setSelectedClipIds(selectedIds);
+      setSelectedClipHistory(selectedIds);
+      setSelectedClipId(selectedIds[selectedIds.length - 1] || null);
+    };
+
+    const handleMouseUp = (e) => {
+      const current = timelineSelectionRef.current;
+      if (!current) return;
+
+      const noMovement = (
+        !current.moved &&
+        e.clientX === current.startClientX &&
+        e.clientY === current.startClientY
+      );
+
+      if (noMovement) {
+        const point = getTimelineContentPoint(e.clientX, e.clientY);
+        if (point) {
+          const timeMs = point.x / pixelsPerMs;
+          if (timeMs >= 0 && timeMs <= (projectDurationMs || minZoomDurationMs)) {
+            onSeek(timeMs);
+          }
+        }
+        clearSelectedClips();
+      } else {
+        timelineSelectionSuppressClickRef.current = true;
+      }
+
+      timelineSelectionRef.current = null;
+      setTimelineSelectionState(null);
+      window.requestAnimationFrame(() => {
+        timelineSelectionSuppressClickRef.current = false;
+      });
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [
+    timelineSelectionState,
+    timelineRows,
+    pixelsPerMs,
+    projectDurationMs,
+    minZoomDurationMs,
+    onSeek,
+  ]);
 
   useEffect(() => {
     if (selectedRowKind === 'group') {
-      setSelectedClipId(null);
+      clearSelectedClips();
     }
   }, [selectedRowKind]);
 
   useEffect(() => {
-    if (!selectedClipId) return;
-    if (!selectedTrackId) {
-      setSelectedClipId(null);
+    const validClipIds = new Set();
+    project.tracks.forEach((track) => {
+      track.clips.forEach((clip) => validClipIds.add(clip.id));
+    });
+
+    const nextSelected = selectedClipIds.filter((id) => validClipIds.has(id));
+    const nextHistory = selectedClipHistory.filter((id) => validClipIds.has(id));
+
+    if (nextSelected.length !== selectedClipIds.length) {
+      setSelectedClipIds(nextSelected);
+    }
+    if (nextHistory.length !== selectedClipHistory.length) {
+      setSelectedClipHistory(nextHistory);
+    }
+
+    const fallbackSelectedClipId = getLastSelectedFromHistory(nextSelected, nextHistory);
+    if (selectedClipId && !validClipIds.has(selectedClipId)) {
+      setSelectedClipId(fallbackSelectedClipId);
       return;
     }
-
-    const clipTrack = project.tracks.find(track =>
-      track.clips.some(clip => clip.id === selectedClipId)
-    );
-
-    if (!clipTrack || clipTrack.id !== selectedTrackId) {
-      setSelectedClipId(null);
+    if (selectedClipId && !nextSelected.includes(selectedClipId)) {
+      setSelectedClipId(fallbackSelectedClipId);
     }
-  }, [selectedClipId, selectedTrackId, project.tracks]);
+  }, [selectedClipId, selectedClipIds, selectedClipHistory, project.tracks]);
 
   useEffect(() => {
     if (!shortcutsEnabled && !deleteClipShortcutEnabled) return;
@@ -576,53 +1232,76 @@ function Timeline({
 
       const hasTrackSelection = selectedRowKind !== 'group' && Boolean(selectedTrackId);
       const selectedTrack = hasTrackSelection ? project.tracks.find(t => t.id === selectedTrackId) : null;
-      const selectedClip = selectedTrack?.clips.find(c => c.id === selectedClipId);
+      const selectedEntries = getSelectedClipEntries(selectedClipIds);
+      const hasSelectedClips = selectedEntries.length > 0;
+      const focusedSelectedEntry = selectedClipId
+        ? selectedEntries.find((entry) => entry.clip.id === selectedClipId)
+        : null;
+      const selectedClip = focusedSelectedEntry?.clip
+        || (selectedTrack ? selectedTrack.clips.find(c => c.id === selectedClipId) : null);
 
-      if (deleteClipShortcutEnabled && (e.code === 'Delete' || e.code === 'Backspace') && selectedClip && hasTrackSelection) {
+      if (deleteClipShortcutEnabled && (e.code === 'Delete' || e.code === 'Backspace') && hasSelectedClips) {
         e.preventDefault();
-        onUpdateClip(selectedTrackId, selectedClipId, null, 'delete');
-        setSelectedClipId(null);
+        const selectedIdSet = new Set(selectedClipIds);
+        updateProject((proj) => ({
+          ...proj,
+          tracks: proj.tracks.map((candidateTrack) => ({
+            ...candidateTrack,
+            clips: candidateTrack.clips.filter((candidateClip) => !selectedIdSet.has(candidateClip.id)),
+          })),
+        }), 'Delete clips');
+        clearSelectedClips();
         return;
       }
 
-      if (deleteClipShortcutEnabled && (e.code === 'Delete' || e.code === 'Backspace') && !selectedClip && hasTrackSelection) {
+      if (deleteClipShortcutEnabled && (e.code === 'Delete' || e.code === 'Backspace') && !hasSelectedClips && hasTrackSelection) {
         e.preventDefault();
         onDeleteTrackShortcut?.(selectedTrackId);
         return;
       }
 
-      if (e.code === 'KeyT' && isPrimaryModifierPressed(e) && selectedClip && hasTrackSelection) {
+      if (e.code === 'KeyT' && isPrimaryModifierPressed(e) && hasSelectedClips) {
         e.preventDefault();
-        const track = project.tracks.find(t => t.id === selectedTrackId);
-        if (!track) return;
+        const selectedIdSet = new Set(selectedClipIds);
+        const rightClipIds = [];
 
-        const clipStartMs = selectedClip.timelineStartMs;
-        const clipDurationMs = selectedClip.cropEndMs - selectedClip.cropStartMs;
-        const clipEndMs = clipStartMs + clipDurationMs;
+        updateProject((proj) => ({
+          ...proj,
+          tracks: proj.tracks.map((candidateTrack) => ({
+            ...candidateTrack,
+            clips: candidateTrack.clips.flatMap((candidateClip) => {
+              if (!selectedIdSet.has(candidateClip.id)) return [candidateClip];
+              const clipStartMs = candidateClip.timelineStartMs;
+              const clipEndMs = candidateClip.timelineStartMs + getClipDurationMs(candidateClip);
+              if (currentTimeMs <= clipStartMs || currentTimeMs >= clipEndMs) return [candidateClip];
 
-        if (currentTimeMs <= clipStartMs || currentTimeMs >= clipEndMs) return;
+              const splitOffsetMs = currentTimeMs - clipStartMs;
+              const splitCropMs = candidateClip.cropStartMs + splitOffsetMs;
+              const leftClip = {
+                ...candidateClip,
+                id: crypto.randomUUID(),
+                timelineStartMs: clipStartMs,
+                cropStartMs: candidateClip.cropStartMs,
+                cropEndMs: splitCropMs,
+              };
+              const rightClip = {
+                ...candidateClip,
+                id: crypto.randomUUID(),
+                timelineStartMs: currentTimeMs,
+                cropStartMs: splitCropMs,
+                cropEndMs: candidateClip.cropEndMs,
+              };
+              rightClipIds.push(rightClip.id);
+              return [leftClip, rightClip];
+            }),
+          })),
+        }), 'Split clips');
 
-        const splitOffsetMs = currentTimeMs - clipStartMs;
-        const splitCropMs = selectedClip.cropStartMs + splitOffsetMs;
-
-        const leftClip = {
-          ...selectedClip,
-          id: crypto.randomUUID(),
-          timelineStartMs: clipStartMs,
-          cropStartMs: selectedClip.cropStartMs,
-          cropEndMs: splitCropMs,
-        };
-
-        const rightClip = {
-          ...selectedClip,
-          id: crypto.randomUUID(),
-          timelineStartMs: currentTimeMs,
-          cropStartMs: splitCropMs,
-          cropEndMs: selectedClip.cropEndMs,
-        };
-
-        onUpdateClip(selectedTrackId, selectedClipId, { left: leftClip, right: rightClip }, 'split');
-        setSelectedClipId(rightClip.id);
+        if (rightClipIds.length > 0) {
+          setSelectedClipIds(rightClipIds);
+          setSelectedClipHistory(rightClipIds);
+          setSelectedClipId(rightClipIds[rightClipIds.length - 1]);
+        }
         return;
       }
 
@@ -670,76 +1349,240 @@ function Timeline({
         const nextRow = timelineRows[nextIndex];
         if (nextRow) {
           selectRow(nextRow);
-          setSelectedClipId(null);
+          clearSelectedClips();
         }
         return;
       }
 
       if (!shortcutsEnabled) return;
 
-      if (e.code === 'KeyX' && isPrimaryModifierPressed(e) && selectedClip && hasTrackSelection) {
+      if (e.code === 'KeyX' && isPrimaryModifierPressed(e) && (hasSelectedClips || selectedClip)) {
         e.preventDefault();
-        setClipboardClip({ ...selectedClip });
-        onUpdateClip(selectedTrackId, selectedClipId, null, 'delete');
-        setSelectedClipId(null);
+        const clipIdsToCut = hasSelectedClips
+          ? selectedClipIds
+          : (selectedClip ? [selectedClip.id] : []);
+        const payload = buildClipboardPayload(clipIdsToCut);
+        if (!payload) return;
+        setClipboardClip(payload);
+
+        const cutIdSet = new Set(clipIdsToCut);
+        updateProject((proj) => ({
+          ...proj,
+          tracks: proj.tracks.map((candidateTrack) => ({
+            ...candidateTrack,
+            clips: candidateTrack.clips.filter((candidateClip) => !cutIdSet.has(candidateClip.id)),
+          })),
+        }), 'Cut clips');
+        clearSelectedClips();
         return;
       }
 
-      if (e.code === 'KeyC' && isPrimaryModifierPressed(e) && selectedClip) {
+      if (e.code === 'KeyC' && isPrimaryModifierPressed(e) && (hasSelectedClips || selectedClip)) {
         e.preventDefault();
-        setClipboardClip({ ...selectedClip });
+        const clipIdsToCopy = hasSelectedClips
+          ? selectedClipIds
+          : (selectedClip ? [selectedClip.id] : []);
+        const payload = buildClipboardPayload(clipIdsToCopy);
+        if (payload) {
+          setClipboardClip(payload);
+        }
       }
 
       if (e.code === 'KeyV' && isPrimaryModifierPressed(e) && clipboardClip && hasTrackSelection) {
         e.preventDefault();
         const track = project.tracks.find(t => t.id === selectedTrackId);
         if (!track) return;
-        
-        const newClip = {
-          ...clipboardClip,
-          id: crypto.randomUUID(),
-          timelineStartMs: currentTimeMs,
-        };
-        
-        // Check if paste position is clear, otherwise find safe position
-        const safePosition = findSafePosition(newClip, track.clips, currentTimeMs);
-        if (safePosition !== null) {
-          newClip.timelineStartMs = safePosition;
-          onUpdateClip(selectedTrackId, null, newClip, 'add');
-        } else {
-          // Could not find safe position - show error
-          console.warn('Cannot paste: no space available on track');
+
+        if (clipboardClip.type === 'single' || clipboardClip.blobId) {
+          const singleClip = clipboardClip.type === 'single' ? clipboardClip.clip : clipboardClip;
+          const newClip = {
+            ...singleClip,
+            id: crypto.randomUUID(),
+            timelineStartMs: currentTimeMs,
+          };
+          const safePosition = findSafePosition(newClip, track.clips, currentTimeMs);
+          if (safePosition !== null) {
+            newClip.timelineStartMs = safePosition;
+            onUpdateClip(selectedTrackId, null, newClip, 'add');
+            setSelectedClipIds([newClip.id]);
+            setSelectedClipHistory([newClip.id]);
+            setSelectedClipId(newClip.id);
+          } else {
+            playErrorBeep();
+            console.warn('Cannot paste: no space available on track');
+          }
+          return;
         }
+
+        const anchorTrackIndex = visibleTrackIndexByTrackId.get(selectedTrackId);
+        if (anchorTrackIndex === undefined || !Array.isArray(clipboardClip.items)) {
+          playErrorBeep();
+          return;
+        }
+
+        const candidatesByTrack = new Map();
+        const pastedIds = [];
+        let valid = true;
+        for (const item of clipboardClip.items) {
+          const targetTrackIndex = anchorTrackIndex + item.trackOffset;
+          const targetTrackId = visibleTrackIdByRowIndex.get(targetTrackIndex);
+          const targetTrack = project.tracks.find((candidateTrack) => candidateTrack.id === targetTrackId);
+          if (!targetTrack) {
+            valid = false;
+            break;
+          }
+          const timelineStartMs = currentTimeMs + item.startOffsetMs;
+          if (timelineStartMs < 0) {
+            valid = false;
+            break;
+          }
+          const newClip = {
+            ...item.clip,
+            id: crypto.randomUUID(),
+            timelineStartMs,
+          };
+          pastedIds.push(newClip.id);
+          if (!candidatesByTrack.has(targetTrack.id)) {
+            candidatesByTrack.set(targetTrack.id, []);
+          }
+          candidatesByTrack.get(targetTrack.id).push(newClip);
+        }
+
+        if (!valid) {
+          playErrorBeep();
+          return;
+        }
+
+        for (const [trackId, newClips] of candidatesByTrack.entries()) {
+          const targetTrack = project.tracks.find((candidateTrack) => candidateTrack.id === trackId);
+          if (!targetTrack) {
+            valid = false;
+            break;
+          }
+          const simulated = [...targetTrack.clips];
+          for (const newClip of newClips) {
+            if (!canAddClip(newClip, simulated)) {
+              valid = false;
+              break;
+            }
+            simulated.push(newClip);
+          }
+          if (!valid) break;
+        }
+
+        if (!valid) {
+          playErrorBeep();
+          return;
+        }
+
+        updateProject((proj) => ({
+          ...proj,
+          tracks: proj.tracks.map((candidateTrack) => {
+            const additions = candidatesByTrack.get(candidateTrack.id) || [];
+            if (!additions.length) return candidateTrack;
+            return {
+              ...candidateTrack,
+              clips: [...candidateTrack.clips, ...additions],
+            };
+          }),
+        }), 'Paste clips');
+        setSelectedClipIds(pastedIds);
+        setSelectedClipHistory(pastedIds);
+        setSelectedClipId(pastedIds[pastedIds.length - 1] || null);
+        return;
       }
 
-      if (e.code === 'KeyD' && isPrimaryModifierPressed(e) && selectedClip && hasTrackSelection) {
+      if (e.code === 'KeyD' && isPrimaryModifierPressed(e) && (hasSelectedClips || selectedClip)) {
         e.preventDefault();
-        const track = project.tracks.find(t => t.id === selectedTrackId);
-        if (!track) return;
-        
-        const preferredPosition = selectedClip.timelineStartMs + (selectedClip.cropEndMs - selectedClip.cropStartMs);
-        const newClip = {
-          ...selectedClip,
-          id: crypto.randomUUID(),
-          timelineStartMs: preferredPosition,
-        };
-        
-        // Check if duplicate position is clear, otherwise find safe position
-        const safePosition = findSafePosition(newClip, track.clips, preferredPosition);
-        if (safePosition !== null) {
-          newClip.timelineStartMs = safePosition;
-          onUpdateClip(selectedTrackId, null, newClip, 'add');
-        } else {
-          // Could not find safe position - show error
-          console.warn('Cannot duplicate: no space available on track');
+        const entries = hasSelectedClips
+          ? selectedEntries
+          : (selectedClip ? [{ trackId: selectedTrackId, clip: selectedClip }] : []);
+        if (!entries.length) return;
+
+        const duplicatesByTrack = new Map();
+        const duplicateIds = [];
+        let valid = true;
+        entries.forEach((entry) => {
+          const durationMs = getClipDurationMs(entry.clip);
+          const duplicate = {
+            ...entry.clip,
+            id: crypto.randomUUID(),
+            timelineStartMs: entry.clip.timelineStartMs + durationMs,
+          };
+          duplicateIds.push(duplicate.id);
+          if (!duplicatesByTrack.has(entry.trackId)) {
+            duplicatesByTrack.set(entry.trackId, []);
+          }
+          duplicatesByTrack.get(entry.trackId).push(duplicate);
+        });
+
+        for (const [trackId, duplicates] of duplicatesByTrack.entries()) {
+          const targetTrack = project.tracks.find((candidateTrack) => candidateTrack.id === trackId);
+          if (!targetTrack) {
+            valid = false;
+            break;
+          }
+          const simulated = [...targetTrack.clips];
+          for (const duplicate of duplicates) {
+            if (!canAddClip(duplicate, simulated)) {
+              valid = false;
+              break;
+            }
+            simulated.push(duplicate);
+          }
+          if (!valid) break;
         }
+
+        if (!valid) {
+          playErrorBeep();
+          return;
+        }
+
+        updateProject((proj) => ({
+          ...proj,
+          tracks: proj.tracks.map((candidateTrack) => {
+            const additions = duplicatesByTrack.get(candidateTrack.id) || [];
+            if (!additions.length) return candidateTrack;
+            return {
+              ...candidateTrack,
+              clips: [...candidateTrack.clips, ...additions],
+            };
+          }),
+        }), 'Duplicate clips');
+        setSelectedClipIds(duplicateIds);
+        setSelectedClipHistory(duplicateIds);
+        setSelectedClipId(duplicateIds[duplicateIds.length - 1] || null);
+        return;
       }
 
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [shortcutsEnabled, deleteClipShortcutEnabled, selectedClipId, selectedTrackId, selectedNodeId, selectedRowKind, clipboardClip, currentTimeMs, project.tracks, onUpdateClip, timelineRows, onDeleteTrackShortcut]);
+  }, [
+    shortcutsEnabled,
+    deleteClipShortcutEnabled,
+    selectedClipId,
+    selectedClipIds,
+    selectedTrackId,
+    selectedNodeId,
+    selectedRowKind,
+    clipboardClip,
+    currentTimeMs,
+    project.tracks,
+    onUpdateClip,
+    onSelectTrack,
+    onDeleteTrackShortcut,
+    updateProject,
+    timelineRows,
+    visibleTrackIndexByTrackId,
+    visibleTrackIdByRowIndex,
+    getSelectedClipEntries,
+    buildClipboardPayload,
+    clearSelectedClips,
+    getClipDurationMs,
+    playErrorBeep,
+  ]);
 
   const handleContextMenu = (e) => {
     e.preventDefault();
@@ -1238,7 +2081,7 @@ function Timeline({
     <div 
       ref={timelineRef}
       className={`${sharedVerticalScroll ? 'relative' : 'flex-1 overflow-hidden relative'} bg-gray-900 w-full min-w-0`}
-      onClick={handleTimelineClick}
+      onMouseDown={handleTimelineMouseDown}
       onContextMenu={handleContextMenu}
     >
       <div 
@@ -1270,6 +2113,20 @@ function Timeline({
                   left: `${currentTimeMs * pixelsPerMs}px`,
                 }}
               />
+              {timelineSelectionState?.moved && (() => {
+                const selectionRect = getSelectionRect(timelineSelectionState);
+                return (
+                  <div
+                    className="absolute pointer-events-none z-40 border border-blue-400 bg-blue-500/20"
+                    style={{
+                      left: `${selectionRect.left}px`,
+                      top: `${selectionRect.top}px`,
+                      width: `${selectionRect.width}px`,
+                      height: `${selectionRect.height}px`,
+                    }}
+                  />
+                );
+              })()}
               {timelineRows.map((row, rowIndex) => {
                 const trackY = getTrackYPosition(timelineRows, rowIndex);
                 if (row.kind === 'group') {
@@ -1282,18 +2139,9 @@ function Timeline({
                       className="border-b border-gray-700 relative bg-gray-900/80"
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (!dragState) {
-                          const rect = timelineRef.current?.getBoundingClientRect();
-                          if (rect) {
-                            const x = e.clientX - rect.left + scrollLeft;
-                            const timeMs = x / pixelsPerMs;
-                            if (timeMs >= 0 && timeMs <= (projectDurationMs || minZoomDurationMs)) {
-                              onSeek(timeMs);
-                            }
-                          }
-                        }
+                        if (timelineSelectionSuppressClickRef.current) return;
                         selectRow(row);
-                        setSelectedClipId(null);
+                        clearSelectedClips();
                       }}
                       style={{
                         height: `${row.height}px`,
@@ -1393,8 +2241,9 @@ function Timeline({
                       return (
                         <div
                           key={clip.id}
+                          data-clip-id={clip.id}
                           className={`absolute rounded overflow-hidden ${
-                            selectedClipId === clip.id
+                            selectedClipIds.includes(clip.id)
                               ? 'ring-2 ring-blue-500'
                               : 'hover:ring-2 hover:ring-gray-500'
                           }`}
