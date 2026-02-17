@@ -354,6 +354,8 @@ function Timeline({
   const groupTimelinePreviewByNodeId = useMemo(() => {
     const groupTrackIdsByNodeId = getGroupDescendantTrackIdsByGroup(project);
     const trackById = new Map((project.tracks || []).map((track) => [track.id, track]));
+    const mix = getEffectiveTrackMix(project);
+    const trackStateById = mix.statesByTrackId;
     const byGroupNodeId = new Map();
 
     for (const [groupNodeId, trackIds] of groupTrackIdsByNodeId.entries()) {
@@ -361,6 +363,8 @@ function Timeline({
       for (const trackId of trackIds) {
         const track = trackById.get(trackId);
         if (!track?.clips?.length) continue;
+        const state = trackStateById.get(trackId);
+        if (state?.muted) continue;
         for (const clip of track.clips) {
           if (clip?.muted) continue;
           const durationMs = Math.max(0, (clip.cropEndMs || 0) - (clip.cropStartMs || 0));
