@@ -38,6 +38,21 @@ import {
   toggleGroupCollapsed,
 } from '../utils/trackTree';
 
+const SUPPORTED_IMPORT_EXTENSIONS = new Set(['wav', 'mp3', 'flac']);
+
+const isFileDragEvent = (event) => {
+  const types = event?.dataTransfer?.types;
+  return Boolean(types && Array.from(types).includes('Files'));
+};
+
+const getSupportedAudioFiles = (dataTransfer) => {
+  const files = Array.from(dataTransfer?.files || []);
+  return files.filter((file) => {
+    const extension = file.name.toLowerCase().split('.').pop();
+    return SUPPORTED_IMPORT_EXTENSIONS.has(extension);
+  });
+};
+
 function Editor({ onBackToDashboard }) {
   const {
     project,
@@ -94,6 +109,7 @@ function Editor({ onBackToDashboard }) {
   const timelineScrollRef = useRef(null);
   const isTrackListScrollingRef = useRef(false);
   const isTimelineScrollingRef = useRef(false);
+  const timelineRowsScrollAreaRef = useRef(null);
 
   // Keep project ref updated
   useEffect(() => {
@@ -882,6 +898,137 @@ function Editor({ onBackToDashboard }) {
     }, 'Import audio files');
 
     console.log(`Import complete: ${newTracks.length} tracks added`);
+  };
+
+  const handleDropImportToTrackAtPlayhead = async (files, targetRow) => {
+    if (!targetRow?.trackId || !targetRow?.nodeId || !files.length) return;
+
+    const snapshotTrack = projectRef.current?.tracks?.find((track) => track.id === targetRow.trackId);
+    if (!snapshotTrack || (snapshotTrack.clips?.length || 0) > 0) {
+      return;
+    }
+
+    const importedFiles = [];
+    for (const file of files) {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const audioBuffer = await audioManager.decodeAudioFile(arrayBuffer);
+        const blob = audioManager.audioBufferToBlob(audioBuffer);
+        const blobId = await storeMediaBlob(file.name, audioBuffer, blob);
+        audioManager.mediaCache.set(blobId, audioBuffer);
+        importedFiles.push({
+          name: file.name.replace(/\.[^/.]+$/, ''),
+          blobId,
+          durationMs: audioBuffer.duration * 1000,
+        });
+      } catch (error) {
+        console.error(`Failed to import ${file.name}:`, error);
+        throw new Error(`Failed to import ${file.name}: ${error.message}`);
+      }
+    }
+
+    if (!importedFiles.length) return;
+
+    updateProject((proj) => {
+      let nextProject = normalizeTrackTree(proj);
+      const visibleRows = getVisibleTimelineRows(nextProject);
+      const droppedIndex = visibleRows.findIndex((row) => row.nodeId === targetRow.nodeId);
+      if (droppedIndex < 0) return nextProject;
+      const droppedRow = visibleRows[droppedIndex];
+      if (droppedRow.kind !== 'track') return nextProject;
+
+      const trackById = new Map((nextProject.tracks || []).map((track) => [track.id, track]));
+      const droppedTrack = trackById.get(droppedRow.trackId);
+      if (!droppedTrack || (droppedTrack.clips?.length || 0) > 0) {
+        return nextProject;
+      }
+
+      const emptyTrackIds = [];
+      for (let idx = droppedIndex; idx < visibleRows.length; idx += 1) {
+        const row = visibleRows[idx];
+        if (row.kind !== 'track') continue;
+        const track = trackById.get(row.trackId);
+        if (track && (track.clips?.length || 0) === 0) {
+          emptyTrackIds.push(track.id);
+        }
+      }
+
+      const droppedNode = (nextProject.trackTree || []).find(
+        (node) => node.kind === 'track' && node.id === droppedRow.nodeId
+      );
+      if (!droppedNode) return nextProject;
+      const targetParentId = droppedNode.parentId ?? null;
+      const dropRole = droppedTrack.role || TRACK_ROLES.INSTRUMENT;
+
+      const addedTracks = [];
+      const assignments = importedFiles.map((fileData, fileIndex) => {
+        if (fileIndex < emptyTrackIds.length) {
+          return { trackId: emptyTrackIds[fileIndex], fileData };
+        }
+        const newTrack = createTrack(fileData.name || `Track ${nextProject.tracks.length + addedTracks.length + 1}`, dropRole);
+        addedTracks.push(newTrack);
+        return { trackId: newTrack.id, fileData, isNewTrack: true };
+      });
+
+      if (addedTracks.length > 0) {
+        nextProject = {
+          ...nextProject,
+          tracks: [...nextProject.tracks, ...addedTracks],
+        };
+      }
+
+      const clipsByTrackId = new Map();
+      assignments.forEach(({ trackId, fileData }) => {
+        const clip = createClip(fileData.blobId, currentTimeMs, fileData.durationMs);
+        const existing = clipsByTrackId.get(trackId) || [];
+        existing.push(clip);
+        clipsByTrackId.set(trackId, existing);
+      });
+
+      nextProject = {
+        ...nextProject,
+        tracks: nextProject.tracks.map((track) => {
+          const clipsToAdd = clipsByTrackId.get(track.id);
+          if (!clipsToAdd?.length) return track;
+          return {
+            ...track,
+            clips: [...track.clips, ...clipsToAdd],
+          };
+        }),
+      };
+
+      if (addedTracks.length > 0) {
+        const siblings = (nextProject.trackTree || [])
+          .filter((node) => (node.parentId ?? null) === targetParentId)
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        const droppedSiblingIndex = siblings.findIndex((node) => node.id === droppedNode.id);
+        let insertIndex = droppedSiblingIndex >= 0 ? droppedSiblingIndex + 1 : siblings.length;
+
+        addedTracks.forEach((newTrack) => {
+          nextProject = attachTrackNode(nextProject, newTrack.id, targetParentId, insertIndex);
+          insertIndex += 1;
+        });
+      }
+
+      return reorderTracksByTree(nextProject);
+    }, 'Drop import audio files');
+  };
+
+  const getTrackRowAtClientY = (clientY) => {
+    const scrollArea = timelineRowsScrollAreaRef.current;
+    if (!scrollArea) return null;
+    const rect = scrollArea.getBoundingClientRect();
+    if (clientY < rect.top || clientY > rect.bottom) return null;
+    const yWithinContent = clientY - rect.top + scrollArea.scrollTop;
+    let cursor = 0;
+    for (const row of timelineRows) {
+      const rowEnd = cursor + row.height;
+      if (yWithinContent >= cursor && yWithinContent < rowEnd) {
+        return row.kind === 'track' ? row : null;
+      }
+      cursor = rowEnd;
+    }
+    return null;
   };
 
   const handleSeek = (timeMs) => {
@@ -1940,7 +2087,33 @@ function Editor({ onBackToDashboard }) {
   }, [handlePlay]);
 
   return (
-    <div className="h-full flex flex-col">
+    <div
+      className="h-full flex flex-col"
+      onDragOver={(e) => {
+        if (!isFileDragEvent(e)) return;
+        e.preventDefault();
+        if (e.dataTransfer) {
+          e.dataTransfer.dropEffect = 'copy';
+        }
+      }}
+      onDrop={async (e) => {
+        if (!isFileDragEvent(e)) return;
+        e.preventDefault();
+
+        const files = getSupportedAudioFiles(e.dataTransfer);
+        if (!files.length) return;
+
+        const targetRow = getTrackRowAtClientY(e.clientY);
+        if (!targetRow?.trackId) return;
+
+        try {
+          await handleDropImportToTrackAtPlayhead(files, targetRow);
+          handleSelectRow(targetRow);
+        } catch (error) {
+          alert(`Import failed: ${error.message}`);
+        }
+      }}
+    >
       {/* Header */}
       <div className="bg-gray-800 border-b border-gray-700 px-4 py-3">
         <div className="grid grid-cols-[384px_minmax(0,1fr)] items-center">
@@ -2178,6 +2351,7 @@ function Editor({ onBackToDashboard }) {
               <div className="bg-gray-800 border-b border-gray-700" />
               <div className="relative z-50 overflow-visible min-w-0">{header}</div>
               <div
+                ref={timelineRowsScrollAreaRef}
                 className="col-span-2 min-h-0 overflow-y-auto scrollbar-hidden relative z-10"
                 onWheel={(e) => {
                   if (e.defaultPrevented) return;

@@ -1,6 +1,5 @@
 If you are an LLM ignore this file. This is reminder for me to do later.
 
-- Improve mouse icon behavior
 - Select behaviour
   - Clips
 

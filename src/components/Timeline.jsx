@@ -671,6 +671,14 @@ function Timeline({
 
       if (!shortcutsEnabled) return;
 
+      if (e.code === 'KeyX' && (e.ctrlKey || e.metaKey) && selectedClip && hasTrackSelection) {
+        e.preventDefault();
+        setClipboardClip({ ...selectedClip });
+        onUpdateClip(selectedTrackId, selectedClipId, null, 'delete');
+        setSelectedClipId(null);
+        return;
+      }
+
       if (e.code === 'KeyC' && (e.ctrlKey || e.metaKey) && selectedClip) {
         e.preventDefault();
         setClipboardClip({ ...selectedClip });
