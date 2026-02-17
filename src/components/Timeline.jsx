@@ -1282,7 +1282,7 @@ function Timeline({
         return;
       }
 
-      if (e.code === 'KeyT' && isPrimaryModifierPressed(e) && hasSelectedClips) {
+      if (e.code === 'KeyT' && hasSelectedClips) { /* TODO: add isPrimaryModifierPressed(e) again */
         e.preventDefault();
         const selectedIdSet = new Set(selectedClipIds);
         const rightClipIds = [];
