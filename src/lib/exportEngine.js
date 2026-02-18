@@ -41,7 +41,7 @@ export const EXPORT_PRESETS = {
 export const EXPORT_PRESET_DEFINITIONS = [
   { id: EXPORT_PRESETS.TUTTI, label: 'Tutti', description: 'All tracks, no adjustments' },
   { id: EXPORT_PRESETS.ACAPELLA, label: 'No Instruments', description: 'Lead + choir' },
-  { id: EXPORT_PRESETS.NO_LEAD, label: 'No Lead', description: 'Instrument + choir' },
+  { id: EXPORT_PRESETS.NO_LEAD, label: 'No Leads', description: 'Instrument + choir' },
   { id: EXPORT_PRESETS.NO_CHOIR, label: 'No Choir', description: 'Instrument + lead' },
   { id: EXPORT_PRESETS.INSTRUMENTAL, label: 'Instruments Only', description: 'Instrument only' },
   { id: EXPORT_PRESETS.LEAD_ONLY, label: 'Lead Only', description: 'Lead only' },
@@ -389,7 +389,7 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, 'All', outputFormat),
+        filename: createFileName(projectBase, '', outputFormat),
         blob: await renderTracks(project, activeTracks, audioBuffers, {}, {}, outputFormat, trackStateById),
       });
       continue;
@@ -404,7 +404,7 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, 'Lead and Choir', outputFormat),
+        filename: createFileName(projectBase, 'No Instruments', outputFormat),
         blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById),
       });
       continue;
@@ -419,7 +419,7 @@ export async function exportProject(
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, 'No Lead', outputFormat),
+        filename: createFileName(projectBase, 'No Leads', outputFormat),
         blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById),
       });
       continue;
