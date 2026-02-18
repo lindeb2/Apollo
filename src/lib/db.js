@@ -1,4 +1,5 @@
 import Dexie from 'dexie';
+import { reportUserError } from '../utils/errorReporter';
 
 /**
  * ChoirMaster IndexedDB Database
@@ -196,7 +197,12 @@ export function getRecentProjects() {
   try {
     const data = localStorage.getItem('choirmaster_recent_projects');
     return data ? JSON.parse(data) : [];
-  } catch {
+  } catch (error) {
+    reportUserError(
+      'Failed to read recent projects from local storage.',
+      error,
+      { onceKey: 'db:recent-projects-parse' }
+    );
     return [];
   }
 }

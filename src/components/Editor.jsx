@@ -15,6 +15,7 @@ import useKeyboardShortcuts from '../utils/useKeyboardShortcuts';
 import { processRecordingOverwrites } from '../utils/clipCollision';
 import { isPrimaryModifierPressed } from '../utils/keyboard';
 import { normalizeProjectName } from '../utils/naming';
+import { reportUserError } from '../utils/errorReporter';
 import { measureTuttiPeak } from '../lib/exportEngine';
 import {
   GROUP_ROLE_CHOIRS,
@@ -143,8 +144,12 @@ function Editor({ onBackToDashboard }) {
             ? parsed.recordingOffsetMs
             : prev.recordingOffsetMs,
       }));
-    } catch {
-      // Ignore invalid settings
+    } catch (error) {
+      reportUserError(
+        'Failed to read app settings from local storage. Defaults will be used.',
+        error,
+        { onceKey: 'editor:settings-parse' }
+      );
     }
   }, []);
 
@@ -155,7 +160,12 @@ function Editor({ onBackToDashboard }) {
       let existing = {};
       try {
         existing = JSON.parse(localStorage.getItem('choirmaster.settings') || '{}');
-      } catch {
+      } catch (error) {
+        reportUserError(
+          'Failed to parse existing app settings from local storage. They will be replaced.',
+          error,
+          { onceKey: 'editor:settings-merge-parse' }
+        );
         existing = {};
       }
       localStorage.setItem('choirmaster.settings', JSON.stringify({
@@ -174,8 +184,12 @@ function Editor({ onBackToDashboard }) {
       try {
         await navigator.mediaDevices.getUserMedia({ audio: true });
         devices = await navigator.mediaDevices.enumerateDevices();
-      } catch {
-        // Keep unlabeled devices
+      } catch (error) {
+        reportUserError(
+          'Could not access microphone permissions to read device labels.',
+          error,
+          { onceKey: 'editor:device-label-permission' }
+        );
       }
     }
     setAudioInputs(devices.filter((device) => device.kind === 'audioinput'));
@@ -238,14 +252,22 @@ function Editor({ onBackToDashboard }) {
           newMediaMap.set(blobId, media);
           console.log(`Loaded audio buffer for ${blobId}`);
         } catch (error) {
-          console.error(`Failed to load audio buffer ${blobId}:`, error);
+          reportUserError(
+            `Failed to load audio buffer for media id ${blobId}.`,
+            error,
+            { onceKey: `editor:load-audio-buffer:${blobId}` }
+          );
         }
       } else {
         try {
           const media = await getMediaBlob(blobId);
           newMediaMap.set(blobId, media);
         } catch (error) {
-          console.error(`Failed to load media data ${blobId}:`, error);
+          reportUserError(
+            `Failed to load media metadata for media id ${blobId}.`,
+            error,
+            { onceKey: `editor:load-media-data:${blobId}` }
+          );
         }
       }
     }
@@ -639,7 +661,10 @@ function Editor({ onBackToDashboard }) {
       
       console.log('New recording segment started at loop start');
     } catch (error) {
-      console.error('Failed to handle loop wrap during recording:', error);
+      reportUserError(
+        'Failed to process recording loop wrap.',
+        error
+      );
     }
   };
 

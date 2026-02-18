@@ -8,6 +8,7 @@ import {
 import { exportAsJSON, exportAsZIP, downloadFile } from '../lib/projectPortability';
 import { loadExportDirectoryHandle, saveExportDirectoryHandle } from '../lib/db';
 import { hasInvalidExportNameChars, normalizeExportName } from '../utils/naming';
+import { reportUserError } from '../utils/errorReporter';
 
 const AUDIO_EXPORT_SECTIONS = [
   {
@@ -46,7 +47,12 @@ async function hasWritePermission(handle) {
       return (await handle.requestPermission({ mode: 'readwrite' })) === 'granted';
     }
     return false;
-  } catch {
+  } catch (error) {
+    reportUserError(
+      'Failed while checking folder write permission.',
+      error,
+      { onceKey: 'export:check-write-permission' }
+    );
     return false;
   }
 }
@@ -61,7 +67,12 @@ async function getExportStartHandle(projectId) {
     if (await hasWritePermission(appHandle)) {
       return appHandle;
     }
-  } catch {
+  } catch (error) {
+    reportUserError(
+      'Failed to read remembered export folder. You may need to pick a folder again.',
+      error,
+      { onceKey: 'export:load-start-folder' }
+    );
     return null;
   }
   return null;
@@ -94,8 +105,12 @@ async function pickExportDirectory(projectId) {
   try {
     await saveExportDirectoryHandle(`project:${projectId}`, directoryHandle);
     await saveExportDirectoryHandle('global', directoryHandle);
-  } catch {
-    // Some environments cannot persist file handles; export still works.
+  } catch (error) {
+    reportUserError(
+      'Could not save export folder preference. Export will still continue.',
+      error,
+      { onceKey: 'export:save-folder-handle' }
+    );
   }
   return directoryHandle;
 }

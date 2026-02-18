@@ -7,6 +7,7 @@ import { storeMediaBlob } from '../lib/db';
 import { formatTime, PAN_LAW_OPTIONS_DB, normalizePanLawDb } from '../utils/audio';
 import { AUTO_PAN_STRATEGIES } from '../utils/choirAutoPan';
 import { normalizeProjectName } from '../utils/naming';
+import { reportUserError } from '../utils/errorReporter';
 
 function Dashboard({ onOpenProject, onNewProject }) {
   const [projects, setProjects] = useState([]);
@@ -71,8 +72,12 @@ function Dashboard({ onOpenProject, onNewProject }) {
             ? parsed.defaultExportPracticeDiffDb
             : prev.defaultExportPracticeDiffDb,
       }));
-    } catch {
-      // Ignore invalid settings
+    } catch (error) {
+      reportUserError(
+        'Failed to read app settings from local storage. Defaults will be used.',
+        error,
+        { onceKey: 'dashboard:settings-parse' }
+      );
     }
   }, []);
 
@@ -101,7 +106,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
       projectList.sort((a, b) => b.lastModified - a.lastModified);
       setProjects(projectList);
     } catch (error) {
-      console.error('Failed to load projects:', error);
+      reportUserError('Failed to load projects.', error, { onceKey: 'dashboard:load-projects' });
     }
   };
 
@@ -188,8 +193,12 @@ function Dashboard({ onOpenProject, onNewProject }) {
       try {
         await navigator.mediaDevices.getUserMedia({ audio: true });
         devices = await navigator.mediaDevices.enumerateDevices();
-      } catch {
-        // Permission denied or unavailable; keep unlabeled devices
+      } catch (error) {
+        reportUserError(
+          'Could not access microphone permissions to read device labels.',
+          error,
+          { onceKey: 'dashboard:device-label-permission' }
+        );
       }
     }
     setAudioInputs(devices.filter((device) => device.kind === 'audioinput'));
@@ -219,9 +228,13 @@ function Dashboard({ onOpenProject, onNewProject }) {
     }
     const trimmed = normalizeProjectName(editingProjectName);
     if (trimmed && trimmed !== project.projectName) {
-      const updated = { ...project, projectName: trimmed, lastModified: Date.now() };
-      await saveProject(updated);
-      await loadProjects();
+      try {
+        const updated = { ...project, projectName: trimmed, lastModified: Date.now() };
+        await saveProject(updated);
+        await loadProjects();
+      } catch (error) {
+        reportUserError('Failed to rename project.', error);
+      }
     }
     setEditingProjectId(null);
     setEditingProjectName('');

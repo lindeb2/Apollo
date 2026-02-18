@@ -7,6 +7,7 @@ import {
 } from '../utils/audio';
 import { SAMPLE_RATE } from '../types/project';
 import { getEffectiveTrackMix } from '../utils/trackTree';
+import { reportUserError } from '../utils/errorReporter';
 
 /**
  * Audio Manager
@@ -317,7 +318,9 @@ class AudioManager {
         // Use stop(0) to immediately stop even sources scheduled for future
         nodes.source.stop(0);
       } catch (e) {
-        // Ignore errors if already stopped
+        if (e?.name !== 'InvalidStateError') {
+          reportUserError('Failed to stop an active audio source.', e, { onceKey: 'audio:stop-source' });
+        }
       }
     }
 
@@ -343,7 +346,9 @@ class AudioManager {
       try {
         nodes.source.stop(0);
       } catch (e) {
-        // Ignore errors (source might already be stopped)
+        if (e?.name !== 'InvalidStateError') {
+          reportUserError('Failed to pause an active audio source.', e, { onceKey: 'audio:pause-source' });
+        }
       }
     }
 

@@ -4,6 +4,7 @@ import { createEmptyProject, normalizeExportSettings } from '../types/project';
 import { normalizeAutoPanSettings, normalizeProjectAutoPan } from '../utils/choirAutoPan';
 import { normalizeTrackTree, reorderTracksByTree } from '../utils/trackTree';
 import { normalizePanLawDb } from '../utils/audio';
+import { reportUserError } from '../utils/errorReporter';
 
 /**
  * ChoirMaster Zustand Store
@@ -68,8 +69,12 @@ const useStore = create((set, get) => ({
         });
         panLawDb = normalizePanLawDb(parsed?.defaultPanLawDb);
       }
-    } catch {
-      // Ignore invalid settings
+    } catch (error) {
+      reportUserError(
+        'Failed to read app settings from local storage. Defaults will be used.',
+        error,
+        { onceKey: 'store:init-settings-parse' }
+      );
     }
 
     const project = normalizeTrackTree(createEmptyProject(name, autoPan, exportSettings, panLawDb));
@@ -264,7 +269,7 @@ const useStore = create((set, get) => ({
         lastSaved: Date.now(),
       });
     } catch (error) {
-      console.error('Autosave failed:', error);
+      reportUserError('Autosave failed.', error, { onceKey: 'store:autosave-failed' });
       set({ isSaving: false });
     }
   },

@@ -19,6 +19,7 @@ import {
   findSafePosition 
 } from '../utils/clipCollision';
 import { isPrimaryModifierPressed } from '../utils/keyboard';
+import { reportUserError } from '../utils/errorReporter';
 
 const TIMELINE_VIEWPORT_WIDTH = 1920; // Default viewport width (updated dynamically)
 const MIN_VISIBLE_DURATION_MS = 8000; // Minimum duration to show when zoomed out
@@ -107,8 +108,12 @@ function Timeline({
       gain.connect(ctx.destination);
       osc.start();
       osc.stop(ctx.currentTime + 0.09);
-    } catch {
-      // no-op
+    } catch (error) {
+      reportUserError(
+        'Failed to play error beep.',
+        error,
+        { onceKey: 'timeline:error-beep' }
+      );
     }
   };
 

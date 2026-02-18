@@ -1,5 +1,7 @@
 If you are an LLM ignore this file. This is reminder for me to do later.
 
+- Clip top left most top
+- Change default db diff 
 - Add bars
 - Add MIDI-support
 - Native audio engine
