@@ -78,7 +78,7 @@ export async function importFromJSON(file) {
  * Import project from ZIP file
  * Extracts project.json and all media files
  */
-export async function importFromZIP(file, storeMediaBlob, decodeAudioFile) {
+export async function importFromZIP(file, storeMediaBlob, decodeAudioFile, onProjectParsed = null) {
   const zip = await JSZip.loadAsync(file);
   
   // Read project.json
@@ -93,6 +93,17 @@ export async function importFromZIP(file, storeMediaBlob, decodeAudioFile) {
   // Validate version
   if (project.version !== '1.0.0') {
     throw new Error(`Unsupported project version: ${project.version}`);
+  }
+
+  let resolvedProject = project;
+  if (typeof onProjectParsed === 'function') {
+    const parsedResult = await onProjectParsed(project);
+    if (parsedResult === false) {
+      return null;
+    }
+    if (parsedResult && typeof parsedResult === 'object') {
+      resolvedProject = parsedResult;
+    }
   }
   
   // Extract and store media files
@@ -123,7 +134,7 @@ export async function importFromZIP(file, storeMediaBlob, decodeAudioFile) {
     console.log(`Imported media: ${blobId}`);
   }
   
-  return project;
+  return resolvedProject;
 }
 
 /**

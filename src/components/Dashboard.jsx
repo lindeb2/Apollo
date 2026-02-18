@@ -1,6 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { FolderOpen, Plus, FileAudio, Upload, Settings } from 'lucide-react';
-import { listProjects, deleteProject as deleteProjectFromDB, saveProject } from '../lib/db';
+import {
+  listProjects,
+  deleteProject as deleteProjectFromDB,
+  saveProject,
+  clearUndoHistory,
+} from '../lib/db';
 import { importFromJSON, importFromZIP } from '../lib/projectPortability';
 import { audioManager } from '../lib/audioManager';
 import { storeMediaBlob } from '../lib/db';
@@ -110,6 +115,71 @@ function Dashboard({ onOpenProject, onNewProject }) {
     }
   };
 
+  const buildImportedCopyName = (projectName, existingProjects) => {
+    const base = normalizeProjectName(projectName) || 'Imported Project';
+    const existingNames = new Set((existingProjects || []).map((p) => p.projectName));
+    let candidate = `${base} (Copy)`;
+    let index = 2;
+    while (existingNames.has(candidate)) {
+      candidate = `${base} (Copy ${index})`;
+      index += 1;
+    }
+    return candidate;
+  };
+
+  const resolveImportConflict = (importedProject, existingProjects) => {
+    const createNewProjectDecision = () => ({
+      action: 'save',
+      overwrite: false,
+      project: {
+        ...importedProject,
+        projectId: crypto.randomUUID(),
+        projectName: buildImportedCopyName(importedProject.projectName, existingProjects),
+      },
+    });
+
+    const existing = (existingProjects || []).find((p) => p.projectId === importedProject.projectId);
+    if (!existing) {
+      return { action: 'save', project: importedProject, overwrite: false };
+    }
+
+    const importedName = normalizeProjectName(importedProject.projectName) || '';
+    const existingName = normalizeProjectName(existing.projectName) || '';
+    if (importedName !== existingName) {
+      // Same ID but different names: default to "Create new project".
+      return createNewProjectDecision();
+    }
+
+    const projectLabel = importedProject.projectName || existing.projectName || 'Untitled Project';
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const response = window.prompt(
+        `A project with this ID already exists: "${projectLabel}".\n` +
+        'Choose an action:\n' +
+        '1 = Create new project\n' +
+        '2 = Overwrite old project\n' +
+        '3 = Cancel',
+        '1'
+      );
+
+      if (response === null) {
+        return { action: 'cancel' };
+      }
+
+      const choice = response.trim();
+      if (choice === '1') {
+        return createNewProjectDecision();
+      }
+      if (choice === '2') {
+        return { action: 'save', project: importedProject, overwrite: true };
+      }
+      if (choice === '3') {
+        return { action: 'cancel' };
+      }
+      alert('Invalid choice. Enter 1, 2, or 3.');
+    }
+  };
+
   const handleCreateProject = () => {
     const normalizedName = normalizeProjectName(newProjectName);
     if (!normalizedName) return;
@@ -151,19 +221,41 @@ function Dashboard({ onOpenProject, onNewProject }) {
     setIsImporting(true);
 
     try {
+      const existingProjects = await listProjects();
       let project;
 
       if (file.name.endsWith('.json')) {
         // Import JSON
         project = await importFromJSON(file);
+        const decision = resolveImportConflict(project, existingProjects);
+        if (decision.action === 'cancel') {
+          return;
+        }
+        project = decision.project;
+        if (decision.overwrite) {
+          await clearUndoHistory(project.projectId);
+        }
         console.log('Imported project from JSON');
       } else if (file.name.endsWith('.zip')) {
         // Import ZIP
         project = await importFromZIP(
           file,
           storeMediaBlob,
-          audioManager.decodeAudioFile.bind(audioManager)
+          audioManager.decodeAudioFile.bind(audioManager),
+          async (projectFromZip) => {
+            const decision = resolveImportConflict(projectFromZip, existingProjects);
+            if (decision.action === 'cancel') {
+              return false;
+            }
+            if (decision.overwrite) {
+              await clearUndoHistory(decision.project.projectId);
+            }
+            return decision.project;
+          }
         );
+        if (!project) {
+          return;
+        }
         console.log('Imported project from ZIP');
       } else {
         throw new Error('Unsupported file format. Use .json or .zip');
