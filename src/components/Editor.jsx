@@ -488,8 +488,8 @@ function Editor({ onBackToDashboard }) {
   const hasNoTracks = !project.tracks || project.tracks.length === 0;
   const practiceFocusDiffDb = Number.isFinite(Number(project?.exportSettings?.practiceFocusDiffDb))
     ? Number(project.exportSettings.practiceFocusDiffDb)
-    : 6;
-  const practiceFocusDiffRatio = practiceFocusDiffDb / 10;
+    : 0;
+  const practiceFocusDiffRatio = (Math.max(-6, Math.min(6, practiceFocusDiffDb)) + 6) / 12;
   const practiceFocusDiffLabelLeft = `calc(15px + ${practiceFocusDiffRatio} * (100% - 30px))`;
 
   const handleSelectRow = (row) => {
@@ -2679,7 +2679,7 @@ function Editor({ onBackToDashboard }) {
                         className="absolute z-10 left-0 right-0 top-1/2 -translate-y-1/2 flex items-center justify-between pointer-events-none"
                         style={{ paddingLeft: '7px', paddingRight: '7px' }}
                       >
-                        {Array.from({ length: 11 }, (_, idx) => (
+                        {Array.from({ length: 13 }, (_, idx) => (
                           <span
                             key={idx}
                             className={`block w-px ${idx % 2 === 0 ? 'h-3 bg-slate-400/90' : 'h-2 bg-slate-500/90'}`}
@@ -2688,8 +2688,8 @@ function Editor({ onBackToDashboard }) {
                       </div>
                       <input
                         type="range"
-                        min={0}
-                        max={10}
+                        min={-6}
+                        max={6}
                         step={1}
                         className="relative z-20 w-full practice-diff-slider cursor-pointer"
                         value={practiceFocusDiffDb}

@@ -29,7 +29,7 @@ export const TRACK_ROLES = {
 export const SAMPLE_RATE = 44100;
 export const DEFAULT_EXPORT_SETTINGS = {
   transformedPanRange: 100,
-  practiceFocusDiffDb: 6,
+  practiceFocusDiffDb: 0,
 };
 
 export function normalizeExportSettings(settings = {}) {
@@ -43,7 +43,7 @@ export function normalizeExportSettings(settings = {}) {
     ? Math.max(0, Math.min(200, transformedPanRange))
     : DEFAULT_EXPORT_SETTINGS.transformedPanRange;
   next.practiceFocusDiffDb = Number.isFinite(practiceFocusDiffDb)
-    ? Math.max(0, Math.min(10, practiceFocusDiffDb))
+    ? Math.max(-6, Math.min(6, practiceFocusDiffDb))
     : DEFAULT_EXPORT_SETTINGS.practiceFocusDiffDb;
   return next;
 }
@@ -98,7 +98,7 @@ export function normalizeExportSettings(settings = {}) {
  * @property {number} panLawDb - Pan law in dB at center (0, -3, -4.5, -6)
  * @property {Object} exportSettings - Export configuration
  * @property {number} exportSettings.transformedPanRange - Pan transform range control (0-200)
- * @property {number} exportSettings.practiceFocusDiffDb - Practice backing level difference from focus in dB (0-10)
+ * @property {number} exportSettings.practiceFocusDiffDb - Practice backing level difference from focus in dB (-6 to 6)
  * @property {Array} trackTree - Hierarchy nodes for groups/tracks
  * @property {Track[]} tracks - Array of tracks
  * @property {Loop} loop - Loop configuration

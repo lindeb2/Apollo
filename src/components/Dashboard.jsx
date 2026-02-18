@@ -34,7 +34,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
     defaultManualChoirParts: false,
     defaultPanLawDb: -3,
     defaultExportPanRange: 100,
-    defaultExportPracticeDiffDb: 6,
+    defaultExportPracticeDiffDb: 0,
   });
   const hasHydratedSettingsRef = useRef(false);
 
@@ -92,8 +92,8 @@ function Dashboard({ onOpenProject, onNewProject }) {
   ];
   const defaultPracticeDiffDb = Number.isFinite(Number(audioSettings.defaultExportPracticeDiffDb))
     ? Number(audioSettings.defaultExportPracticeDiffDb)
-    : 6;
-  const defaultPracticeDiffRatio = defaultPracticeDiffDb / 10;
+    : 0;
+  const defaultPracticeDiffRatio = (Math.max(-6, Math.min(6, defaultPracticeDiffDb)) + 6) / 12;
   const defaultPracticeDiffLabelLeft = `calc(15px + ${defaultPracticeDiffRatio} * (100% - 30px))`;
 
   useEffect(() => {
@@ -693,7 +693,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
                         className="absolute z-10 left-0 right-0 top-1/2 -translate-y-1/2 flex items-center justify-between pointer-events-none"
                         style={{ paddingLeft: '7px', paddingRight: '7px' }}
                       >
-                        {Array.from({ length: 11 }, (_, idx) => (
+                        {Array.from({ length: 13 }, (_, idx) => (
                           <span
                             key={idx}
                             className={`block w-px ${idx % 2 === 0 ? 'h-3 bg-slate-400/90' : 'h-2 bg-slate-500/90'}`}
@@ -702,8 +702,8 @@ function Dashboard({ onOpenProject, onNewProject }) {
                       </div>
                       <input
                         type="range"
-                        min={0}
-                        max={10}
+                        min={-6}
+                        max={6}
                         step={1}
                         className="relative z-20 w-full practice-diff-slider cursor-pointer"
                         value={defaultPracticeDiffDb}

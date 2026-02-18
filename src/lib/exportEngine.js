@@ -180,7 +180,7 @@ async function buildPracticePeakNormalizedGainMap({
 
   let focusScale = 1;
   let backingScale = 1;
-  const diffDb = Math.max(0, Math.min(10, Number(practiceFocusDiffDb) || 0));
+  const diffDb = Math.max(-6, Math.min(6, Number(practiceFocusDiffDb) || 0));
   const backingTargetPeakDb = PRACTICE_FOCUS_PEAK_DB - diffDb;
 
   if (focusTracks.length) {
