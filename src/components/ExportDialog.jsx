@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Download, X, FileArchive, FileJson } from 'lucide-react';
+import { Upload, X, FileArchive, FileJson } from 'lucide-react';
 import {
   EXPORT_PRESETS,
   EXPORT_PRESET_DEFINITIONS,
@@ -133,7 +133,7 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
   const [progress, setProgress] = useState('');
   const [selectedPresetIds, setSelectedPresetIds] = useState([EXPORT_PRESETS.TUTTI]);
   const [exportBaseName, setExportBaseName] = useState(project.projectName || 'project');
-  const [audioFormat, setAudioFormat] = useState('wav');
+  const [audioFormat, setAudioFormat] = useState('mp3');
 
   const allPresetIds = useMemo(
     () => AUDIO_EXPORT_SECTIONS.flatMap((section) => section.presetIds),
@@ -283,8 +283,8 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
                 className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
                 disabled={isExporting}
               >
-                <option value="wav">WAV</option>
                 <option value="mp3">MP3</option>
+                <option value="wav">WAV</option>
               </select>
             </div>
             <label className="flex items-center gap-2 bg-gray-900 rounded-lg p-3 mb-3">
@@ -330,7 +330,7 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
               disabled={isExporting || selectedPresetIds.length === 0}
               className="mt-4 w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
             >
-              <Download size={20} />
+              <Upload size={20} />
               <span>
                 {isExporting
                   ? progress

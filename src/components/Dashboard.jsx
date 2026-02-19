@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { FolderOpen, Plus, FileAudio, Upload, Settings } from 'lucide-react';
+import { FolderOpen, Plus, FileAudio, Download, Settings } from 'lucide-react';
 import {
   listProjects,
   deleteProject as deleteProjectFromDB,
@@ -364,7 +364,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
           </button>
 
           <label className="bg-green-600 hover:bg-green-700 text-white rounded-lg px-4 py-2 flex items-center justify-center gap-2 transition-colors cursor-pointer">
-            <Upload size={18} />
+            <Download size={18} />
             <span className="text-sm font-semibold">
               {isImporting ? 'Importing...' : 'Import Project'}
             </span>

@@ -7,7 +7,7 @@ import {
   getPanLawCompensationGain,
   getPanLawHeadroomGain,
 } from '../utils/audio';
-import lamejs from 'lamejs';
+import { Mp3Encoder } from '@breezystack/lamejs';
 import {
   SAMPLE_RATE,
   DEFAULT_EXPORT_SETTINGS,
@@ -718,7 +718,7 @@ function floatTo16BitPCM(floatArray) {
 function audioBufferToMp3(audioBuffer, bitrateKbps = 192) {
   const channelCount = Math.min(2, audioBuffer.numberOfChannels);
   const sampleRate = audioBuffer.sampleRate;
-  const encoder = new lamejs.Mp3Encoder(channelCount, sampleRate, bitrateKbps);
+  const encoder = new Mp3Encoder(channelCount, sampleRate, bitrateKbps);
   const blockSize = 1152;
   const mp3Chunks = [];
 

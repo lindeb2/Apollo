@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Upload, FileAudio, X } from 'lucide-react';
+import { Download, FileAudio, X } from 'lucide-react';
 import { TRACK_ROLES } from '../types/project';
 
 function FileImport({ onImport, onClose, manualChoirPartsEnabled = false }) {
@@ -129,7 +129,7 @@ function FileImport({ onImport, onClose, manualChoirPartsEnabled = false }) {
                 : 'border-gray-600 hover:border-gray-500'
             }`}
           >
-            <Upload size={48} className="mx-auto mb-4 text-gray-500" />
+            <Download size={48} className="mx-auto mb-4 text-gray-500" />
             <p className="text-lg mb-2">Drag and drop audio files here</p>
             <p className="text-sm text-gray-400 mb-4">or</p>
             <label className="inline-block bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded cursor-pointer transition-colors">

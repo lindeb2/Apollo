@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { ArrowLeft, Upload, Play, Pause, Square, Volume2, Circle, Download, SkipBack, SkipForward, Settings } from 'lucide-react';
+import { ArrowLeft, Download, Play, Pause, Square, Volume2, Circle, Upload, SkipBack, SkipForward, Settings } from 'lucide-react';
 import useStore from '../store/useStore';
 import { audioManager } from '../lib/audioManager';
 import { recordingManager } from '../lib/recordingManager';
@@ -2381,7 +2381,7 @@ function Editor({ onBackToDashboard }) {
                   onClick={() => setShowFileImport(true)}
                   className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded transition-colors"
                 >
-                  <Upload size={16} />
+                  <Download size={16} />
                   <span className="text-sm">Import</span>
                 </button>
 
@@ -2390,7 +2390,7 @@ function Editor({ onBackToDashboard }) {
                   disabled={hasNoTracks}
                   className="flex items-center gap-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-3 py-2 rounded transition-colors"
                 >
-                  <Download size={16} />
+                  <Upload size={16} />
                   <span className="text-sm">Export</span>
                 </button>
               </div>
@@ -2492,7 +2492,7 @@ function Editor({ onBackToDashboard }) {
                     {hasNoTracks && (
                       <div className="absolute inset-0 flex items-center justify-center">
                         <div className="text-center text-gray-500">
-                          <Upload size={48} className="mx-auto mb-4 opacity-50" />
+                          <Download size={48} className="mx-auto mb-4 opacity-50" />
                           <p className="text-lg mb-2">No tracks yet</p>
                           <p className="text-sm">Click Import to add audio files</p>
                         </div>
