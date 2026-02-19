@@ -272,7 +272,7 @@ input[type="range"].practice-diff-slider::-moz-range-thumb:hover {
 .zoom-minimal-overlay {
   display: flex;
   align-items: center;
-  padding: 3px 3px;
+  padding: 4px 3px;
   border-radius: 7px;
   background: #1f2937;
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.28);
