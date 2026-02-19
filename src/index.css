@@ -267,3 +267,73 @@ input[type="range"].practice-diff-slider::-webkit-slider-thumb:hover {
 input[type="range"].practice-diff-slider::-moz-range-thumb:hover {
   background: #3b82f6;
 }
+
+/* Timeline zoom overlay (minimal, 3-color style) */
+.zoom-minimal-overlay {
+  display: flex;
+  align-items: center;
+  padding: 3px 3px;
+  border-radius: 7px;
+  background: #1f2937;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.28);
+}
+
+input[type="range"].zoom-minimal-slider {
+  position: relative;
+  z-index: 1;
+  width: 76px;
+  height: 14px;
+  background: transparent;
+  border-radius: 9999px;
+}
+
+.zoom-minimal-shell {
+  position: relative;
+  width: 76px;
+  height: 14px;
+}
+
+.zoom-minimal-stick {
+  position: absolute;
+  z-index: 0;
+  left: 8px;
+  right: 8px;
+  top: 50%;
+  height: 4px;
+  transform: translateY(-50%);
+  border-radius: 9999px;
+  background: #101827;
+  pointer-events: none;
+}
+
+input[type="range"].zoom-minimal-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  background: transparent;
+  border: none;
+  border-radius: 9999px;
+}
+
+input[type="range"].zoom-minimal-slider::-moz-range-track {
+  height: 4px;
+  background: transparent;
+  border: none;
+  border-radius: 9999px;
+}
+
+input[type="range"].zoom-minimal-slider::-webkit-slider-thumb {
+  width: 16px;
+  height: 16px;
+  margin-top: -10px;
+  background: #4b5563;
+  border: none;
+  box-shadow: none;
+}
+
+input[type="range"].zoom-minimal-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  transform: translateY(-3.5px);
+  background: #4b5563;
+  border: none;
+  box-shadow: none;
+}

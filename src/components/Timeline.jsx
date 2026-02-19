@@ -471,6 +471,8 @@ function Timeline({
   const zoomSliderValue = minZoomDurationMs > maxZoomDurationMs
     ? Math.log(clampedVisibleMs / maxZoomDurationMs) / Math.log(minZoomDurationMs / maxZoomDurationMs)
     : 0;
+  // UI direction: left = zoomed out, right = zoomed in.
+  const zoomSliderUiValue = 1 - zoomSliderValue;
   
   const sliderValueToDuration = (value) => {
     if (minZoomDurationMs <= maxZoomDurationMs) return maxZoomDurationMs;
@@ -1908,7 +1910,8 @@ function Timeline({
   };
   
   const handleSliderChange = (e) => {
-    const value = parseFloat(e.target.value);
+    const uiValue = parseFloat(e.target.value);
+    const value = 1 - uiValue;
     if (value >= 0.99) {
       applyZoomDuration(null);
     } else {
@@ -1922,20 +1925,20 @@ function Timeline({
   };
 
   const zoomOverlay = (
-    <div className="bg-gray-800/90 border border-gray-700 rounded-md px-2 py-2 shadow-lg flex items-center">
-      <input
-        type="range"
-        min="0"
-        max="1"
-        step="0.01"
-        value={zoomSliderValue}
-        onChange={handleSliderChange}
-        className="w-20 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-        title="Zoom"
-        style={{
-          background: `linear-gradient(to right, #4F8EF7 0%, #4F8EF7 ${zoomSliderValue * 100}%, #4B5563 ${zoomSliderValue * 100}%, #4B5563 100%)`
-        }}
-      />
+    <div className="zoom-minimal-overlay">
+      <div className="zoom-minimal-shell">
+        <div className="zoom-minimal-stick" />
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value={zoomSliderUiValue}
+          onChange={handleSliderChange}
+          className="zoom-minimal-slider"
+          title="Zoom"
+        />
+      </div>
     </div>
   );
 

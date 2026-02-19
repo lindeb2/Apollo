@@ -2432,6 +2432,7 @@ function Editor({ onBackToDashboard }) {
             <div className="relative grid grid-cols-[384px_1fr] grid-rows-[24px_minmax(0,1fr)] h-full min-h-0 min-w-0">
               <div className="bg-gray-800 border-b border-r border-gray-700" />
               <div className="relative z-50 overflow-visible min-w-0">{header}</div>
+              <div className="absolute top-[32px] right-3 z-40 pointer-events-auto">{zoomOverlay}</div>
               <div
                 ref={timelineRowsScrollAreaRef}
                 className="col-span-2 min-h-0 overflow-y-auto scrollbar-hidden relative z-10"
@@ -2487,7 +2488,6 @@ function Editor({ onBackToDashboard }) {
                     />
                   </div>
                   <div className="min-w-0 bg-gray-900 relative overflow-hidden">
-                    <div className="absolute top-2 right-3 z-40">{zoomOverlay}</div>
                     {tracks}
                     {hasNoTracks && (
                       <div className="absolute inset-0 flex items-center justify-center">
