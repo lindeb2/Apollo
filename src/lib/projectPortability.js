@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { exportProjectJSON, importProjectJSON } from './db';
+import { exportProjectJSON, importProjectJSON, getMediaBlob } from './db';
 import { normalizeProjectName } from '../utils/naming';
 
 /**
@@ -43,12 +43,29 @@ export async function exportAsZIP(project, mediaMap) {
   }
   
   // Add each audio file
+  const missingBlobIds = [];
   for (const blobId of blobIds) {
-    const media = mediaMap.get(blobId);
-    if (media && media.blob) {
-      const filename = `${blobId}.wav`;
-      mediaFolder.file(filename, media.blob);
+    let media = mediaMap?.get(blobId);
+    if (!media?.blob) {
+      try {
+        media = await getMediaBlob(blobId);
+      } catch {
+        missingBlobIds.push(blobId);
+        continue;
+      }
     }
+
+    if (media?.blob) {
+      mediaFolder.file(`${blobId}.wav`, media.blob);
+    } else {
+      missingBlobIds.push(blobId);
+    }
+  }
+
+  if (missingBlobIds.length > 0) {
+    throw new Error(
+      `Cannot export ZIP: missing ${missingBlobIds.length} media file(s) in database.`
+    );
   }
   
   // Generate ZIP
