@@ -23,10 +23,17 @@ import { reportUserError } from '../utils/errorReporter';
 
 const TIMELINE_VIEWPORT_WIDTH = 1920; // Default viewport width (updated dynamically)
 const MIN_VISIBLE_DURATION_MS = 8000; // Minimum duration to show when zoomed out
-const MAX_ZOOM_VISIBLE_MS = 100; // At max zoom, show 100ms across viewport
+const MAX_ZOOM_VISIBLE_MS = 500; // At max zoom, show 500ms across viewport
 const MIN_CLIP_DURATION_MS = 100;
 const MIN_CLIP_GAIN_DB = -24;
 const MAX_CLIP_GAIN_DB = 24;
+const RULER_INTERVALS_MS = [
+  100, 200, 500,
+  1000, 2000, 5000,
+  10000, 20000, 30000,
+  60000, 120000,
+  300000, 600000, 1800000, 3600000,
+];
 
 // Helper to calculate cumulative Y position for a row index
 const getTrackYPosition = (rows, rowIndex) => {
@@ -494,11 +501,8 @@ function Timeline({
   const tempRulerIntervalMs = (() => {
     const targetPixelsPerInterval = 80;
     const msPerInterval = targetPixelsPerInterval / tempPixelsPerMs;
-    const niceIntervals = [
-      100, 500, 1000, 5000, 10000, 30000, 60000, 300000, 600000, 1800000, 3600000
-    ];
-    let bestInterval = niceIntervals[0];
-    for (const interval of niceIntervals) {
+    let bestInterval = RULER_INTERVALS_MS[0];
+    for (const interval of RULER_INTERVALS_MS) {
       if (Math.abs(interval - msPerInterval) < Math.abs(bestInterval - msPerInterval)) {
         bestInterval = interval;
       }
@@ -542,11 +546,8 @@ function Timeline({
   const calculateRulerInterval = () => {
     const targetPixelsPerInterval = 80;
     const msPerInterval = targetPixelsPerInterval / pixelsPerMs;
-    const niceIntervals = [
-      100, 500, 1000, 5000, 10000, 30000, 60000, 300000, 600000, 1800000, 3600000
-    ];
-    let bestInterval = niceIntervals[0];
-    for (const interval of niceIntervals) {
+    let bestInterval = RULER_INTERVALS_MS[0];
+    for (const interval of RULER_INTERVALS_MS) {
       if (Math.abs(interval - msPerInterval) < Math.abs(bestInterval - msPerInterval)) {
         bestInterval = interval;
       }
@@ -576,26 +577,30 @@ function Timeline({
   }, [pixelsPerMs, timelineWidthPx, containerWidth, currentTimeMs]);
   
   const formatRulerTime = (ms, intervalMs) => {
+    // Zoomed in: show decisecond precision.
     if (intervalMs < 1000) {
-      return `${ms}ms`;
-    }
-    
-    const totalSeconds = ms / 1000;
-    
-    if (intervalMs < 60000) {
-      if (intervalMs < 1000) {
-        return `${totalSeconds.toFixed(1)}s`;
+      const totalDeciseconds = Math.max(0, Math.round(ms / 100));
+      const wholeSeconds = Math.floor(totalDeciseconds / 10);
+      const decisecond = totalDeciseconds % 10;
+
+      if (wholeSeconds === 0) {
+        return `.${decisecond}`;
       }
-      return `${Math.round(totalSeconds)}s`;
+      if (wholeSeconds < 60) {
+        return `${wholeSeconds}.${decisecond}`;
+      }
+      const minutes = Math.floor(wholeSeconds / 60);
+      const seconds = wholeSeconds % 60;
+      return `${minutes}:${seconds.toString().padStart(2, '0')}.${decisecond}`;
     }
-    
+
+    // Zoomed out: show whole seconds only.
+    const totalSeconds = Math.max(0, Math.round(ms / 1000));
+    if (totalSeconds < 60) {
+      return `${totalSeconds}`;
+    }
     const minutes = Math.floor(totalSeconds / 60);
-    const seconds = Math.round(totalSeconds % 60);
-    
-    if (intervalMs >= 1800000 && seconds === 0) {
-      return `${minutes}m`;
-    }
-    
+    const seconds = totalSeconds % 60;
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
   
