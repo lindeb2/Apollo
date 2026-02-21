@@ -2300,6 +2300,10 @@ function Editor({ onBackToDashboard }) {
                 </button>
               </div>
 
+              <div className="flex-shrink-0 text-xl font-mono bg-gray-900 px-3 py-1 rounded">
+                {formatTime(currentTimeMs)}
+              </div>
+
               <div className="flex items-center gap-4 flex-shrink-0">
                 <div className="flex items-center gap-2">
                   <Volume2 size={18} className="text-gray-400" />
@@ -2393,12 +2397,6 @@ function Editor({ onBackToDashboard }) {
                   <Upload size={16} />
                   <span className="text-sm">Export</span>
                 </button>
-              </div>
-            </div>
-
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-              <div className="pointer-events-auto text-xl font-mono bg-gray-900 px-3 py-1 rounded">
-                {formatTime(currentTimeMs)}
               </div>
             </div>
           </div>
