@@ -486,11 +486,6 @@ function Editor({ onBackToDashboard }) {
     return map;
   }, [treeProject]);
   const hasNoTracks = !project.tracks || project.tracks.length === 0;
-  const practiceFocusDiffDb = Number.isFinite(Number(project?.exportSettings?.practiceFocusDiffDb))
-    ? Number(project.exportSettings.practiceFocusDiffDb)
-    : 0;
-  const practiceFocusDiffRatio = (Math.max(-6, Math.min(6, practiceFocusDiffDb)) + 6) / 12;
-  const practiceFocusDiffLabelLeft = `calc(15px + ${practiceFocusDiffRatio} * (100% - 30px))`;
 
   const handleSelectRow = (row) => {
     if (!row) return;
@@ -2517,6 +2512,7 @@ function Editor({ onBackToDashboard }) {
           project={project}
           audioBuffers={audioManager.mediaCache}
           mediaMap={mediaMap}
+          onUpdateExportSettings={handleUpdateExportSettings}
           onClose={() => setShowExportDialog(false)}
         />
       )}
@@ -2647,54 +2643,6 @@ function Editor({ onBackToDashboard }) {
                       </option>
                     ))}
                   </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">transformed pan range</label>
-                  <input
-                    type="number"
-                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                    value={project?.exportSettings?.transformedPanRange ?? 100}
-                    onChange={(e) => handleUpdateExportSettings({ transformedPanRange: Number(e.target.value) })}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">
-                    Practice focus difference (dB)
-                  </label>
-                  <div className="relative px-2 pt-5">
-                    <div
-                      className="absolute -top-0.5 text-[11px] tabular-nums whitespace-nowrap text-white font-medium leading-none pointer-events-none"
-                      style={{
-                        left: practiceFocusDiffLabelLeft,
-                        transform: 'translateX(-50%)',
-                      }}
-                    >
-                      {practiceFocusDiffDb}
-                    </div>
-                    <div className="relative h-6">
-                      <div className="absolute z-0 left-0 right-0 top-1/2 -translate-y-1/2 h-2 rounded-full border border-slate-700 bg-[#0b1528] pointer-events-none" />
-                      <div
-                        className="absolute z-10 left-0 right-0 top-1/2 -translate-y-1/2 flex items-center justify-between pointer-events-none"
-                        style={{ paddingLeft: '7px', paddingRight: '7px' }}
-                      >
-                        {Array.from({ length: 13 }, (_, idx) => (
-                          <span
-                            key={idx}
-                            className={`block w-px ${idx % 2 === 0 ? 'h-3 bg-slate-400/90' : 'h-2 bg-slate-500/90'}`}
-                          />
-                        ))}
-                      </div>
-                      <input
-                        type="range"
-                        min={-6}
-                        max={6}
-                        step={1}
-                        className="relative z-20 w-full practice-diff-slider cursor-pointer"
-                        value={practiceFocusDiffDb}
-                        onChange={(e) => handleUpdateExportSettings({ practiceFocusDiffDb: Number(e.target.value) })}
-                      />
-                    </div>
-                  </div>
                 </div>
               </div>
             </div>

@@ -63,10 +63,6 @@ const useStore = create((set, get) => ({
           inverted,
           manualChoirParts,
         });
-        exportSettings = normalizeExportSettings({
-          transformedPanRange: parsed?.defaultExportPanRange,
-          practiceFocusDiffDb: parsed?.defaultExportPracticeDiffDb,
-        });
         panLawDb = normalizePanLawDb(parsed?.defaultPanLawDb);
       }
     } catch (error) {

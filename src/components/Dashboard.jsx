@@ -33,8 +33,6 @@ function Dashboard({ onOpenProject, onNewProject }) {
     defaultInvertedAutoPan: false,
     defaultManualChoirParts: false,
     defaultPanLawDb: -3,
-    defaultExportPanRange: 100,
-    defaultExportPracticeDiffDb: 0,
   });
   const hasHydratedSettingsRef = useRef(false);
 
@@ -68,14 +66,6 @@ function Dashboard({ onOpenProject, onNewProject }) {
             ? parsed.defaultManualChoirParts
             : prev.defaultManualChoirParts,
         defaultPanLawDb: normalizePanLawDb(parsed.defaultPanLawDb),
-        defaultExportPanRange:
-          typeof parsed.defaultExportPanRange === 'number'
-            ? parsed.defaultExportPanRange
-            : prev.defaultExportPanRange,
-        defaultExportPracticeDiffDb:
-          typeof parsed.defaultExportPracticeDiffDb === 'number'
-            ? parsed.defaultExportPracticeDiffDb
-            : prev.defaultExportPracticeDiffDb,
       }));
     } catch (error) {
       reportUserError(
@@ -90,12 +80,6 @@ function Dashboard({ onOpenProject, onNewProject }) {
     { id: 'off', label: 'Off' },
     ...AUTO_PAN_STRATEGIES,
   ];
-  const defaultPracticeDiffDb = Number.isFinite(Number(audioSettings.defaultExportPracticeDiffDb))
-    ? Number(audioSettings.defaultExportPracticeDiffDb)
-    : 0;
-  const defaultPracticeDiffRatio = (Math.max(-6, Math.min(6, defaultPracticeDiffDb)) + 6) / 12;
-  const defaultPracticeDiffLabelLeft = `calc(15px + ${defaultPracticeDiffRatio} * (100% - 30px))`;
-
   useEffect(() => {
     if (!hasHydratedSettingsRef.current) {
       hasHydratedSettingsRef.current = true;
@@ -205,13 +189,26 @@ function Dashboard({ onOpenProject, onNewProject }) {
   };
 
   const formatDate = (timestamp) => {
-    return new Date(timestamp).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    const value = Number(timestamp);
+    if (!Number.isFinite(value)) return 'unknown';
+
+    const diffMs = Date.now() - value;
+    if (diffMs < 0) return 'just now';
+
+    const minuteMs = 60 * 1000;
+    const hourMs = 60 * minuteMs;
+    const dayMs = 24 * hourMs;
+    const weekMs = 7 * dayMs;
+    const monthMs = 30 * dayMs;
+    const yearMs = 365 * dayMs;
+
+    if (diffMs < minuteMs) return 'just now';
+    if (diffMs < hourMs) return `${Math.floor(diffMs / minuteMs)} min ago`;
+    if (diffMs < dayMs) return `${Math.floor(diffMs / hourMs)} h ago`;
+    if (diffMs < weekMs) return `${Math.floor(diffMs / dayMs)} d ago`;
+    if (diffMs < monthMs) return `${Math.floor(diffMs / weekMs)} w ago`;
+    if (diffMs < yearMs) return `${Math.floor(diffMs / monthMs)} mo ago`;
+    return `${Math.floor(diffMs / yearMs)} y ago`;
   };
 
   const handleImportProject = async (e) => {
@@ -658,64 +655,6 @@ function Dashboard({ onOpenProject, onNewProject }) {
                       </option>
                     ))}
                   </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">transformed pan range</label>
-                  <input
-                    type="number"
-                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                    value={audioSettings.defaultExportPanRange}
-                    onChange={(e) =>
-                      setAudioSettings((prev) => ({
-                        ...prev,
-                        defaultExportPanRange: Number(e.target.value),
-                      }))
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">
-                    Practice focus difference (dB)
-                  </label>
-                  <div className="relative px-2 pt-5">
-                    <div
-                      className="absolute -top-0.5 text-[11px] tabular-nums whitespace-nowrap text-white font-medium leading-none pointer-events-none"
-                      style={{
-                        left: defaultPracticeDiffLabelLeft,
-                        transform: 'translateX(-50%)',
-                      }}
-                    >
-                      {defaultPracticeDiffDb}
-                    </div>
-                    <div className="relative h-6">
-                      <div className="absolute z-0 left-0 right-0 top-1/2 -translate-y-1/2 h-2 rounded-full border border-slate-700 bg-[#0b1528] pointer-events-none" />
-                      <div
-                        className="absolute z-10 left-0 right-0 top-1/2 -translate-y-1/2 flex items-center justify-between pointer-events-none"
-                        style={{ paddingLeft: '7px', paddingRight: '7px' }}
-                      >
-                        {Array.from({ length: 13 }, (_, idx) => (
-                          <span
-                            key={idx}
-                            className={`block w-px ${idx % 2 === 0 ? 'h-3 bg-slate-400/90' : 'h-2 bg-slate-500/90'}`}
-                          />
-                        ))}
-                      </div>
-                      <input
-                        type="range"
-                        min={-6}
-                        max={6}
-                        step={1}
-                        className="relative z-20 w-full practice-diff-slider cursor-pointer"
-                        value={defaultPracticeDiffDb}
-                        onChange={(e) =>
-                          setAudioSettings((prev) => ({
-                            ...prev,
-                            defaultExportPracticeDiffDb: Number(e.target.value),
-                          }))
-                        }
-                      />
-                    </div>
-                  </div>
                 </div>
               </div>
             </div>

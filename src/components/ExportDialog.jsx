@@ -7,6 +7,7 @@ import {
 } from '../lib/exportEngine';
 import { exportAsZIP, downloadFile } from '../lib/projectPortability';
 import { loadExportDirectoryHandle, saveExportDirectoryHandle } from '../lib/db';
+import { normalizeExportSettings } from '../types/project';
 import { hasInvalidExportNameChars, normalizeExportName } from '../utils/naming';
 import { reportUserError } from '../utils/errorReporter';
 import { getEffectiveTrackMix } from '../utils/trackTree';
@@ -341,12 +342,22 @@ async function writeFileToDirectory(rootDirectoryHandle, relativePath, blob) {
   await writable.close();
 }
 
-function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
+function ExportDialog({ project, onClose, audioBuffers, mediaMap, onUpdateExportSettings }) {
   const abortControllerRef = useRef(null);
   const [isExporting, setIsExporting] = useState(false);
   const [selectedLeafNodeIds, setSelectedLeafNodeIds] = useState(new Set(['preset-tutti']));
   const [exportBaseName, setExportBaseName] = useState(project.projectName || 'project');
   const [fileFormat, setFileFormat] = useState('mp3');
+  const [transformedPanRange, setTransformedPanRange] = useState(
+    Number.isFinite(Number(project?.exportSettings?.transformedPanRange))
+      ? Number(project.exportSettings.transformedPanRange)
+      : 100
+  );
+  const [practiceFocusDiffDb, setPracticeFocusDiffDb] = useState(
+    Number.isFinite(Number(project?.exportSettings?.practiceFocusDiffDb))
+      ? Number(project.exportSettings.practiceFocusDiffDb)
+      : 0
+  );
   const [expandedNodeIds, setExpandedNodeIds] = useState(() => new Set(DEFAULT_EXPANDED_NODE_IDS));
   const [showProgressWindow, setShowProgressWindow] = useState(false);
   const [progressMode, setProgressMode] = useState(null);
@@ -361,6 +372,14 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
   const [timeNow, setTimeNow] = useState(Date.now());
   const [remainingEstimateSnapshotMs, setRemainingEstimateSnapshotMs] = useState(null);
   const [remainingEstimateAnchorMs, setRemainingEstimateAnchorMs] = useState(null);
+  const practiceFocusDiffRatio = (Math.max(-6, Math.min(6, practiceFocusDiffDb)) + 6) / 12;
+  const practiceFocusDiffLabelLeft = `calc(15px + ${practiceFocusDiffRatio} * (100% - 30px))`;
+
+  useEffect(() => {
+    const normalized = normalizeExportSettings(project?.exportSettings || {});
+    setTransformedPanRange(normalized.transformedPanRange);
+    setPracticeFocusDiffDb(normalized.practiceFocusDiffDb);
+  }, [project?.projectId, project?.exportSettings]);
 
   const { instrumentUnits, leadUnits, choirUnits } = useMemo(() => {
     const mix = getEffectiveTrackMix(project);
@@ -660,6 +679,11 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
     let directoryHandle;
+    const exportSettingsForRun = normalizeExportSettings({
+      ...(project.exportSettings || {}),
+      transformedPanRange,
+      practiceFocusDiffDb,
+    });
 
     try {
       // Must be called directly from the click gesture (Windows requires this).
@@ -685,7 +709,7 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
         project,
         selectedPresetIds,
         audioBuffers,
-        project.exportSettings,
+        exportSettingsForRun,
         normalizedExportName,
         format,
         {
@@ -796,6 +820,25 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
     await handleExportAudio(fileFormat);
   };
 
+  const handleUpdateExportSetting = (updates) => {
+    const normalized = normalizeExportSettings({
+      ...(project?.exportSettings || {}),
+      transformedPanRange,
+      practiceFocusDiffDb,
+      ...updates,
+    });
+    if (typeof updates.transformedPanRange !== 'undefined') {
+      setTransformedPanRange(normalized.transformedPanRange);
+    }
+    if (typeof updates.practiceFocusDiffDb !== 'undefined') {
+      setPracticeFocusDiffDb(normalized.practiceFocusDiffDb);
+    }
+    onUpdateExportSettings?.({
+      transformedPanRange: normalized.transformedPanRange,
+      practiceFocusDiffDb: normalized.practiceFocusDiffDb,
+    });
+  };
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div
@@ -894,7 +937,7 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
                   <select
                     value={fileFormat}
                     onChange={(e) => setFileFormat(e.target.value)}
-                    className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
                     disabled={isExporting}
                   >
                     <option value="mp3">MP3</option>
@@ -902,25 +945,81 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
                     <option value="zip">ZIP</option>
                   </select>
                 </div>
-                <div className="mb-3">
-                  <label className="block text-xs text-gray-400 mb-1">Export name</label>
-                  <input
-                    type="text"
-                    value={exportBaseName}
-                    onChange={(e) => setExportBaseName(e.target.value)}
-                    className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                    placeholder="Export base name"
-                    disabled={isExporting}
-                  />
+                {fileFormat !== 'zip' && (
+                  <>
+                    <div className="mb-3">
+                      <label className="block text-xs text-gray-400 mb-1">Transformed pan range</label>
+                      <input
+                        type="number"
+                        className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                        value={transformedPanRange}
+                        onChange={(e) => handleUpdateExportSetting({ transformedPanRange: Number(e.target.value) })}
+                        disabled={isExporting}
+                      />
+                    </div>
+                    <div className="mb-3">
+                      <label className="block text-xs text-gray-400 mb-1">
+                        Practice focus difference (dB)
+                      </label>
+                      <div className="relative px-2 pt-5">
+                        <div
+                          className="absolute top-2 text-[11px] tabular-nums whitespace-nowrap text-white font-medium leading-none pointer-events-none"
+                          style={{
+                            left: practiceFocusDiffLabelLeft,
+                            transform: 'translateX(-50%)',
+                          }}
+                        >
+                          {practiceFocusDiffDb}
+                        </div>
+                        <div className="relative h-6">
+                          <div className="absolute z-0 left-0 right-0 top-1/2 -translate-y-1/2 h-2 rounded-full border border-slate-700 bg-[#0b1528] pointer-events-none" />
+                          <div
+                            className="absolute z-10 left-0 right-0 top-1/2 -translate-y-1/2 flex items-center justify-between pointer-events-none"
+                            style={{ paddingLeft: '7px', paddingRight: '7px' }}
+                          >
+                            {Array.from({ length: 13 }, (_, idx) => (
+                              <span
+                                key={idx}
+                                className={`block w-px ${idx % 2 === 0 ? 'h-3 bg-slate-400/90' : 'h-2 bg-slate-500/90'}`}
+                              />
+                            ))}
+                          </div>
+                          <input
+                            type="range"
+                            min={-6}
+                            max={6}
+                            step={1}
+                            className="relative z-20 w-full practice-diff-slider cursor-pointer"
+                            value={practiceFocusDiffDb}
+                            onChange={(e) => handleUpdateExportSetting({ practiceFocusDiffDb: Number(e.target.value) })}
+                            disabled={isExporting}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+                <div className="mt-auto">
+                  <div className="mb-3">
+                    <label className="block text-xs text-gray-400 mb-1">Export name</label>
+                    <input
+                      type="text"
+                      value={exportBaseName}
+                      onChange={(e) => setExportBaseName(e.target.value)}
+                      className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                      placeholder="Export base name"
+                      disabled={isExporting}
+                    />
+                  </div>
+                  <button
+                    onClick={handleExport}
+                    disabled={isExporting || (fileFormat !== 'zip' && selectedPresetIds.length === 0)}
+                    className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Upload size={20} />
+                    <span>Export</span>
+                  </button>
                 </div>
-                <button
-                  onClick={handleExport}
-                  disabled={isExporting || (fileFormat !== 'zip' && selectedPresetIds.length === 0)}
-                  className="w-full mt-auto bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
-                >
-                  <Upload size={20} />
-                  <span>Export</span>
-                </button>
               </div>
             </div>
           </div>
