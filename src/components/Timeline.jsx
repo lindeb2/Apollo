@@ -71,6 +71,7 @@ function Timeline({
   const [visibleDurationMs, setVisibleDurationMs] = useState(null);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [dragState, setDragState] = useState(null);
+  const [dragPreview, setDragPreview] = useState(null);
   const [selectedClipIds, setSelectedClipIds] = useState([]);
   const [selectedClipHistory, setSelectedClipHistory] = useState([]);
   const [selectedClipId, setSelectedClipId] = useState(null);
@@ -79,7 +80,12 @@ function Timeline({
   const [loopMarkerDragState, setLoopMarkerDragState] = useState(null);
   const [timelineSelectionState, setTimelineSelectionState] = useState(null);
   const rightClickDragRef = useRef(false);
+  const dragPreviewRef = useRef(null);
+  const dragMoveRafRef = useRef(null);
+  const dragMovePointRef = useRef(null);
   const timelineSelectionRef = useRef(null);
+  const timelineSelectionRafRef = useRef(null);
+  const timelineSelectionPointRef = useRef(null);
   const timelineSelectionSuppressClickRef = useRef(false);
   const prevProjectDurationRef = useRef(null);
   const shouldCenterOnPlayheadAfterZoomRef = useRef(false);
@@ -215,6 +221,46 @@ function Timeline({
     });
     return map;
   }, [project.tracks]);
+
+  const renderedClipsByTrackId = useMemo(() => {
+    const map = new Map();
+    project.tracks.forEach((track) => {
+      map.set(track.id, []);
+    });
+
+    if (!dragPreview?.clipPatchesById || Object.keys(dragPreview.clipPatchesById).length === 0) {
+      project.tracks.forEach((track) => {
+        map.set(track.id, track.clips);
+      });
+      return map;
+    }
+
+    const clipPatchesById = dragPreview.clipPatchesById;
+    const targetTrackIdByClipId = dragPreview.targetTrackIdByClipId || {};
+
+    project.tracks.forEach((track) => {
+      track.clips.forEach((clip) => {
+        const patch = clipPatchesById[clip.id];
+        if (!patch) {
+          map.get(track.id).push(clip);
+          return;
+        }
+        const targetTrackId = targetTrackIdByClipId[clip.id] || track.id;
+        if (!map.has(targetTrackId)) {
+          map.set(targetTrackId, []);
+        }
+        map.get(targetTrackId).push({ ...clip, ...patch });
+      });
+    });
+
+    map.forEach((clips, trackId) => {
+      if (!Array.isArray(clips)) return;
+      clips.sort((a, b) => a.timelineStartMs - b.timelineStartMs || a.id.localeCompare(b.id));
+      map.set(trackId, clips);
+    });
+
+    return map;
+  }, [project.tracks, dragPreview]);
 
   const visibleTrackIndexByTrackId = useMemo(() => {
     const map = new Map();
@@ -763,6 +809,8 @@ function Timeline({
       trackRowOffset: 0,
       sourceDurationMs: clip.sourceDurationMs,  // Store for validation during drag
     });
+    setDragPreview(null);
+    dragPreviewRef.current = null;
 
     if (!selectedClipIdSet.has(clip.id)) {
       setSelectedClipIds([clip.id]);
@@ -798,305 +846,359 @@ function Timeline({
     return null;
   };
 
+  const getDragActionLabel = (state) => {
+    const count = state?.activeClipIds?.length || 1;
+    if (state?.type === 'move') return count > 1 ? 'Move clips' : 'Move clip';
+    if (state?.type === 'crop-start') return count > 1 ? 'Crop clips start' : 'Crop clip start';
+    if (state?.type === 'crop-end') return count > 1 ? 'Crop clips end' : 'Crop clip end';
+    if (state?.type === 'gain') return count > 1 ? 'Adjust clip gains' : 'Adjust clip gain';
+    return 'Update clips';
+  };
+
+  const buildDragPreviewAtPointer = (state, clientX, clientY) => {
+    const deltaX = clientX - state.startX;
+    const deltaY = clientY - state.startY;
+    const deltaMs = deltaX / pixelsPerMs;
+
+    const track = project.tracks.find((t) => t.id === state.trackId);
+    if (!track) return null;
+
+    const currentClip = track.clips.find((c) => c.id === state.clipId);
+    if (!currentClip) return null;
+
+    const activeClipIds = state.activeClipIds?.length ? state.activeClipIds : [state.clipId];
+    const activeClipIdSet = new Set(activeClipIds);
+    const initialByClipId = state.initialByClipId || {
+      [state.clipId]: {
+        trackId: state.trackId,
+        timelineStartMs: state.initialTimelineStartMs,
+        cropStartMs: state.initialCropStartMs,
+        cropEndMs: state.initialCropEndMs,
+        sourceDurationMs: state.sourceDurationMs,
+        gainDb: state.initialGainDb,
+      },
+    };
+
+    const preview = {
+      type: state.type,
+      clipPatchesById: {},
+      targetTrackIdByClipId: {},
+      clickedTargetTrackId: state.trackId,
+    };
+
+    if (state.type === 'move') {
+      const desiredDeltaMs = deltaMs;
+
+      const computeCandidatesForOffset = (rowOffset) => {
+        const candidates = [];
+        for (const clipId of activeClipIds) {
+          const initial = initialByClipId[clipId];
+          const current = clipLocationById.get(clipId);
+          if (!initial || !current) return null;
+          const initialRowIndex = state.initialTrackRowByClipId?.[clipId];
+          if (initialRowIndex === undefined) return null;
+          const targetRowIndex = initialRowIndex + rowOffset;
+          const targetTrackId = visibleTrackIdByRowIndex.get(targetRowIndex);
+          if (!targetTrackId) return null;
+          candidates.push({
+            clipId,
+            targetTrackId,
+            clip: {
+              ...current.clip,
+              timelineStartMs: initial.timelineStartMs + desiredDeltaMs,
+            },
+          });
+        }
+        return candidates;
+      };
+
+      let desiredRowOffset = dragPreviewRef.current?.trackRowOffset ?? state.trackRowOffset ?? 0;
+      const hoveredRow = getTrackRowAtClientY(clientY);
+      if (hoveredRow?.trackId) {
+        const hoveredIndex = visibleTrackIndexByTrackId.get(hoveredRow.trackId);
+        if (hoveredIndex !== undefined) {
+          desiredRowOffset = hoveredIndex - (state.clickedRowIndex ?? 0);
+        }
+      }
+
+      let candidateEntries = computeCandidatesForOffset(desiredRowOffset);
+      let appliedRowOffset = desiredRowOffset;
+      if (!candidateEntries) {
+        appliedRowOffset = dragPreviewRef.current?.trackRowOffset ?? state.trackRowOffset ?? 0;
+        candidateEntries = computeCandidatesForOffset(appliedRowOffset);
+      }
+      if (!candidateEntries) return null;
+
+      const staticClipsByTrack = new Map();
+      project.tracks.forEach((candidateTrack) => {
+        staticClipsByTrack.set(
+          candidateTrack.id,
+          candidateTrack.clips.filter((clip) => !activeClipIdSet.has(clip.id))
+        );
+      });
+
+      const candidateByTrack = new Map();
+      candidateEntries.forEach((entry) => {
+        if (!candidateByTrack.has(entry.targetTrackId)) {
+          candidateByTrack.set(entry.targetTrackId, []);
+        }
+        candidateByTrack.get(entry.targetTrackId).push(entry.clip);
+      });
+
+      let valid = true;
+      for (const entry of candidateEntries) {
+        if (entry.clip.timelineStartMs < 0) {
+          valid = false;
+          break;
+        }
+      }
+
+      if (valid) {
+        for (const [targetTrackId, movingClips] of candidateByTrack.entries()) {
+          const sortedMoving = [...movingClips].sort((a, b) => a.timelineStartMs - b.timelineStartMs);
+          for (let i = 1; i < sortedMoving.length; i += 1) {
+            const previous = sortedMoving[i - 1];
+            const current = sortedMoving[i];
+            const previousEnd = previous.timelineStartMs + getClipDurationMs(previous);
+            if (current.timelineStartMs < previousEnd) {
+              valid = false;
+              break;
+            }
+          }
+          if (!valid) break;
+
+          const staticClips = staticClipsByTrack.get(targetTrackId) || [];
+          for (const movingClip of movingClips) {
+            if (!canAddClip(movingClip, staticClips)) {
+              valid = false;
+              break;
+            }
+          }
+          if (!valid) break;
+        }
+      }
+
+      if (!valid) return null;
+
+      candidateEntries.forEach((entry) => {
+        preview.clipPatchesById[entry.clipId] = {
+          timelineStartMs: entry.clip.timelineStartMs,
+        };
+        preview.targetTrackIdByClipId[entry.clipId] = entry.targetTrackId;
+      });
+
+      const clickedCandidate = candidateEntries.find((entry) => entry.clipId === state.clipId);
+      if (clickedCandidate) {
+        preview.clickedTargetTrackId = clickedCandidate.targetTrackId;
+      }
+      preview.trackRowOffset = appliedRowOffset;
+      return preview;
+    }
+
+    if (state.type === 'crop-start') {
+      if (activeClipIds.length > 1) {
+        const desiredDeltaMs = deltaMs;
+        let minAllowedDelta = -Infinity;
+        let maxAllowedDelta = Infinity;
+        activeClipIds.forEach((clipId) => {
+          const initial = initialByClipId[clipId];
+          if (!initial) return;
+          minAllowedDelta = Math.max(minAllowedDelta, -initial.cropStartMs, -initial.timelineStartMs);
+          maxAllowedDelta = Math.min(
+            maxAllowedDelta,
+            initial.cropEndMs - MIN_CLIP_DURATION_MS - initial.cropStartMs
+          );
+        });
+        const appliedDeltaMs = Math.max(minAllowedDelta, Math.min(maxAllowedDelta, desiredDeltaMs));
+        activeClipIds.forEach((clipId) => {
+          const initial = initialByClipId[clipId];
+          if (!initial) return;
+          preview.clipPatchesById[clipId] = {
+            cropStartMs: initial.cropStartMs + appliedDeltaMs,
+            timelineStartMs: initial.timelineStartMs + appliedDeltaMs,
+          };
+          preview.targetTrackIdByClipId[clipId] = initial.trackId;
+        });
+        return preview;
+      }
+
+      const proposedCropStartMs = state.initialCropStartMs + deltaMs;
+      const constrainedCropStartMs = constrainCropStart(
+        { ...currentClip, cropStartMs: state.initialCropStartMs },
+        proposedCropStartMs,
+        track.clips
+      );
+      const cropDelta = constrainedCropStartMs - state.initialCropStartMs;
+      preview.clipPatchesById[state.clipId] = {
+        cropStartMs: constrainedCropStartMs,
+        timelineStartMs: state.initialTimelineStartMs + cropDelta,
+      };
+      preview.targetTrackIdByClipId[state.clipId] = state.trackId;
+      return preview;
+    }
+
+    if (state.type === 'crop-end') {
+      if (activeClipIds.length > 1) {
+        const desiredDeltaMs = deltaMs;
+        let minAllowedDelta = -Infinity;
+        let maxAllowedDelta = Infinity;
+        activeClipIds.forEach((clipId) => {
+          const initial = initialByClipId[clipId];
+          if (!initial) return;
+          minAllowedDelta = Math.max(
+            minAllowedDelta,
+            initial.cropStartMs + MIN_CLIP_DURATION_MS - initial.cropEndMs
+          );
+          maxAllowedDelta = Math.min(maxAllowedDelta, initial.sourceDurationMs - initial.cropEndMs);
+        });
+        const appliedDeltaMs = Math.max(minAllowedDelta, Math.min(maxAllowedDelta, desiredDeltaMs));
+        activeClipIds.forEach((clipId) => {
+          const initial = initialByClipId[clipId];
+          if (!initial) return;
+          preview.clipPatchesById[clipId] = {
+            cropEndMs: initial.cropEndMs + appliedDeltaMs,
+          };
+          preview.targetTrackIdByClipId[clipId] = initial.trackId;
+        });
+        return preview;
+      }
+
+      const proposedCropEndMs = state.initialCropEndMs + deltaMs;
+      const constrainedCropEndMs = constrainCropEnd(
+        { ...currentClip, cropEndMs: state.initialCropEndMs, sourceDurationMs: state.sourceDurationMs },
+        proposedCropEndMs,
+        track.clips
+      );
+      preview.clipPatchesById[state.clipId] = {
+        cropEndMs: constrainedCropEndMs,
+      };
+      preview.targetTrackIdByClipId[state.clipId] = state.trackId;
+      return preview;
+    }
+
+    if (state.type === 'gain') {
+      const gainDragPixels = 300;
+      const distance = Math.min(1, Math.abs(deltaY) / gainDragPixels);
+      const shaped = distance * distance * distance;
+      const deltaPosition = Math.sign(-deltaY) * shaped;
+      const nextPosition = Math.max(
+        0,
+        Math.min(1, state.initialGainPosition + deltaPosition)
+      );
+      const nextGainDb = positionToClipGainDb(nextPosition);
+
+      if (activeClipIds.length > 1) {
+        const clickedInitial = initialByClipId[state.clipId]?.gainDb ?? state.initialGainDb;
+        const desiredDeltaDb = nextGainDb - clickedInitial;
+        let minAllowedDeltaDb = -Infinity;
+        let maxAllowedDeltaDb = Infinity;
+        activeClipIds.forEach((clipId) => {
+          const initial = initialByClipId[clipId];
+          if (!initial) return;
+          minAllowedDeltaDb = Math.max(minAllowedDeltaDb, MIN_CLIP_GAIN_DB - initial.gainDb);
+          maxAllowedDeltaDb = Math.min(maxAllowedDeltaDb, MAX_CLIP_GAIN_DB - initial.gainDb);
+        });
+        const appliedDeltaDb = Math.max(minAllowedDeltaDb, Math.min(maxAllowedDeltaDb, desiredDeltaDb));
+        activeClipIds.forEach((clipId) => {
+          const initial = initialByClipId[clipId];
+          if (!initial) return;
+          const nextDb = Math.max(MIN_CLIP_GAIN_DB, Math.min(MAX_CLIP_GAIN_DB, initial.gainDb + appliedDeltaDb));
+          preview.clipPatchesById[clipId] = {
+            gainDb: Math.abs(nextDb) < 0.1 ? 0 : nextDb,
+          };
+          preview.targetTrackIdByClipId[clipId] = initial.trackId;
+        });
+        return preview;
+      }
+
+      const clippedDb = Math.max(MIN_CLIP_GAIN_DB, Math.min(MAX_CLIP_GAIN_DB, nextGainDb));
+      preview.clipPatchesById[state.clipId] = {
+        gainDb: Math.abs(clippedDb) < 0.1 ? 0 : clippedDb,
+      };
+      preview.targetTrackIdByClipId[state.clipId] = state.trackId;
+      return preview;
+    }
+
+    return null;
+  };
+
+  const commitDragPreview = (state, preview) => {
+    if (!state || !preview || !preview.clipPatchesById) return;
+    const clipPatchesById = preview.clipPatchesById;
+    const targetTrackIdByClipId = preview.targetTrackIdByClipId || {};
+    const hasChanges = Object.keys(clipPatchesById).length > 0;
+    if (!hasChanges) return;
+
+    updateProject((proj) => {
+      const additionsByTrackId = new Map();
+      const nextTracks = proj.tracks.map((candidateTrack) => {
+        const keptClips = [];
+        candidateTrack.clips.forEach((candidateClip) => {
+          const patch = clipPatchesById[candidateClip.id];
+          if (!patch) {
+            keptClips.push(candidateClip);
+            return;
+          }
+          const nextTrackId = targetTrackIdByClipId[candidateClip.id] || candidateTrack.id;
+          const updatedClip = { ...candidateClip, ...patch };
+          if (!additionsByTrackId.has(nextTrackId)) {
+            additionsByTrackId.set(nextTrackId, []);
+          }
+          additionsByTrackId.get(nextTrackId).push(updatedClip);
+        });
+        return {
+          ...candidateTrack,
+          clips: keptClips,
+        };
+      }).map((candidateTrack) => {
+        const additions = additionsByTrackId.get(candidateTrack.id) || [];
+        if (!additions.length) return candidateTrack;
+        const mergedClips = [...candidateTrack.clips, ...additions]
+          .sort((a, b) => a.timelineStartMs - b.timelineStartMs || a.id.localeCompare(b.id));
+        return {
+          ...candidateTrack,
+          clips: mergedClips,
+        };
+      });
+
+      return {
+        ...proj,
+        tracks: nextTracks,
+      };
+    }, getDragActionLabel(state));
+
+    if (preview.clickedTargetTrackId) {
+      const row = trackRowByTrackId.get(preview.clickedTargetTrackId);
+      if (row) selectRow(row);
+    }
+  };
+
   useEffect(() => {
     if (!dragState) return;
 
-    const handleMouseMove = (e) => {
-      const deltaX = e.clientX - dragState.startX;
-      const deltaY = e.clientY - dragState.startY;
-      const deltaMs = deltaX / pixelsPerMs;
+    const processDragPointerMove = () => {
+      dragMoveRafRef.current = null;
+      const point = dragMovePointRef.current;
+      if (!point) return;
 
-      let updates = {};
-
-      // Find the current track's clips for collision detection
-      const track = project.tracks.find(t => t.id === dragState.trackId);
-      if (!track) return;
-      
-      const currentClip = track.clips.find(c => c.id === dragState.clipId);
-      if (!currentClip) return;
-
-      const activeClipIds = dragState.activeClipIds?.length
-        ? dragState.activeClipIds
-        : [dragState.clipId];
-      const activeClipIdSet = new Set(activeClipIds);
-      const initialByClipId = dragState.initialByClipId || {
-        [dragState.clipId]: {
-          trackId: dragState.trackId,
-          timelineStartMs: dragState.initialTimelineStartMs,
-          cropStartMs: dragState.initialCropStartMs,
-          cropEndMs: dragState.initialCropEndMs,
-          sourceDurationMs: dragState.sourceDurationMs,
-          gainDb: dragState.initialGainDb,
-        },
-      };
-
-      if (dragState.type === 'move') {
-        const desiredDeltaMs = deltaMs;
-
-        const computeCandidatesForOffset = (rowOffset) => {
-          const candidates = [];
-          for (const clipId of activeClipIds) {
-            const initial = initialByClipId[clipId];
-            const current = clipLocationById.get(clipId);
-            if (!initial || !current) return null;
-            const initialRowIndex = dragState.initialTrackRowByClipId?.[clipId];
-            if (initialRowIndex === undefined) return null;
-            const targetRowIndex = initialRowIndex + rowOffset;
-            const targetTrackId = visibleTrackIdByRowIndex.get(targetRowIndex);
-            if (!targetTrackId) return null;
-            candidates.push({
-              clipId,
-              targetTrackId,
-              clip: {
-                ...current.clip,
-                timelineStartMs: initial.timelineStartMs + desiredDeltaMs,
-              },
-            });
-          }
-          return candidates;
-        };
-
-        let desiredRowOffset = dragState.trackRowOffset ?? 0;
-        const hoveredRow = getTrackRowAtClientY(e.clientY);
-        if (hoveredRow?.trackId) {
-          const hoveredIndex = visibleTrackIndexByTrackId.get(hoveredRow.trackId);
-          if (hoveredIndex !== undefined) {
-            desiredRowOffset = hoveredIndex - (dragState.clickedRowIndex ?? 0);
-          }
-        }
-
-        let candidateEntries = computeCandidatesForOffset(desiredRowOffset);
-        let appliedRowOffset = desiredRowOffset;
-        if (!candidateEntries) {
-          appliedRowOffset = dragState.trackRowOffset ?? 0;
-          candidateEntries = computeCandidatesForOffset(appliedRowOffset);
-        }
-        if (!candidateEntries) {
-          return;
-        }
-
-        const staticClipsByTrack = new Map();
-        project.tracks.forEach((candidateTrack) => {
-          staticClipsByTrack.set(
-            candidateTrack.id,
-            candidateTrack.clips.filter((clip) => !activeClipIdSet.has(clip.id))
-          );
-        });
-
-        const candidateByTrack = new Map();
-        candidateEntries.forEach((entry) => {
-          if (!candidateByTrack.has(entry.targetTrackId)) {
-            candidateByTrack.set(entry.targetTrackId, []);
-          }
-          candidateByTrack.get(entry.targetTrackId).push(entry.clip);
-        });
-
-        let valid = true;
-        for (const entry of candidateEntries) {
-          if (entry.clip.timelineStartMs < 0) {
-            valid = false;
-            break;
-          }
-        }
-
-        if (valid) {
-          for (const [targetTrackId, movingClips] of candidateByTrack.entries()) {
-            const sortedMoving = [...movingClips].sort((a, b) => a.timelineStartMs - b.timelineStartMs);
-            for (let i = 1; i < sortedMoving.length; i += 1) {
-              const previous = sortedMoving[i - 1];
-              const current = sortedMoving[i];
-              const previousEnd = previous.timelineStartMs + getClipDurationMs(previous);
-              if (current.timelineStartMs < previousEnd) {
-                valid = false;
-                break;
-              }
-            }
-            if (!valid) break;
-
-            const staticClips = staticClipsByTrack.get(targetTrackId) || [];
-            for (const movingClip of movingClips) {
-              if (!canAddClip(movingClip, staticClips)) {
-                valid = false;
-                break;
-              }
-            }
-            if (!valid) break;
-          }
-        }
-
-        if (!valid) {
-          return;
-        }
-
-        const additionsByTrack = new Map();
-        candidateEntries.forEach((entry) => {
-          if (!additionsByTrack.has(entry.targetTrackId)) {
-            additionsByTrack.set(entry.targetTrackId, []);
-          }
-          additionsByTrack.get(entry.targetTrackId).push(entry.clip);
-        });
-
-        updateProject((proj) => ({
-          ...proj,
-          tracks: proj.tracks.map((candidateTrack) => {
-            const remaining = candidateTrack.clips.filter((clip) => !activeClipIdSet.has(clip.id));
-            const additions = additionsByTrack.get(candidateTrack.id) || [];
-            return {
-              ...candidateTrack,
-              clips: [...remaining, ...additions],
-            };
-          }),
-        }), activeClipIds.length > 1 ? 'Move clips' : 'Move clip');
-
-        const clickedCandidate = candidateEntries.find((entry) => entry.clipId === dragState.clipId);
-        if (clickedCandidate) {
-          const row = trackRowByTrackId.get(clickedCandidate.targetTrackId);
-          if (row) selectRow(row);
-          setDragState((prev) => ({
-            ...prev,
-            trackId: clickedCandidate.targetTrackId,
-            trackRowOffset: appliedRowOffset,
-          }));
-        }
-        return;
-
-      } else if (dragState.type === 'crop-start') {
-        if (activeClipIds.length > 1) {
-          const desiredDeltaMs = deltaMs;
-          let minAllowedDelta = -Infinity;
-          let maxAllowedDelta = Infinity;
-          activeClipIds.forEach((clipId) => {
-            const initial = initialByClipId[clipId];
-            if (!initial) return;
-            minAllowedDelta = Math.max(minAllowedDelta, -initial.cropStartMs, -initial.timelineStartMs);
-            maxAllowedDelta = Math.min(
-              maxAllowedDelta,
-              initial.cropEndMs - MIN_CLIP_DURATION_MS - initial.cropStartMs
-            );
-          });
-          const appliedDeltaMs = Math.max(minAllowedDelta, Math.min(maxAllowedDelta, desiredDeltaMs));
-          updateProject((proj) => ({
-            ...proj,
-            tracks: proj.tracks.map((candidateTrack) => ({
-              ...candidateTrack,
-              clips: candidateTrack.clips.map((candidateClip) => {
-                if (!activeClipIdSet.has(candidateClip.id)) return candidateClip;
-                const initial = initialByClipId[candidateClip.id];
-                if (!initial) return candidateClip;
-                return {
-                  ...candidateClip,
-                  cropStartMs: initial.cropStartMs + appliedDeltaMs,
-                  timelineStartMs: initial.timelineStartMs + appliedDeltaMs,
-                };
-              }),
-            })),
-          }), 'Crop clips start');
-          return;
-        }
-
-        const proposedCropStartMs = dragState.initialCropStartMs + deltaMs;
-        const constrainedCropStartMs = constrainCropStart(
-          { ...currentClip, cropStartMs: dragState.initialCropStartMs },
-          proposedCropStartMs,
-          track.clips
-        );
-        const cropDelta = constrainedCropStartMs - dragState.initialCropStartMs;
-        updates.cropStartMs = constrainedCropStartMs;
-        updates.timelineStartMs = dragState.initialTimelineStartMs + cropDelta;
-
-      } else if (dragState.type === 'crop-end') {
-        if (activeClipIds.length > 1) {
-          const desiredDeltaMs = deltaMs;
-          let minAllowedDelta = -Infinity;
-          let maxAllowedDelta = Infinity;
-          activeClipIds.forEach((clipId) => {
-            const initial = initialByClipId[clipId];
-            if (!initial) return;
-            minAllowedDelta = Math.max(
-              minAllowedDelta,
-              initial.cropStartMs + MIN_CLIP_DURATION_MS - initial.cropEndMs
-            );
-            maxAllowedDelta = Math.min(maxAllowedDelta, initial.sourceDurationMs - initial.cropEndMs);
-          });
-          const appliedDeltaMs = Math.max(minAllowedDelta, Math.min(maxAllowedDelta, desiredDeltaMs));
-          updateProject((proj) => ({
-            ...proj,
-            tracks: proj.tracks.map((candidateTrack) => ({
-              ...candidateTrack,
-              clips: candidateTrack.clips.map((candidateClip) => {
-                if (!activeClipIdSet.has(candidateClip.id)) return candidateClip;
-                const initial = initialByClipId[candidateClip.id];
-                if (!initial) return candidateClip;
-                return {
-                  ...candidateClip,
-                  cropEndMs: initial.cropEndMs + appliedDeltaMs,
-                };
-              }),
-            })),
-          }), 'Crop clips end');
-          return;
-        }
-
-        const proposedCropEndMs = dragState.initialCropEndMs + deltaMs;
-        const constrainedCropEndMs = constrainCropEnd(
-          { ...currentClip, cropEndMs: dragState.initialCropEndMs, sourceDurationMs: dragState.sourceDurationMs },
-          proposedCropEndMs,
-          track.clips
-        );
-        updates.cropEndMs = constrainedCropEndMs;
-
-      } else if (dragState.type === 'gain') {
-        if (deltaX !== 0 || deltaY !== 0) {
+      if (dragState.type === 'gain') {
+        const dx = point.clientX - dragState.startX;
+        const dy = point.clientY - dragState.startY;
+        if (dx !== 0 || dy !== 0) {
           rightClickDragRef.current = true;
         }
-        const gainDragPixels = 300;
-        const distance = Math.min(1, Math.abs(deltaY) / gainDragPixels);
-        const shaped = distance * distance * distance;
-        const deltaPosition = Math.sign(-deltaY) * shaped;
-        const nextPosition = Math.max(
-          0,
-          Math.min(1, dragState.initialGainPosition + deltaPosition)
-        );
-        const nextGainDb = positionToClipGainDb(nextPosition);
-
-        if (activeClipIds.length > 1) {
-          const clickedInitial = initialByClipId[dragState.clipId]?.gainDb ?? dragState.initialGainDb;
-          const desiredDeltaDb = nextGainDb - clickedInitial;
-          let minAllowedDeltaDb = -Infinity;
-          let maxAllowedDeltaDb = Infinity;
-          activeClipIds.forEach((clipId) => {
-            const initial = initialByClipId[clipId];
-            if (!initial) return;
-            minAllowedDeltaDb = Math.max(minAllowedDeltaDb, MIN_CLIP_GAIN_DB - initial.gainDb);
-            maxAllowedDeltaDb = Math.min(maxAllowedDeltaDb, MAX_CLIP_GAIN_DB - initial.gainDb);
-          });
-          const appliedDeltaDb = Math.max(minAllowedDeltaDb, Math.min(maxAllowedDeltaDb, desiredDeltaDb));
-          updateProject((proj) => ({
-            ...proj,
-            tracks: proj.tracks.map((candidateTrack) => ({
-              ...candidateTrack,
-              clips: candidateTrack.clips.map((candidateClip) => {
-                if (!activeClipIdSet.has(candidateClip.id)) return candidateClip;
-                const initial = initialByClipId[candidateClip.id];
-                if (!initial) return candidateClip;
-                const nextDb = Math.max(MIN_CLIP_GAIN_DB, Math.min(MAX_CLIP_GAIN_DB, initial.gainDb + appliedDeltaDb));
-                return {
-                  ...candidateClip,
-                  gainDb: Math.abs(nextDb) < 0.1 ? 0 : nextDb,
-                };
-              }),
-            })),
-          }), 'Adjust clip gains');
-          return;
-        }
-
-        const clippedDb = Math.max(MIN_CLIP_GAIN_DB, Math.min(MAX_CLIP_GAIN_DB, nextGainDb));
-        updates.gainDb = Math.abs(clippedDb) < 0.1 ? 0 : clippedDb;
       }
 
-      if (Object.keys(updates).length > 0) {
-        onUpdateClip(dragState.trackId, dragState.clipId, updates);
-      }
+      const preview = buildDragPreviewAtPointer(dragState, point.clientX, point.clientY);
+      if (!preview) return;
+      dragPreviewRef.current = preview;
+      setDragPreview(preview);
+    };
+
+    const handleMouseMove = (e) => {
+      dragMovePointRef.current = { clientX: e.clientX, clientY: e.clientY };
+      if (dragMoveRafRef.current !== null) return;
+      dragMoveRafRef.current = window.requestAnimationFrame(processDragPointerMove);
     };
 
     const handleMouseUp = () => {
@@ -1128,7 +1230,11 @@ function Timeline({
           }), shouldMute ? 'Mute clips' : 'Unmute clips');
         }
         rightClickDragRef.current = false;
+      } else {
+        commitDragPreview(dragState, dragPreviewRef.current);
       }
+      dragPreviewRef.current = null;
+      setDragPreview(null);
       setDragState(null);
     };
 
@@ -1136,28 +1242,47 @@ function Timeline({
     window.addEventListener('mouseup', handleMouseUp);
 
     return () => {
+      if (dragMoveRafRef.current !== null) {
+        window.cancelAnimationFrame(dragMoveRafRef.current);
+        dragMoveRafRef.current = null;
+      }
+      dragMovePointRef.current = null;
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragState, pixelsPerMs, onUpdateClip, project.tracks, updateProject, timelineRows]);
+  }, [
+    dragState,
+    pixelsPerMs,
+    project.tracks,
+    clipLocationById,
+    visibleTrackIdByRowIndex,
+    visibleTrackIndexByTrackId,
+    trackRowByTrackId,
+    timelineRows,
+    updateProject,
+  ]);
 
   useEffect(() => {
     if (!timelineSelectionState) return;
 
-    const handleMouseMove = (e) => {
+    const processSelectionPointerMove = () => {
+      timelineSelectionRafRef.current = null;
+      const pointer = timelineSelectionPointRef.current;
+      if (!pointer) return;
+
       const current = timelineSelectionRef.current;
       if (!current) return;
-      const point = getTimelineContentPoint(e.clientX, e.clientY);
+      const point = getTimelineContentPoint(pointer.clientX, pointer.clientY);
       if (!point) return;
 
       const movedNow = (
-        e.clientX !== current.startClientX ||
-        e.clientY !== current.startClientY
+        pointer.clientX !== current.startClientX ||
+        pointer.clientY !== current.startClientY
       );
       const next = {
         ...current,
-        currentClientX: e.clientX,
-        currentClientY: e.clientY,
+        currentClientX: pointer.clientX,
+        currentClientY: pointer.clientY,
         currentX: point.x,
         currentY: point.y,
         moved: current.moved || movedNow,
@@ -1174,6 +1299,12 @@ function Timeline({
       setSelectedClipIds(selectedIds);
       setSelectedClipHistory(selectedIds);
       setSelectedClipId(selectedIds[selectedIds.length - 1] || null);
+    };
+
+    const handleMouseMove = (e) => {
+      timelineSelectionPointRef.current = { clientX: e.clientX, clientY: e.clientY };
+      if (timelineSelectionRafRef.current !== null) return;
+      timelineSelectionRafRef.current = window.requestAnimationFrame(processSelectionPointerMove);
     };
 
     const handleMouseUp = (e) => {
@@ -1209,6 +1340,11 @@ function Timeline({
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
     return () => {
+      if (timelineSelectionRafRef.current !== null) {
+        window.cancelAnimationFrame(timelineSelectionRafRef.current);
+        timelineSelectionRafRef.current = null;
+      }
+      timelineSelectionPointRef.current = null;
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
@@ -1226,6 +1362,13 @@ function Timeline({
       clearSelectedClips();
     }
   }, [selectedRowKind]);
+
+  useEffect(() => {
+    if (!dragState && dragPreviewRef.current) {
+      dragPreviewRef.current = null;
+      setDragPreview(null);
+    }
+  }, [dragState]);
 
   useEffect(() => {
     const validClipIds = new Set();
@@ -2236,9 +2379,10 @@ function Timeline({
                 const track = row.track;
                 const trackHeight = row.height;
                 const trackState = trackStateById.get(track.id);
-                const hasAnyAudibleClip = track.clips.some((clip) => !clip.muted);
+                const trackClips = renderedClipsByTrackId.get(track.id) || track.clips;
+                const hasAnyAudibleClip = trackClips.some((clip) => !clip.muted);
                 const trackInactive = Boolean(
-                  !trackState?.audible || (track.clips.length > 0 && !hasAnyAudibleClip)
+                  !trackState?.audible || (trackClips.length > 0 && !hasAnyAudibleClip)
                 );
 
                 return (
@@ -2252,7 +2396,7 @@ function Timeline({
                       width: '100%'
                     }}
                   >
-                    {track.clips.map(clip => {
+                    {trackClips.map(clip => {
                       const clipDurationMs = clip.cropEndMs - clip.cropStartMs;
                       const clipWidthPx = clipDurationMs * pixelsPerMs;
                       const clipLeftPx = clip.timelineStartMs * pixelsPerMs;
