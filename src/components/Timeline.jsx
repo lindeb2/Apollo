@@ -1437,7 +1437,7 @@ function Timeline({
         return;
       }
 
-      if (e.code === 'KeyT' && hasSelectedClips) { /* TODO: add isPrimaryModifierPressed(e) again */
+      if (e.code === 'KeyC' && !e.ctrlKey && !e.metaKey && hasSelectedClips) {
         e.preventDefault();
         const selectedIdSet = new Set(selectedClipIds);
         const rightClipIds = [];

@@ -46,8 +46,8 @@ function useKeyboardShortcuts({
         onRecord?.();
       }
 
-      // C - Toggle Loop
-      if (e.code === 'KeyC' && !e.ctrlKey && !e.metaKey) {
+      // L - Toggle Loop
+      if (e.code === 'KeyL' && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
         onToggleLoop?.();
       }
