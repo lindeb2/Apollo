@@ -1,41 +1,254 @@
-import { useMemo, useState } from 'react';
-import { Upload, X, FileArchive, FileJson } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Upload, X, ChevronRight, ChevronDown } from 'lucide-react';
 import {
   EXPORT_PRESETS,
   EXPORT_PRESET_DEFINITIONS,
   exportProject,
 } from '../lib/exportEngine';
-import { exportAsJSON, exportAsZIP, downloadFile } from '../lib/projectPortability';
+import { exportAsZIP, downloadFile } from '../lib/projectPortability';
 import { loadExportDirectoryHandle, saveExportDirectoryHandle } from '../lib/db';
 import { hasInvalidExportNameChars, normalizeExportName } from '../utils/naming';
 import { reportUserError } from '../utils/errorReporter';
-
-const AUDIO_EXPORT_SECTIONS = [
-  {
-    title: 'Root',
-    presetIds: [EXPORT_PRESETS.TUTTI],
-  },
-  {
-    title: 'Root / One Group Omitted',
-    presetIds: [EXPORT_PRESETS.ACAPELLA, EXPORT_PRESETS.NO_LEAD, EXPORT_PRESETS.NO_CHOIR],
-  },
-  {
-    title: 'Root / Separated Groups',
-    presetIds: [EXPORT_PRESETS.INSTRUMENTAL, EXPORT_PRESETS.LEAD_ONLY, EXPORT_PRESETS.CHOIR_ONLY],
-  },
-  {
-    title: 'Root / Practice / Normal',
-    presetIds: [EXPORT_PRESETS.INSTRUMENT_PARTS, EXPORT_PRESETS.LEAD_PARTS, EXPORT_PRESETS.CHOIR_PARTS],
-  },
-  {
-    title: 'Root / Practice / Omitted',
-    presetIds: [EXPORT_PRESETS.INSTRUMENT_PARTS_OMITTED, EXPORT_PRESETS.LEAD_PARTS_OMITTED, EXPORT_PRESETS.CHOIR_PARTS_OMITTED],
-  },
-];
+import { getEffectiveTrackMix } from '../utils/trackTree';
+import {
+  TRACK_ROLE_CHOIR,
+  TRACK_ROLE_INSTRUMENT,
+  TRACK_ROLE_LEAD,
+} from '../utils/trackRoles';
 
 const PRESET_BY_ID = Object.fromEntries(
   EXPORT_PRESET_DEFINITIONS.map((preset) => [preset.id, preset])
 );
+const DEFAULT_EXPANDED_NODE_IDS = new Set(['all', 'practice']);
+const EXPORT_DIALOG_PRESET_LABEL_OVERRIDES = {
+  [EXPORT_PRESETS.ACAPELLA]: 'Instruments',
+  [EXPORT_PRESETS.NO_LEAD]: 'Leads',
+  [EXPORT_PRESETS.NO_CHOIR]: 'Choir',
+  [EXPORT_PRESETS.INSTRUMENTAL]: 'Instruments',
+  [EXPORT_PRESETS.LEAD_ONLY]: 'Lead',
+  [EXPORT_PRESETS.CHOIR_ONLY]: 'Choir',
+  [EXPORT_PRESETS.INSTRUMENT_PARTS]: 'Instruments',
+  [EXPORT_PRESETS.LEAD_PARTS]: 'Leads',
+  [EXPORT_PRESETS.CHOIR_PARTS]: 'Choir',
+  [EXPORT_PRESETS.INSTRUMENT_PARTS_OMITTED]: 'Instruments',
+  [EXPORT_PRESETS.LEAD_PARTS_OMITTED]: 'Leads',
+  [EXPORT_PRESETS.CHOIR_PARTS_OMITTED]: 'Choir',
+};
+function formatElapsedAdaptive(ms) {
+  const totalSeconds = Math.max(0, Math.floor((ms || 0) / 1000));
+  if (totalSeconds < 10) return `${totalSeconds}s`;
+  if (totalSeconds < 60) return `${String(totalSeconds).padStart(2, '0')}s`;
+
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  if (minutes < 10) {
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function formatSecondsAsClock(totalSeconds) {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function formatEstimatedRemainingCustom(ms) {
+  if (!Number.isFinite(ms)) return '...';
+  const secondsRaw = Math.ceil(ms / 1000);
+  if (secondsRaw < 0) return 'soon, i promise';
+
+  if (secondsRaw <= 10) {
+    return `${secondsRaw}s`;
+  }
+
+  if (secondsRaw <= 30) {
+    const rounded = Math.round(secondsRaw / 5) * 5;
+    return `${rounded}s`;
+  }
+
+  if (secondsRaw <= 120) {
+    const rounded = Math.round(secondsRaw / 10) * 10;
+    if (rounded > 60) return formatSecondsAsClock(rounded);
+    return `${rounded}s`;
+  }
+
+  if (secondsRaw <= 300) {
+    const rounded = Math.round(secondsRaw / 30) * 30;
+    return formatSecondsAsClock(rounded);
+  }
+
+  const roundedMinutes = Math.round(secondsRaw / 60);
+  return `${roundedMinutes} min`;
+}
+
+function getRoleUnits(activeTracks, trackStateById, role) {
+  const unitsById = new Map();
+  for (const track of activeTracks) {
+    const state = trackStateById.get(track.id);
+    if (state?.effectiveRole !== role) continue;
+    const unitId = state.roleUnitId || `track:${track.id}`;
+    if (!unitsById.has(unitId)) {
+      unitsById.set(unitId, {
+        unitId,
+        label: state.roleUnitName || track.name,
+      });
+    }
+  }
+  return Array.from(unitsById.values());
+}
+
+function getChoirUnits(activeTracks, trackStateById) {
+  const unitsById = new Map();
+  for (const track of activeTracks) {
+    const state = trackStateById.get(track.id);
+    if (state?.effectiveRole !== TRACK_ROLE_CHOIR) continue;
+    const unitId = state.choirUnitId || state.roleUnitId || `track:${track.id}`;
+    if (!unitsById.has(unitId)) {
+      unitsById.set(unitId, {
+        unitId,
+        label: state.choirUnitName || state.roleUnitName || track.name,
+      });
+    }
+  }
+  return Array.from(unitsById.values());
+}
+
+function buildPracticePartNodes(units, presetId, idPrefix) {
+  return units.map((unit) => ({
+    id: `${idPrefix}:${unit.unitId}`,
+    label: unit.label,
+    presetId,
+    unitId: unit.unitId,
+  }));
+}
+
+function buildAudioExportTree(instrumentUnits, leadUnits, choirUnits) {
+  return {
+    id: 'all',
+    label: 'All',
+    children: [
+      { id: 'preset-tutti', presetId: EXPORT_PRESETS.TUTTI },
+      {
+        id: 'one-group-omitted',
+        label: 'One Group Ommited',
+        children: [
+          { id: 'preset-acapella', presetId: EXPORT_PRESETS.ACAPELLA },
+          { id: 'preset-no-lead', presetId: EXPORT_PRESETS.NO_LEAD },
+          { id: 'preset-no-choir', presetId: EXPORT_PRESETS.NO_CHOIR },
+        ],
+      },
+      {
+        id: 'separated-groups',
+        label: 'Separated Groups',
+        children: [
+          { id: 'preset-instrumental', presetId: EXPORT_PRESETS.INSTRUMENTAL },
+          { id: 'preset-lead-only', presetId: EXPORT_PRESETS.LEAD_ONLY },
+          { id: 'preset-choir-only', presetId: EXPORT_PRESETS.CHOIR_ONLY },
+        ],
+      },
+      {
+        id: 'practice',
+        label: 'Practice',
+        children: [
+          {
+            id: 'practice-normal',
+            label: 'Normal',
+            children: [
+              {
+                id: 'normal-instruments',
+                label: 'Instruments',
+                children: buildPracticePartNodes(
+                  instrumentUnits,
+                  EXPORT_PRESETS.INSTRUMENT_PARTS,
+                  'part-normal-instrument'
+                ),
+              },
+              {
+                id: 'normal-leads',
+                label: 'Leads',
+                children: buildPracticePartNodes(
+                  leadUnits,
+                  EXPORT_PRESETS.LEAD_PARTS,
+                  'part-normal-lead'
+                ),
+              },
+              {
+                id: 'normal-choir',
+                label: 'Choir',
+                children: buildPracticePartNodes(
+                  choirUnits,
+                  EXPORT_PRESETS.CHOIR_PARTS,
+                  'part-normal-choir'
+                ),
+              },
+            ],
+          },
+          {
+            id: 'practice-omitted',
+            label: 'Ommited',
+            children: [
+              {
+                id: 'omitted-instruments',
+                label: 'Instruments',
+                children: buildPracticePartNodes(
+                  instrumentUnits,
+                  EXPORT_PRESETS.INSTRUMENT_PARTS_OMITTED,
+                  'part-omitted-instrument'
+                ),
+              },
+              {
+                id: 'omitted-leads',
+                label: 'Leads',
+                children: buildPracticePartNodes(
+                  leadUnits,
+                  EXPORT_PRESETS.LEAD_PARTS_OMITTED,
+                  'part-omitted-lead'
+                ),
+              },
+              {
+                id: 'omitted-choir',
+                label: 'Choir',
+                children: buildPracticePartNodes(
+                  choirUnits,
+                  EXPORT_PRESETS.CHOIR_PARTS_OMITTED,
+                  'part-omitted-choir'
+                ),
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function TriStateCheckbox({ checked, indeterminate, disabled, onChange }) {
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.indeterminate = Boolean(indeterminate);
+    }
+  }, [indeterminate]);
+
+  return (
+    <input
+      ref={inputRef}
+      type="checkbox"
+      className="shrink-0 h-4 w-4"
+      checked={checked}
+      onChange={onChange}
+      disabled={disabled}
+    />
+  );
+}
 
 async function hasWritePermission(handle) {
   if (!handle) return false;
@@ -129,32 +342,306 @@ async function writeFileToDirectory(rootDirectoryHandle, relativePath, blob) {
 }
 
 function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
+  const abortControllerRef = useRef(null);
   const [isExporting, setIsExporting] = useState(false);
-  const [progress, setProgress] = useState('');
-  const [selectedPresetIds, setSelectedPresetIds] = useState([EXPORT_PRESETS.TUTTI]);
+  const [selectedLeafNodeIds, setSelectedLeafNodeIds] = useState(new Set(['preset-tutti']));
   const [exportBaseName, setExportBaseName] = useState(project.projectName || 'project');
-  const [audioFormat, setAudioFormat] = useState('mp3');
+  const [fileFormat, setFileFormat] = useState('mp3');
+  const [expandedNodeIds, setExpandedNodeIds] = useState(() => new Set(DEFAULT_EXPANDED_NODE_IDS));
+  const [showProgressWindow, setShowProgressWindow] = useState(false);
+  const [progressMode, setProgressMode] = useState(null);
+  const [progressStatus, setProgressStatus] = useState('idle');
+  const [progressMessage, setProgressMessage] = useState('');
+  const [progressError, setProgressError] = useState('');
+  const [progressPercent, setProgressPercent] = useState(0);
+  const [renderProgress, setRenderProgress] = useState({ completed: 0, total: 0 });
+  const [writeProgress, setWriteProgress] = useState({ completed: 0, total: 0 });
+  const [exportStartedAt, setExportStartedAt] = useState(null);
+  const [exportCompletedAt, setExportCompletedAt] = useState(null);
+  const [timeNow, setTimeNow] = useState(Date.now());
+  const [remainingEstimateSnapshotMs, setRemainingEstimateSnapshotMs] = useState(null);
+  const [remainingEstimateAnchorMs, setRemainingEstimateAnchorMs] = useState(null);
 
-  const allPresetIds = useMemo(
-    () => AUDIO_EXPORT_SECTIONS.flatMap((section) => section.presetIds),
-    []
+  const { instrumentUnits, leadUnits, choirUnits } = useMemo(() => {
+    const mix = getEffectiveTrackMix(project);
+    const trackStateById = mix.statesByTrackId;
+    const activeTracks = (project.tracks || []).filter((track) => trackStateById.get(track.id)?.audible);
+    return {
+      instrumentUnits: getRoleUnits(activeTracks, trackStateById, TRACK_ROLE_INSTRUMENT),
+      leadUnits: getRoleUnits(activeTracks, trackStateById, TRACK_ROLE_LEAD),
+      choirUnits: getChoirUnits(activeTracks, trackStateById),
+    };
+  }, [project]);
+
+  const audioExportTree = useMemo(
+    () => buildAudioExportTree(instrumentUnits, leadUnits, choirUnits),
+    [instrumentUnits, leadUnits, choirUnits]
   );
 
-  const allSelected = selectedPresetIds.length === allPresetIds.length;
+  const leafNodeIdsByNodeId = useMemo(() => {
+    const map = new Map();
 
-  const togglePreset = (presetId) => {
-    setSelectedPresetIds((prev) => (
-      prev.includes(presetId)
-        ? prev.filter((id) => id !== presetId)
-        : [...prev, presetId]
-    ));
+    const walk = (node) => {
+      const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+      if (!hasChildren) {
+        const ids = [node.id];
+        map.set(node.id, ids);
+        return ids;
+      }
+      const ids = (node.children || []).flatMap((child) => walk(child));
+      map.set(node.id, ids);
+      return ids;
+    };
+
+    walk(audioExportTree);
+    return map;
+  }, [audioExportTree]);
+
+  const leafNodeById = useMemo(() => {
+    const map = new Map();
+    const walk = (node) => {
+      const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+      if (!hasChildren) {
+        map.set(node.id, node);
+        return;
+      }
+      node.children.forEach(walk);
+    };
+    walk(audioExportTree);
+    return map;
+  }, [audioExportTree]);
+
+  useEffect(() => {
+    setSelectedLeafNodeIds((prev) => {
+      const valid = new Set();
+      prev.forEach((id) => {
+        if (leafNodeById.has(id)) valid.add(id);
+      });
+      if (valid.size === 0 && leafNodeById.has('preset-tutti')) {
+        valid.add('preset-tutti');
+      }
+      return valid;
+    });
+  }, [leafNodeById]);
+
+  const getNodeState = (nodeId) => {
+    const leafIds = leafNodeIdsByNodeId.get(nodeId) || [];
+    const selectedCount = leafIds.reduce(
+      (count, id) => count + (selectedLeafNodeIds.has(id) ? 1 : 0),
+      0
+    );
+    const checked = leafIds.length > 0 && selectedCount === leafIds.length;
+    const indeterminate = selectedCount > 0 && selectedCount < leafIds.length;
+    return { checked, indeterminate };
   };
 
-  const toggleSelectAll = () => {
-    setSelectedPresetIds((prev) => (prev.length === allPresetIds.length ? [] : [...allPresetIds]));
+  const toggleNode = (nodeId) => {
+    const nodeLeafIds = leafNodeIdsByNodeId.get(nodeId) || [];
+    setSelectedLeafNodeIds((prev) => {
+      const next = new Set(prev);
+      const allChecked = nodeLeafIds.length > 0 && nodeLeafIds.every((id) => next.has(id));
+      if (allChecked) {
+        nodeLeafIds.forEach((id) => next.delete(id));
+      } else {
+        nodeLeafIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
   };
 
-  const handleExportAudio = async () => {
+  const selectedPresetIds = useMemo(() => {
+    const selectedPresetIdSet = new Set();
+    selectedLeafNodeIds.forEach((leafId) => {
+      const leaf = leafNodeById.get(leafId);
+      if (leaf?.presetId) selectedPresetIdSet.add(leaf.presetId);
+    });
+    return Array.from(selectedPresetIdSet);
+  }, [selectedLeafNodeIds, leafNodeById]);
+
+  const selectedUnitIdsByPreset = useMemo(() => {
+    const byPreset = {};
+    selectedLeafNodeIds.forEach((leafId) => {
+      const leaf = leafNodeById.get(leafId);
+      if (!leaf?.presetId || !leaf.unitId) return;
+      if (!byPreset[leaf.presetId]) byPreset[leaf.presetId] = [];
+      byPreset[leaf.presetId].push(leaf.unitId);
+    });
+    return byPreset;
+  }, [selectedLeafNodeIds, leafNodeById]);
+
+  const getNodeFileCountText = (nodeId) => {
+    const leafIds = leafNodeIdsByNodeId.get(nodeId) || [];
+    const total = leafIds.length;
+    if (total === 0) return '0';
+    const selected = leafIds.reduce(
+      (count, leafId) => count + (selectedLeafNodeIds.has(leafId) ? 1 : 0),
+      0
+    );
+    if (selected === 0 || selected === total) return `${total}`;
+    return `${selected} / ${total}`;
+  };
+
+  useEffect(() => {
+    if (!showProgressWindow || progressStatus !== 'running') return undefined;
+    const interval = setInterval(() => setTimeNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [showProgressWindow, progressStatus]);
+
+  const initializeProgress = (mode, initialMessage = 'Starting export...') => {
+    setProgressMode(mode);
+    setProgressStatus('running');
+    setProgressMessage(initialMessage);
+    setProgressError('');
+    setProgressPercent(0);
+    setRenderProgress({ completed: 0, total: 0 });
+    setWriteProgress({ completed: 0, total: 0 });
+    setExportStartedAt(Date.now());
+    setExportCompletedAt(null);
+    setTimeNow(Date.now());
+    setRemainingEstimateSnapshotMs(null);
+    setRemainingEstimateAnchorMs(null);
+    setShowProgressWindow(true);
+  };
+
+  const markExportDone = (message = 'Export complete') => {
+    setProgressStatus('done');
+    setProgressMessage(message);
+    setExportCompletedAt(Date.now());
+    setProgressPercent(100);
+  };
+
+  const markExportError = (message) => {
+    setProgressStatus('error');
+    setProgressError(message || 'Export failed');
+    setProgressMessage('Export failed');
+    setExportCompletedAt(Date.now());
+  };
+
+  const totalElapsedMs = exportStartedAt
+    ? ((progressStatus === 'running' ? timeNow : (exportCompletedAt || timeNow)) - exportStartedAt)
+    : 0;
+  const totalElapsed = formatElapsedAdaptive(totalElapsedMs);
+  const formatExactPercent = (value) => `${Math.round(Math.max(0, Math.min(100, value)))}%`;
+
+  const overallPercent = useMemo(() => {
+    if (progressMode === 'audio') {
+      const renderFraction = renderProgress.total > 0
+        ? Math.max(0, Math.min(1, renderProgress.completed / renderProgress.total))
+        : 0;
+      const writeFraction = writeProgress.total > 0
+        ? Math.max(0, Math.min(1, writeProgress.completed / writeProgress.total))
+        : 0;
+      return ((renderFraction * 0.99) + (writeFraction * 0.01)) * 100;
+    }
+    return Math.max(0, Math.min(100, progressPercent));
+  }, [progressMode, renderProgress, writeProgress, progressPercent]);
+
+  useEffect(() => {
+    if (progressStatus !== 'running') return;
+    const fraction = Math.max(0, Math.min(1, overallPercent / 100));
+    if (!exportStartedAt || fraction <= 0) return;
+    const now = Date.now();
+    const elapsedMs = Math.max(0, now - exportStartedAt);
+    const predictedTotalMs = elapsedMs / fraction;
+    const nextRemaining = predictedTotalMs - elapsedMs;
+    setRemainingEstimateSnapshotMs(nextRemaining);
+    setRemainingEstimateAnchorMs(now);
+  }, [progressStatus, overallPercent, exportStartedAt]);
+
+  const estimatedRemaining = useMemo(() => {
+    if (progressStatus !== 'running') return '';
+    if (!Number.isFinite(remainingEstimateSnapshotMs) || !Number.isFinite(remainingEstimateAnchorMs)) {
+      return '...';
+    }
+    const elapsedSinceAnchor = Math.max(0, timeNow - remainingEstimateAnchorMs);
+    const tickingRemaining = remainingEstimateSnapshotMs - elapsedSinceAnchor;
+    return formatEstimatedRemainingCustom(tickingRemaining);
+  }, [
+    progressStatus,
+    remainingEstimateSnapshotMs,
+    remainingEstimateAnchorMs,
+    timeNow,
+  ]);
+
+  const currentStage = useMemo(() => {
+    if (progressStatus === 'done') {
+      return { label: '', detail: '', percent: 100 };
+    }
+
+    if (progressMode === 'audio') {
+      const renderTotal = renderProgress.total;
+      const renderDone = renderProgress.completed;
+      const writeTotal = writeProgress.total;
+      const writeDone = writeProgress.completed;
+
+      if (renderTotal > 0 && renderDone < renderTotal) {
+        return {
+          label: 'Rendering/encoding',
+          detail: `(${renderDone}/${renderTotal})`,
+          percent: (renderDone / renderTotal) * 100,
+        };
+      }
+
+      if (writeTotal > 0 && writeDone < writeTotal) {
+        return {
+          label: 'Writing files',
+          detail: `(${writeDone}/${writeTotal})`,
+          percent: (writeDone / writeTotal) * 100,
+        };
+      }
+
+      if (renderTotal > 0 && writeTotal > 0 && writeDone >= writeTotal) {
+        return {
+          label: 'Writing files',
+          detail: `(${writeTotal}/${writeTotal})`,
+          percent: 100,
+        };
+      }
+
+      return {
+        label: 'Preparing',
+        detail: '',
+        percent: 0,
+      };
+    }
+
+    return {
+      label: progressMessage || 'Processing',
+      detail: `${Math.round(progressPercent)}%`,
+      percent: progressPercent,
+    };
+  }, [progressStatus, progressMode, renderProgress, writeProgress, progressMessage, progressPercent]);
+
+  const isNodeExpanded = (nodeId) => expandedNodeIds.has(nodeId);
+  const progressTitle = useMemo(() => {
+    if (!showProgressWindow) return 'Export Options';
+    if (progressMode === 'zip') {
+      return progressStatus === 'done' ? 'Exported Project' : 'Exporting Project';
+    }
+    const count = Math.max(0, renderProgress.total || selectedLeafNodeIds.size || 0);
+    const verb = progressStatus === 'done' ? 'Exported' : 'Exporting';
+    return `${verb} ${count} file${count === 1 ? '' : 's'}`;
+  }, [
+    showProgressWindow,
+    progressMode,
+    progressStatus,
+    renderProgress.total,
+    selectedLeafNodeIds.size,
+  ]);
+
+  const toggleNodeExpanded = (nodeId) => {
+    setExpandedNodeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
+  };
+
+  const handleExportAudio = async (format) => {
     if (!selectedPresetIds.length) {
       alert('Select at least one audio export option.');
       return;
@@ -170,229 +657,334 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap }) {
     }
 
     setIsExporting(true);
-    setProgress('Pick export folder...');
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+    let directoryHandle;
 
     try {
       // Must be called directly from the click gesture (Windows requires this).
-      const directoryHandle = await pickExportDirectory(project.projectId);
+      directoryHandle = await pickExportDirectory(project.projectId);
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        setIsExporting(false);
+        abortControllerRef.current = null;
+        return;
+      }
+      console.error('Export folder selection failed:', error);
+      alert('Export failed: ' + error.message);
+      setIsExporting(false);
+      abortControllerRef.current = null;
+      return;
+    }
 
-      setProgress('Rendering audio...');
+    initializeProgress('audio', 'Preparing export...');
+    setProgressMessage('Rendering/encoding...');
+
+    try {
       const files = await exportProject(
         project,
         selectedPresetIds,
         audioBuffers,
         project.exportSettings,
         normalizedExportName,
-        audioFormat
+        format,
+        {
+          selectedUnitIdsByPreset,
+          signal: abortController.signal,
+          onProgress: (info) => {
+            if (abortController.signal.aborted) return;
+            const fraction = Number.isFinite(info?.fraction) ? info.fraction : 0;
+            const completed = Number.isFinite(info?.completed) ? info.completed : 0;
+            const total = Number.isFinite(info?.total) ? info.total : 0;
+            setRenderProgress({
+              completed: Math.max(0, completed),
+              total: Math.max(0, total),
+            });
+            const renderFraction = Math.max(0, Math.min(1, fraction));
+            const writeFraction = writeProgress.total > 0
+              ? Math.max(0, Math.min(1, writeProgress.completed / writeProgress.total))
+              : 0;
+            setProgressPercent(((renderFraction * 0.99) + (writeFraction * 0.01)) * 100);
+          },
+        }
       );
+      setRenderProgress({
+        completed: files.length,
+        total: files.length,
+      });
 
       if (!files.length) {
         throw new Error('No files produced by selected export options.');
       }
 
+      setWriteProgress({ completed: 0, total: files.length });
+      setProgressMessage('Writing files...');
       let written = 0;
       for (const file of files) {
+        if (abortController.signal.aborted) {
+          const abortError = new Error('Export cancelled');
+          abortError.name = 'AbortError';
+          throw abortError;
+        }
         await writeFileToDirectory(directoryHandle, file.relativePath, file.blob);
         written += 1;
-        setProgress(`Exported ${written}/${files.length}`);
+        setWriteProgress({ completed: written, total: files.length });
+        const renderFraction = 1;
+        const writeFraction = written / files.length;
+        setProgressPercent(((renderFraction * 0.99) + (writeFraction * 0.01)) * 100);
       }
 
-      setProgress('Export complete!');
-      setTimeout(() => {
-        setIsExporting(false);
-        setProgress('');
-        onClose();
-      }, 900);
+      markExportDone('Export complete');
+      setIsExporting(false);
+      abortControllerRef.current = null;
     } catch (error) {
       if (error?.name === 'AbortError') {
+        markExportError('Export cancelled');
         setIsExporting(false);
-        setProgress('');
+        abortControllerRef.current = null;
         return;
       }
       console.error('Export failed:', error);
+      markExportError(error?.message || 'Export failed');
       alert('Export failed: ' + error.message);
       setIsExporting(false);
-      setProgress('');
-    }
-  };
-
-  const handleExportProjectJSON = async () => {
-    try {
-      const { blob, filename } = await exportAsJSON(project);
-      downloadFile(blob, filename);
-    } catch (error) {
-      console.error('Export project JSON failed:', error);
-      alert('Export failed: ' + error.message);
+      abortControllerRef.current = null;
     }
   };
 
   const handleExportProjectZIP = async () => {
+    initializeProgress('zip', 'Creating ZIP archive');
     setIsExporting(true);
-    setProgress('Creating ZIP archive...');
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     try {
-      const { blob, filename } = await exportAsZIP(project, mediaMap);
-      setProgress('Downloading...');
+      const { blob, filename } = await exportAsZIP(project, mediaMap, (info) => {
+        if (typeof info?.message === 'string') {
+          setProgressMessage(info.message);
+        }
+        if (Number.isFinite(info?.percent)) {
+          setProgressPercent(Math.max(0, Math.min(100, info.percent)));
+        }
+      }, abortController.signal);
+      setProgressMessage('Downloading ZIP');
       downloadFile(blob, filename);
-      setProgress('Export complete!');
-      setTimeout(() => {
-        setIsExporting(false);
-        setProgress('');
-      }, 900);
+      setProgressPercent(100);
+      markExportDone('ZIP export complete');
+      setIsExporting(false);
+      abortControllerRef.current = null;
     } catch (error) {
+      if (error?.name === 'AbortError') {
+        markExportError('Export cancelled');
+        setIsExporting(false);
+        abortControllerRef.current = null;
+        return;
+      }
       console.error('Export project ZIP failed:', error);
+      markExportError(error?.message || 'Export failed');
       alert('Export failed: ' + error.message);
       setIsExporting(false);
-      setProgress('');
+      abortControllerRef.current = null;
     }
+  };
+
+  const handleExport = async () => {
+    if (fileFormat === 'zip') {
+      await handleExportProjectZIP();
+      return;
+    }
+    await handleExportAudio(fileFormat);
   };
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 rounded-lg max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-        <div className="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
-          <h2 className="text-xl font-semibold">Export</h2>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-white transition-colors"
-            disabled={isExporting}
-          >
-            <X size={24} />
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-auto p-6">
-          <div className="mb-6">
-            <h3 className="text-lg font-semibold mb-3">Export Audio</h3>
-            <div className="mb-3">
-              <label className="block text-xs text-gray-400 mb-1">Export name</label>
-              <input
-                type="text"
-                value={exportBaseName}
-                onChange={(e) => setExportBaseName(e.target.value)}
-                className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                placeholder="Export base name"
-                disabled={isExporting}
-              />
-            </div>
-            <div className="mb-3">
-              <label className="block text-xs text-gray-400 mb-1">Audio format</label>
-              <select
-                value={audioFormat}
-                onChange={(e) => setAudioFormat(e.target.value === 'mp3' ? 'mp3' : 'wav')}
-                className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                disabled={isExporting}
-              >
-                <option value="mp3">MP3</option>
-                <option value="wav">WAV</option>
-              </select>
-            </div>
-            <label className="flex items-center gap-2 bg-gray-900 rounded-lg p-3 mb-3">
-              <input
-                type="checkbox"
-                checked={allSelected}
-                onChange={toggleSelectAll}
-                disabled={isExporting}
-              />
-              <span className="font-medium">Select all</span>
-            </label>
-
-            <div className="space-y-3">
-              {AUDIO_EXPORT_SECTIONS.map((section) => (
-                <div key={section.title} className="bg-gray-900 rounded-lg p-3">
-                  <div className="text-sm font-semibold text-gray-300 mb-2">{section.title}</div>
-                  <div className="space-y-2">
-                    {section.presetIds.map((presetId) => {
-                      const preset = PRESET_BY_ID[presetId];
-                      if (!preset) return null;
-                      return (
-                        <label key={preset.id} className="flex items-start gap-2">
-                          <input
-                            type="checkbox"
-                            checked={selectedPresetIds.includes(preset.id)}
-                            onChange={() => togglePreset(preset.id)}
-                            disabled={isExporting}
-                          />
-                          <span>
-                            <span className="font-medium">{preset.label}</span>
-                            <span className="text-sm text-gray-400 block">{preset.description}</span>
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-
+      <div
+        className={`bg-gray-800 rounded-lg w-full overflow-hidden flex flex-col ${
+          showProgressWindow ? 'max-w-sm' : 'max-w-2xl h-[72vh]'
+        }`}
+      >
+        {showProgressWindow ? (
+          <div className="px-3 py-3 flex items-center justify-center">
+            <h2 className="text-xl font-semibold text-center">{progressTitle}</h2>
+          </div>
+        ) : (
+          <div className="px-3 py-3 flex items-center justify-between">
+            <h2 className="text-xl font-semibold">{progressTitle}</h2>
             <button
-              onClick={handleExportAudio}
-              disabled={isExporting || selectedPresetIds.length === 0}
-              className="mt-4 w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
+              onClick={onClose}
+              className="text-gray-400 hover:text-white transition-colors"
+              disabled={isExporting}
             >
-              <Upload size={20} />
-              <span>
-                {isExporting
-                  ? progress
-                  : `Export ${audioFormat.toUpperCase()} (${selectedPresetIds.length} selected)`}
-              </span>
+              <X size={24} />
             </button>
           </div>
+        )}
 
-          <div className="border-t border-gray-700 pt-6">
-            <h3 className="text-lg font-semibold mb-3">Export Project</h3>
+        {!showProgressWindow ? (
+          <div className="flex-1 min-h-0 overflow-hidden px-3 pt-0 pb-3 flex flex-col">
+            <div className="grid grid-cols-1 grid-rows-[minmax(0,1fr)_auto] lg:grid-cols-[1fr_320px] lg:grid-rows-1 gap-4 flex-1 min-h-0">
+              <div className="bg-gray-900 rounded-lg p-3 h-full overflow-auto min-h-0">
+                {fileFormat !== 'zip' && (() => {
+                  const renderNode = (node, depth = 0) => {
+                    const preset = node.presetId ? PRESET_BY_ID[node.presetId] : null;
+                    const label = node.label || (
+                      preset ? (EXPORT_DIALOG_PRESET_LABEL_OVERRIDES[preset.id] || preset.label) : ''
+                    );
+                    const state = getNodeState(node.id);
+                    const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+                    const expanded = hasChildren ? isNodeExpanded(node.id) : false;
+                    const fileCountText = hasChildren ? getNodeFileCountText(node.id) : null;
 
-            <div className="space-y-3">
-              <div className="bg-gray-900 rounded-lg p-4">
-                <div className="flex items-start gap-3">
-                  <FileJson size={24} className="text-blue-500 flex-shrink-0 mt-1" />
-                  <div className="flex-1">
-                    <h4 className="font-medium mb-1">JSON (Metadata Only)</h4>
-                    <p className="text-sm text-gray-400 mb-3">
-                      Export project settings and clip data. Audio files must already exist in the browser database.
-                    </p>
-                    <button
-                      onClick={handleExportProjectJSON}
-                      disabled={isExporting}
-                      className="bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white px-4 py-2 rounded transition-colors text-sm"
-                    >
-                      Export as JSON
-                    </button>
-                  </div>
-                </div>
+                    return (
+                      <div key={node.id} className={depth > 0 ? 'mt-0' : ''}>
+                        <label
+                          className="flex h-[30px] items-center gap-1.5 rounded px-0 py-0 leading-none hover:bg-gray-800/60"
+                          style={{ marginLeft: `${depth * 20}px` }}
+                        >
+                          {hasChildren ? (
+                            <button
+                              type="button"
+                              aria-label={expanded ? 'Collapse' : 'Expand'}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                toggleNodeExpanded(node.id);
+                              }}
+                              className="w-3 h-4 shrink-0 flex items-center justify-center text-gray-400 hover:text-gray-200"
+                              disabled={isExporting}
+                            >
+                              {expanded ? (
+                                <ChevronDown className="w-full h-full" strokeWidth={2.5} />
+                              ) : (
+                                <ChevronRight className="w-full h-full" strokeWidth={2.5} />
+                              )}
+                            </button>
+                          ) : (
+                            <span className="w-3 h-4 shrink-0" />
+                          )}
+                          <TriStateCheckbox
+                            checked={state.checked}
+                            indeterminate={state.indeterminate}
+                            onChange={() => toggleNode(node.id)}
+                            disabled={isExporting}
+                          />
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span className="min-w-0 truncate whitespace-nowrap font-medium text-[22.5px] text-gray-200">
+                              {label}
+                            </span>
+                            {fileCountText && (
+                              <span className="relative top-px shrink-0 text-[18px] text-gray-400 leading-none">{fileCountText}</span>
+                            )}
+                          </span>
+                        </label>
+                        {hasChildren && expanded && (
+                          <div>
+                            {node.children.map((child) => renderNode(child, depth + 1))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  };
+                  return renderNode(audioExportTree, 0);
+                })()}
               </div>
-
-              <div className="bg-gray-900 rounded-lg p-4">
-                <div className="flex items-start gap-3">
-                  <FileArchive size={24} className="text-green-500 flex-shrink-0 mt-1" />
-                  <div className="flex-1">
-                    <h4 className="font-medium mb-1">ZIP (Complete Archive)</h4>
-                    <p className="text-sm text-gray-400 mb-3">
-                      Export project with all audio files included. Use this to transfer projects between machines.
-                    </p>
-                    <button
-                      onClick={handleExportProjectZIP}
-                      disabled={isExporting}
-                      className="bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white px-4 py-2 rounded transition-colors text-sm"
-                    >
-                      Export as ZIP
-                    </button>
-                  </div>
+              <div className="p-0 h-auto lg:h-full min-h-0 flex flex-col">
+                <div className="mb-3">
+                  <label className="block text-xs text-gray-400 mb-1">File format</label>
+                  <select
+                    value={fileFormat}
+                    onChange={(e) => setFileFormat(e.target.value)}
+                    className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    disabled={isExporting}
+                  >
+                    <option value="mp3">MP3</option>
+                    <option value="wav">WAV</option>
+                    <option value="zip">ZIP</option>
+                  </select>
                 </div>
+                <div className="mb-3">
+                  <label className="block text-xs text-gray-400 mb-1">Export name</label>
+                  <input
+                    type="text"
+                    value={exportBaseName}
+                    onChange={(e) => setExportBaseName(e.target.value)}
+                    className="w-full rounded bg-gray-800 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                    placeholder="Export base name"
+                    disabled={isExporting}
+                  />
+                </div>
+                <button
+                  onClick={handleExport}
+                  disabled={isExporting || (fileFormat !== 'zip' && selectedPresetIds.length === 0)}
+                  className="w-full mt-auto bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg transition-colors flex items-center justify-center gap-2"
+                >
+                  <Upload size={20} />
+                  <span>Export</span>
+                </button>
               </div>
             </div>
           </div>
-        </div>
+        ) : (
+          <div className="flex-1 overflow-auto px-3 pt-0 pb-3">
+            <div className="bg-gray-900 rounded-lg p-4">
+              {progressError && (
+                <div className="mb-4 rounded border border-red-700 bg-red-900/20 px-3 py-2 text-sm text-red-300">
+                  {progressError}
+                </div>
+              )}
+              <div className="mb-2 text-sm text-gray-300">
+                <div>
+                  {`${currentStage.label}${currentStage.detail ? ` ${currentStage.detail}` : ''}`}
+                </div>
+              </div>
+              <div className="h-2 w-full rounded bg-gray-800 border border-gray-700 overflow-hidden">
+                <div
+                  className="h-full bg-green-500"
+                  style={{ width: `${overallPercent}%` }}
+                />
+              </div>
+              <div className="mt-3 space-y-1 text-xs text-gray-300">
+                <div className="flex items-center justify-between">
+                  <span>Progress</span>
+                  <span>{formatExactPercent(overallPercent)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Total elapsed</span>
+                  <span>{totalElapsed}</span>
+                </div>
+                {progressStatus === 'running' && (
+                  <div className="flex items-center justify-between">
+                    <span>Est. time left</span>
+                    <span>{estimatedRemaining}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
-        <div className="px-6 py-4 border-t border-gray-700 flex justify-end">
-          <button
-            onClick={onClose}
-            disabled={isExporting}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed rounded transition-colors"
-          >
-            Close
-          </button>
-        </div>
+        {showProgressWindow && (
+          <div className="px-3 pt-0 pb-3 flex items-center justify-center">
+            <button
+              onClick={() => {
+                if (progressStatus === 'done') {
+                  onClose();
+                  return;
+                }
+                abortControllerRef.current?.abort();
+                setProgressMessage('Cancelling...');
+              }}
+              className={`px-6 py-2 rounded transition-colors ${
+                progressStatus === 'done'
+                  ? 'bg-gray-700 hover:bg-gray-600'
+                  : 'bg-red-600 hover:bg-red-700'
+              }`}
+            >
+              {progressStatus === 'done' ? 'Close' : 'Abort'}
+            </button>
+          </div>
+        )}
+
       </div>
     </div>
   );

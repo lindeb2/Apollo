@@ -351,8 +351,18 @@ export async function exportProject(
   audioBuffers,
   exportSettingsOverride = null,
   exportBaseName = null,
-  format = 'wav'
+  format = 'wav',
+  selectionOptions = null
 ) {
+  const signal = selectionOptions?.signal || null;
+  const throwIfAborted = () => {
+    if (signal?.aborted) {
+      const error = new Error('Export cancelled');
+      error.name = 'AbortError';
+      throw error;
+    }
+  };
+
   const outputFormat = format === 'mp3' ? 'mp3' : 'wav';
   const presetIds = Array.isArray(selectedPresets)
     ? [...new Set(selectedPresets.filter((id) => VALID_PRESETS.has(id)))]
@@ -381,9 +391,71 @@ export async function exportProject(
   const choirUnits = getChoirUnits(activeTracks, trackStateById);
   const projectBase = exportBaseName || project.projectName || 'project';
   const files = [];
+  const selectedUnitIdsByPreset = selectionOptions?.selectedUnitIdsByPreset || {};
+  const onProgress = typeof selectionOptions?.onProgress === 'function' ? selectionOptions.onProgress : null;
+  const selectUnits = (units, presetId) => {
+    const ids = selectedUnitIdsByPreset[presetId];
+    if (!Array.isArray(ids) || ids.length === 0) return units;
+    const allowed = new Set(ids);
+    return units.filter((unit) => allowed.has(unit.unitId));
+  };
+
+  const countPresetFiles = (presetId) => {
+    if (
+      presetId === EXPORT_PRESETS.TUTTI ||
+      presetId === EXPORT_PRESETS.ACAPELLA ||
+      presetId === EXPORT_PRESETS.NO_LEAD ||
+      presetId === EXPORT_PRESETS.NO_CHOIR ||
+      presetId === EXPORT_PRESETS.INSTRUMENTAL ||
+      presetId === EXPORT_PRESETS.LEAD_ONLY ||
+      presetId === EXPORT_PRESETS.CHOIR_ONLY
+    ) {
+      return 1;
+    }
+    if (presetId === EXPORT_PRESETS.INSTRUMENT_PARTS) {
+      return selectUnits(instrumentUnits, presetId).length;
+    }
+    if (presetId === EXPORT_PRESETS.LEAD_PARTS) {
+      return selectUnits(leadUnits, presetId).length;
+    }
+    if (presetId === EXPORT_PRESETS.CHOIR_PARTS) {
+      return selectUnits(choirUnits, presetId).length;
+    }
+    if (presetId === EXPORT_PRESETS.INSTRUMENT_PARTS_OMITTED) {
+      return selectUnits(instrumentUnits, presetId).length;
+    }
+    if (presetId === EXPORT_PRESETS.LEAD_PARTS_OMITTED) {
+      return selectUnits(leadUnits, presetId).length;
+    }
+    if (presetId === EXPORT_PRESETS.CHOIR_PARTS_OMITTED) {
+      return selectUnits(choirUnits, presetId).length;
+    }
+    return 0;
+  };
+
+  const totalRenderTasks = presetIds.reduce((count, presetId) => count + countPresetFiles(presetId), 0);
+  let completedRenderTasks = 0;
+  const emitProgress = (label = '') => {
+    if (!onProgress) return;
+    onProgress({
+      phase: 'render',
+      label,
+      completed: completedRenderTasks,
+      total: totalRenderTasks,
+      fraction: totalRenderTasks > 0 ? completedRenderTasks / totalRenderTasks : 1,
+    });
+  };
+  emitProgress();
+
+  const advanceProgress = (label = '') => {
+    completedRenderTasks += 1;
+    emitProgress(label);
+  };
 
   for (const presetId of presetIds) {
+    throwIfAborted();
     if (presetId === EXPORT_PRESETS.TUTTI) {
+      emitProgress('Tutti');
       files.push({
         presetId,
         branch: null,
@@ -392,6 +464,7 @@ export async function exportProject(
         filename: createFileName(projectBase, '', outputFormat),
         blob: await renderTracks(project, activeTracks, audioBuffers, {}, {}, outputFormat, trackStateById),
       });
+      advanceProgress('Tutti');
       continue;
     }
 
@@ -399,6 +472,7 @@ export async function exportProject(
       const tracks = activeTracks.filter((track) => (
         effectiveRole(track) === TRACK_ROLE_LEAD || effectiveRole(track) === TRACK_ROLE_CHOIR
       ));
+      emitProgress('No Instruments');
       files.push({
         presetId,
         branch: null,
@@ -407,6 +481,7 @@ export async function exportProject(
         filename: createFileName(projectBase, 'No Instruments', outputFormat),
         blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById),
       });
+      advanceProgress('No Instruments');
       continue;
     }
 
@@ -414,6 +489,7 @@ export async function exportProject(
       const tracks = activeTracks.filter((track) => (
         effectiveRole(track) === TRACK_ROLE_INSTRUMENT || effectiveRole(track) === TRACK_ROLE_CHOIR
       ));
+      emitProgress('No Leads');
       files.push({
         presetId,
         branch: null,
@@ -422,6 +498,7 @@ export async function exportProject(
         filename: createFileName(projectBase, 'No Leads', outputFormat),
         blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById),
       });
+      advanceProgress('No Leads');
       continue;
     }
 
@@ -429,6 +506,7 @@ export async function exportProject(
       const tracks = activeTracks.filter((track) => (
         effectiveRole(track) === TRACK_ROLE_INSTRUMENT || effectiveRole(track) === TRACK_ROLE_LEAD
       ));
+      emitProgress('No Choir');
       files.push({
         presetId,
         branch: null,
@@ -437,10 +515,12 @@ export async function exportProject(
         filename: createFileName(projectBase, 'No Choir', outputFormat),
         blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById),
       });
+      advanceProgress('No Choir');
       continue;
     }
 
     if (presetId === EXPORT_PRESETS.INSTRUMENTAL) {
+      emitProgress('Instruments Only');
       files.push({
         presetId,
         branch: null,
@@ -449,10 +529,12 @@ export async function exportProject(
         filename: createFileName(projectBase, 'Instruments Only', outputFormat),
         blob: await renderTracks(project, instrumentTracks, audioBuffers, {}, {}, outputFormat, trackStateById),
       });
+      advanceProgress('Instruments Only');
       continue;
     }
 
     if (presetId === EXPORT_PRESETS.LEAD_ONLY) {
+      emitProgress('Lead Only');
       files.push({
         presetId,
         branch: null,
@@ -461,10 +543,12 @@ export async function exportProject(
         filename: createFileName(projectBase, 'Leads Only', outputFormat),
         blob: await renderTracks(project, leadTracks, audioBuffers, {}, {}, outputFormat, trackStateById),
       });
+      advanceProgress('Lead Only');
       continue;
     }
 
     if (presetId === EXPORT_PRESETS.CHOIR_ONLY) {
+      emitProgress('Choir Only');
       files.push({
         presetId,
         branch: null,
@@ -473,11 +557,15 @@ export async function exportProject(
         filename: createFileName(projectBase, 'Choir Only', outputFormat),
         blob: await renderTracks(project, choirTracks, audioBuffers, {}, {}, outputFormat, trackStateById),
       });
+      advanceProgress('Choir Only');
       continue;
     }
 
     if (presetId === EXPORT_PRESETS.INSTRUMENT_PARTS) {
-      for (const targetUnit of instrumentUnits) {
+      const selectedUnits = selectUnits(instrumentUnits, presetId);
+      for (const targetUnit of selectedUnits) {
+        throwIfAborted();
+        emitProgress(targetUnit.label);
         const targetTrackIds = targetUnit.trackIds;
         const basePanByTrackId = Object.fromEntries(activeTracks.map((track) => [track.id, clampPan(trackStateById.get(track.id)?.effectivePan ?? track.pan)]));
         const panAdjustments = buildPracticePanMap({
@@ -499,16 +587,20 @@ export async function exportProject(
           presetId,
           branch: 'normal',
           subgroup: 'Instruments',
-          subgroupCount: instrumentUnits.length,
+          subgroupCount: selectedUnits.length,
           filename: createFileName(projectBase, targetUnit.label, outputFormat),
           blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat, trackStateById),
         });
+        advanceProgress(targetUnit.label);
       }
       continue;
     }
 
     if (presetId === EXPORT_PRESETS.LEAD_PARTS) {
-      for (const targetUnit of leadUnits) {
+      const selectedUnits = selectUnits(leadUnits, presetId);
+      for (const targetUnit of selectedUnits) {
+        throwIfAborted();
+        emitProgress(targetUnit.label);
         const targetTrackIds = targetUnit.trackIds;
         const basePanByTrackId = Object.fromEntries(activeTracks.map((track) => [track.id, clampPan(trackStateById.get(track.id)?.effectivePan ?? track.pan)]));
         const panAdjustments = buildPracticePanMap({
@@ -530,16 +622,20 @@ export async function exportProject(
           presetId,
           branch: 'normal',
           subgroup: 'Leads',
-          subgroupCount: leadUnits.length,
+          subgroupCount: selectedUnits.length,
           filename: createFileName(projectBase, targetUnit.label, outputFormat),
           blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat, trackStateById),
         });
+        advanceProgress(targetUnit.label);
       }
       continue;
     }
 
     if (presetId === EXPORT_PRESETS.CHOIR_PARTS) {
-      for (const targetUnit of choirUnits) {
+      const selectedUnits = selectUnits(choirUnits, presetId);
+      for (const targetUnit of selectedUnits) {
+        throwIfAborted();
+        emitProgress(targetUnit.label);
         const targetTrackIds = targetUnit.trackIds;
         const otherChoirTracks = choirTracks.filter((track) => !targetTrackIds.includes(track.id));
         const autoPannedChoirMap = getAutoPannedChoirPanMap(project, otherChoirTracks);
@@ -565,46 +661,58 @@ export async function exportProject(
           presetId,
           branch: 'normal',
           subgroup: 'Choir',
-          subgroupCount: choirUnits.length,
+          subgroupCount: selectedUnits.length,
           filename: createFileName(projectBase, targetUnit.label, outputFormat),
           blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat, trackStateById),
         });
+        advanceProgress(targetUnit.label);
       }
       continue;
     }
 
     if (presetId === EXPORT_PRESETS.INSTRUMENT_PARTS_OMITTED) {
-      for (const omittedUnit of instrumentUnits) {
+      const selectedUnits = selectUnits(instrumentUnits, presetId);
+      for (const omittedUnit of selectedUnits) {
+        throwIfAborted();
+        emitProgress(`${omittedUnit.label} Omitted`);
         const tracks = activeTracks.filter((track) => !omittedUnit.trackIds.includes(track.id));
         files.push({
           presetId,
           branch: 'omitted',
           subgroup: 'Instruments',
-          subgroupCount: instrumentUnits.length,
+          subgroupCount: selectedUnits.length,
           filename: createFileName(projectBase, `${omittedUnit.label} Omitted`, outputFormat),
           blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById),
         });
+        advanceProgress(`${omittedUnit.label} Omitted`);
       }
       continue;
     }
 
     if (presetId === EXPORT_PRESETS.LEAD_PARTS_OMITTED) {
-      for (const omittedUnit of leadUnits) {
+      const selectedUnits = selectUnits(leadUnits, presetId);
+      for (const omittedUnit of selectedUnits) {
+        throwIfAborted();
+        emitProgress(`${omittedUnit.label} Omitted`);
         const tracks = activeTracks.filter((track) => !omittedUnit.trackIds.includes(track.id));
         files.push({
           presetId,
           branch: 'omitted',
           subgroup: 'Leads',
-          subgroupCount: leadUnits.length,
+          subgroupCount: selectedUnits.length,
           filename: createFileName(projectBase, `${omittedUnit.label} Omitted`, outputFormat),
           blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById),
         });
+        advanceProgress(`${omittedUnit.label} Omitted`);
       }
       continue;
     }
 
     if (presetId === EXPORT_PRESETS.CHOIR_PARTS_OMITTED) {
-      for (const omittedUnit of choirUnits) {
+      const selectedUnits = selectUnits(choirUnits, presetId);
+      for (const omittedUnit of selectedUnits) {
+        throwIfAborted();
+        emitProgress(`${omittedUnit.label} Omitted`);
         const tracks = activeTracks.filter((track) => !omittedUnit.trackIds.includes(track.id));
         const remainingChoirTracks = choirTracks.filter((track) => !omittedUnit.trackIds.includes(track.id));
         const autoPannedChoirMap = getAutoPannedChoirPanMap(project, remainingChoirTracks);
@@ -612,10 +720,11 @@ export async function exportProject(
           presetId,
           branch: 'omitted',
           subgroup: 'Choir',
-          subgroupCount: choirUnits.length,
+          subgroupCount: selectedUnits.length,
           filename: createFileName(projectBase, `${omittedUnit.label} Omitted`, outputFormat),
           blob: await renderTracks(project, tracks, audioBuffers, {}, autoPannedChoirMap, outputFormat, trackStateById),
         });
+        advanceProgress(`${omittedUnit.label} Omitted`);
       }
     }
   }

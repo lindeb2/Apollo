@@ -24,7 +24,26 @@ export async function exportAsJSON(project) {
  * Export project as ZIP file
  * Contains project.json + all audio files
  */
-export async function exportAsZIP(project, mediaMap) {
+export async function exportAsZIP(project, mediaMap, onProgress = null, signal = null) {
+  const throwIfAborted = () => {
+    if (signal?.aborted) {
+      const error = new Error('Export cancelled');
+      error.name = 'AbortError';
+      throw error;
+    }
+  };
+
+  const emitProgress = (phase, message, percent) => {
+    if (!onProgress) return;
+    onProgress({
+      phase,
+      message,
+      percent: Math.max(0, Math.min(100, percent)),
+    });
+  };
+
+  throwIfAborted();
+  emitProgress('prepare', 'Preparing ZIP export...', 1);
   const zip = new JSZip();
   
   // Add project.json
@@ -41,16 +60,26 @@ export async function exportAsZIP(project, mediaMap) {
       blobIds.add(clip.blobId);
     }
   }
+  const blobIdList = Array.from(blobIds);
+  const mediaCount = blobIdList.length;
   
   // Add each audio file
   const missingBlobIds = [];
-  for (const blobId of blobIds) {
+  let processedMedia = 0;
+  for (const blobId of blobIdList) {
+    throwIfAborted();
     let media = mediaMap?.get(blobId);
     if (!media?.blob) {
       try {
         media = await getMediaBlob(blobId);
       } catch {
         missingBlobIds.push(blobId);
+        processedMedia += 1;
+        emitProgress(
+          'collect',
+          `Collecting media ${processedMedia}/${mediaCount}`,
+          mediaCount > 0 ? (processedMedia / mediaCount) * 1 : 1
+        );
         continue;
       }
     }
@@ -60,6 +89,12 @@ export async function exportAsZIP(project, mediaMap) {
     } else {
       missingBlobIds.push(blobId);
     }
+    processedMedia += 1;
+    emitProgress(
+      'collect',
+      `Collecting media ${processedMedia}/${mediaCount}`,
+      mediaCount > 0 ? (processedMedia / mediaCount) * 1 : 1
+    );
   }
 
   if (missingBlobIds.length > 0) {
@@ -68,16 +103,26 @@ export async function exportAsZIP(project, mediaMap) {
     );
   }
   
+  emitProgress('compress', 'Compressing ZIP archive...', 1);
+  throwIfAborted();
   // Generate ZIP
   const zipBlob = await zip.generateAsync({
     type: 'blob',
     compression: 'DEFLATE',
     compressionOptions: { level: 6 },
+  }, (metadata) => {
+    throwIfAborted();
+    emitProgress(
+      'compress',
+      `Compressing ZIP ${Math.round(metadata.percent)}%`,
+      1 + (metadata.percent * 0.99)
+    );
   });
   
   const base = normalizeProjectName(project.projectName) || 'project';
   const filename = `${base}_project.zip`;
   
+  emitProgress('done', 'ZIP export complete', 100);
   return { blob: zipBlob, filename };
 }
 
