@@ -1,4 +1,5 @@
 import { createEmptyProject } from '../types/project';
+import { createId } from '../utils/id';
 
 const API_BASE = import.meta.env.VITE_SERVER_API_BASE || '';
 const WS_BASE = import.meta.env.VITE_SERVER_WS_BASE || '';
@@ -138,7 +139,7 @@ export async function createServerProject(name, session, options = null) {
   const initial = options?.initialSnapshot && typeof options.initialSnapshot === 'object'
     ? options.initialSnapshot
     : createEmptyProject(name);
-  const projectId = String(options?.projectId || initial.projectId || crypto.randomUUID());
+  const projectId = String(options?.projectId || initial.projectId || createId());
   const projectName = String(options?.name || name || initial.projectName || '').trim();
   const snapshot = {
     ...initial,
@@ -155,6 +156,12 @@ export async function createServerProject(name, session, options = null) {
     },
   }, session);
   return payload;
+}
+
+export async function deleteServerProject(projectId, session) {
+  return await apiFetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: 'DELETE',
+  }, session);
 }
 
 export async function bootstrapServerProject(projectId, session, knownSeq = 0) {

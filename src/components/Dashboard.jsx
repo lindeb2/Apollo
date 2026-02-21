@@ -13,6 +13,7 @@ import { formatTime, PAN_LAW_OPTIONS_DB, normalizePanLawDb } from '../utils/audi
 import { AUTO_PAN_STRATEGIES } from '../utils/choirAutoPan';
 import { normalizeProjectName } from '../utils/naming';
 import { reportUserError } from '../utils/errorReporter';
+import { createId } from '../utils/id';
 
 function Dashboard({ onOpenProject, onNewProject }) {
   const [projects, setProjects] = useState([]);
@@ -117,7 +118,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
       overwrite: false,
       project: {
         ...importedProject,
-        projectId: crypto.randomUUID(),
+        projectId: createId(),
         projectName: buildImportedCopyName(importedProject.projectName, existingProjects),
       },
     });

@@ -1,4 +1,5 @@
 import { volumeToGain } from './audio';
+import { createId } from './id';
 import {
   TRACK_ROLE_CHOIR,
   TRACK_ROLE_INSTRUMENT,
@@ -35,7 +36,7 @@ function isCountableRole(role) {
 
 function makeTrackNode(trackId, order = 0, parentId = ROOT_PARENT_ID) {
   return {
-    id: crypto.randomUUID(),
+    id: createId(),
     kind: 'track',
     parentId,
     order,
@@ -69,7 +70,7 @@ export function normalizeTrackTree(project) {
     const legacyNodeId = rawNode.id ?? rawNode.nodeId;
     const nodeId = typeof legacyNodeId === 'string' && legacyNodeId && !seenNodeIds.has(legacyNodeId)
       ? legacyNodeId
-      : crypto.randomUUID();
+      : createId();
     seenNodeIds.add(nodeId);
 
     const legacyParentId = rawNode.parentId ?? rawNode.parentNodeId;
@@ -352,7 +353,7 @@ export function createGroupNode(project, name = 'Group', parentId = ROOT_PARENT_
     if (sibling.order >= insertionIndex) sibling.order += 1;
   }
   const nextNode = {
-    id: crypto.randomUUID(),
+    id: createId(),
     kind: 'group',
     parentId: parentId || ROOT_PARENT_ID,
     order: insertionIndex,

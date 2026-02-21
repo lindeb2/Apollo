@@ -1,5 +1,6 @@
 import Dexie from 'dexie';
 import { reportUserError } from '../utils/errorReporter';
+import { createId } from '../utils/id';
 
 /**
  * ChoirMaster IndexedDB Database
@@ -92,9 +93,12 @@ export async function loadProject(projectId) {
  * Delete a project and its undo history
  */
 export async function deleteProject(projectId) {
-  await db.transaction('rw', [db.projects, db.undo], async () => {
+  await db.transaction('rw', [db.projects, db.undo, db.remoteProjects, db.syncQueue], async () => {
     await db.projects.delete(projectId);
     await db.undo.where('projectId').equals(projectId).delete();
+    await db.remoteProjects.delete(projectId);
+    await db.syncQueue.where('projectId').equals(projectId).delete();
+    await db.syncQueue.delete(`${projectId}:pending`);
   });
   
   // Update recent projects
@@ -113,7 +117,7 @@ export async function listProjects() {
  * Store audio blob in media table
  */
 export async function storeMediaBlob(fileName, audioBuffer, blob, blobId = null) {
-  const id = blobId || crypto.randomUUID();
+  const id = blobId || createId();
   
   const mediaData = {
     blobId: id,

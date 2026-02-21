@@ -19,6 +19,7 @@ import { reportUserError } from '../utils/errorReporter';
 import { measureTuttiPeak } from '../lib/exportEngine';
 import useRealtimeProjectSync from '../hooks/useRealtimeProjectSync';
 import { downloadMediaBlob, forceCheckpoint } from '../lib/serverApi';
+import { createId } from '../utils/id';
 import {
   GROUP_ROLE_CHOIRS,
   isChoirRole,
@@ -1580,7 +1581,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
       const sourceParentId = sourceNode.parentId ?? null;
       const movingParentId = movingNode.parentId ?? null;
       const sourceOrder = Number.isFinite(Number(sourceNode.order)) ? Number(sourceNode.order) : 0;
-      const groupNodeId = crypto.randomUUID();
+      const groupNodeId = createId();
       const groupRole = sourceTrack.role || TRACK_ROLES.OTHER;
 
       const nextTree = (normalized.trackTree || [])
@@ -1734,7 +1735,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
       restoredTrack.pan = Number.isFinite(Number(group.pan)) ? Number(group.pan) : restoredTrack.pan;
       nextTracks.push(restoredTrack);
       nextTree.push({
-        id: crypto.randomUUID(),
+        id: createId(),
         kind: 'track',
         parentId: group.parentId ?? null,
         order: Number.isFinite(Number(group.order)) ? Number(group.order) : 0,
@@ -2212,8 +2213,8 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
       const groupOrder = insertOrder >= 0 ? insertOrder : (sourceNode.order ?? siblingNodes.length);
 
       const groupRole = source.role || TRACK_ROLES.OTHER;
-      const groupNodeId = crypto.randomUUID();
-      const childNodeId = crypto.randomUUID();
+      const groupNodeId = createId();
+      const childNodeId = createId();
 
       const nextTracks = [
         ...normalized.tracks.filter((t) => t.id !== source.id),

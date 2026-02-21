@@ -12,11 +12,22 @@ import {
   registerMedia,
   uploadMedia,
 } from '../lib/serverApi';
+import { createId } from '../utils/id';
 
 async function hashBlob(blob) {
   const arrayBuffer = await blob.arrayBuffer();
-  const digest = await crypto.subtle.digest('SHA-256', arrayBuffer);
-  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  if (globalThis?.crypto?.subtle?.digest) {
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', arrayBuffer);
+    return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  const bytes = new Uint8Array(arrayBuffer);
+  let hash = 2166136261;
+  for (let i = 0; i < bytes.length; i += 1) {
+    hash ^= bytes[i];
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16)}`;
 }
 
 function collectBlobIds(project) {
@@ -225,7 +236,7 @@ export default function useRealtimeProjectSync({
         type: 'project.replace',
         project,
       };
-      const clientOpId = crypto.randomUUID();
+      const clientOpId = createId();
       if (!clientRef.current?.connected) {
         await upsertPendingSyncOp(projectId, { op, clientOpId, project });
         return;

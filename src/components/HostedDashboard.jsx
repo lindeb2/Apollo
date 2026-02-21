@@ -13,6 +13,7 @@ function HostedDashboard({
   onCreateUser,
   onUpdatePermission,
   onImportProject,
+  onDeleteProject,
   loading = false,
   error = '',
 }) {
@@ -105,16 +106,34 @@ function HostedDashboard({
 
           <div className="space-y-2">
             {(projects || []).map((project) => (
-              <button
+              <div
                 key={project.id}
-                className="w-full text-left rounded border border-gray-700 bg-gray-900 hover:bg-gray-850 px-3 py-3"
-                onClick={() => onOpenProject(project)}
+                className="w-full rounded border border-gray-700 bg-gray-900 hover:bg-gray-850 px-3 py-3"
               >
-                <div className="font-medium">{project.name}</div>
-                <div className="text-xs text-gray-400 mt-1">
-                  Seq: {project.latestSeq ?? 0} · Read: {project.canRead ? 'yes' : 'no'} · Write: {project.canWrite ? 'yes' : 'no'}
+                <div className="flex items-start justify-between gap-3">
+                  <button
+                    className="flex-1 text-left min-w-0"
+                    onClick={() => onOpenProject(project)}
+                  >
+                    <div className="font-medium truncate">{project.name}</div>
+                    <div className="text-xs text-gray-400 mt-1">
+                      Seq: {project.latestSeq ?? 0} · Read: {project.canRead ? 'yes' : 'no'} · Write: {project.canWrite ? 'yes' : 'no'}
+                    </div>
+                  </button>
+                  <button
+                    className="rounded bg-red-700/70 hover:bg-red-700 text-white text-xs px-2 py-1 disabled:bg-gray-700 disabled:text-gray-300"
+                    disabled={!project.canWrite || loading}
+                    onClick={async () => {
+                      const confirmed = window.confirm(`Delete project \"${project.name}\"?`);
+                      if (!confirmed) return;
+                      await onDeleteProject(project);
+                    }}
+                    title={project.canWrite ? 'Delete project' : 'Requires write permission'}
+                  >
+                    Delete
+                  </button>
                 </div>
-              </button>
+              </div>
             ))}
             {projects?.length === 0 && (
               <div className="text-sm text-gray-400">No projects available.</div>

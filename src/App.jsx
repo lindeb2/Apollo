@@ -5,13 +5,15 @@ import HostedLogin from './components/HostedLogin';
 import HostedDashboard from './components/HostedDashboard';
 import { audioManager } from './lib/audioManager';
 import { importFromZIP } from './lib/projectPortability';
-import { getMediaBlob, saveRemoteProjectMeta, storeMediaBlob } from './lib/db';
+import { deleteProject as deleteCachedProject, getMediaBlob, saveRemoteProjectMeta, storeMediaBlob } from './lib/db';
 import { normalizeProjectName } from './utils/naming';
+import { createId } from './utils/id';
 import {
   bootstrapServerProject,
   clearServerSession,
   createServerProject,
   createUser,
+  deleteServerProject,
   getProjectPermissions,
   isServerModeEnabled,
   listServerProjects,
@@ -37,8 +39,19 @@ function collectBlobIds(project) {
 
 async function hashBlob(blob) {
   const arrayBuffer = await blob.arrayBuffer();
-  const digest = await crypto.subtle.digest('SHA-256', arrayBuffer);
-  return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, '0')).join('');
+  if (globalThis?.crypto?.subtle?.digest) {
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', arrayBuffer);
+    return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, '0')).join('');
+  }
+
+  // Fallback for non-secure contexts (e.g. LAN http) where SubtleCrypto is unavailable.
+  const bytes = new Uint8Array(arrayBuffer);
+  let hash = 2166136261;
+  for (let i = 0; i < bytes.length; i += 1) {
+    hash ^= bytes[i];
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16)}`;
 }
 
 function App() {
@@ -181,7 +194,7 @@ function App() {
       const importedName = normalizeProjectName(importedProject.projectName)
         || normalizeProjectName(file.name.replace(/\.zip$/i, ''))
         || 'Imported Project';
-      const importedProjectId = crypto.randomUUID();
+      const importedProjectId = createId();
       const snapshot = {
         ...importedProject,
         projectId: importedProjectId,
@@ -225,6 +238,23 @@ function App() {
       await refreshServerData();
     } catch (error) {
       setServerError(error.message || 'Failed to create user');
+    }
+  };
+
+  const handleDeleteServerProject = async (projectMeta) => {
+    setServerError('');
+    setServerLoading(true);
+    try {
+      await deleteServerProject(projectMeta.id, serverSession);
+      await deleteCachedProject(projectMeta.id).catch(() => {});
+      if (selectedServerProjectId === projectMeta.id) {
+        setSelectedServerProjectId(null);
+      }
+      await refreshServerData();
+    } catch (error) {
+      setServerError(error.message || 'Failed to delete project');
+    } finally {
+      setServerLoading(false);
     }
   };
 
@@ -276,6 +306,7 @@ function App() {
             onLogout={handleServerLogout}
             onCreateUser={handleCreateServerUser}
             onUpdatePermission={handleUpdateServerPermission}
+            onDeleteProject={handleDeleteServerProject}
             loading={serverLoading}
             error={serverError}
           />

@@ -598,6 +598,82 @@ app.post('/api/projects', requireAuth, async (req, res) => {
   }
 });
 
+app.delete('/api/projects/:id', requireAuth, async (req, res) => {
+  const permission = await requireProjectPermission(req, res, 'write');
+  if (!permission) return;
+
+  const client = await pool.connect();
+  let orphanMedia = [];
+  try {
+    await client.query('BEGIN');
+
+    const mediaRefRows = await client.query(
+      `SELECT media_id
+       FROM project_media_refs
+       WHERE project_id = $1`,
+      [permission.projectId]
+    );
+    const candidateMediaIds = mediaRefRows.rows.map((row) => row.media_id);
+
+    const deletedProject = await client.query(
+      `DELETE FROM projects
+       WHERE id = $1
+       RETURNING id`,
+      [permission.projectId]
+    );
+
+    if (deletedProject.rowCount === 0) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+
+    if (candidateMediaIds.length > 0) {
+      const orphanRows = await client.query(
+        `SELECT mo.id, mo.path
+         FROM media_objects mo
+         WHERE mo.id = ANY($1::text[])
+           AND NOT EXISTS (
+             SELECT 1
+             FROM project_media_refs r
+             WHERE r.media_id = mo.id
+           )`,
+        [candidateMediaIds]
+      );
+      orphanMedia = orphanRows.rows;
+      const orphanIds = orphanMedia.map((row) => row.id);
+      if (orphanIds.length > 0) {
+        await client.query(
+          `DELETE FROM media_objects
+           WHERE id = ANY($1::text[])`,
+          [orphanIds]
+        );
+      }
+    }
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error(error);
+    res.status(500).json({ error: 'Failed to delete project' });
+    return;
+  } finally {
+    client.release();
+  }
+
+  // Best-effort file cleanup after DB commit.
+  await Promise.all(orphanMedia.map(async (row) => {
+    if (!row?.path) return;
+    try {
+      await fs.unlink(row.path);
+    } catch {
+      // ignore missing file/delete errors
+    }
+  }));
+
+  res.json({ ok: true, projectId: permission.projectId });
+});
+
 app.get('/api/projects/:id/bootstrap', requireAuth, async (req, res) => {
   const permission = await requireProjectPermission(req, res, 'read');
   if (!permission) return;

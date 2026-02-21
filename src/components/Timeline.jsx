@@ -20,6 +20,7 @@ import {
 } from '../utils/clipCollision';
 import { isPrimaryModifierPressed } from '../utils/keyboard';
 import { reportUserError } from '../utils/errorReporter';
+import { createId } from '../utils/id';
 
 const TIMELINE_VIEWPORT_WIDTH = 1920; // Default viewport width (updated dynamically)
 const MIN_VISIBLE_DURATION_MS = 8000; // Minimum duration to show when zoomed out
@@ -1456,14 +1457,14 @@ function Timeline({
               const splitCropMs = candidateClip.cropStartMs + splitOffsetMs;
               const leftClip = {
                 ...candidateClip,
-                id: crypto.randomUUID(),
+                id: createId(),
                 timelineStartMs: clipStartMs,
                 cropStartMs: candidateClip.cropStartMs,
                 cropEndMs: splitCropMs,
               };
               const rightClip = {
                 ...candidateClip,
-                id: crypto.randomUUID(),
+                id: createId(),
                 timelineStartMs: currentTimeMs,
                 cropStartMs: splitCropMs,
                 cropEndMs: candidateClip.cropEndMs,
@@ -1574,7 +1575,7 @@ function Timeline({
           const singleClip = clipboardClip.type === 'single' ? clipboardClip.clip : clipboardClip;
           const newClip = {
             ...singleClip,
-            id: crypto.randomUUID(),
+            id: createId(),
             timelineStartMs: currentTimeMs,
           };
           const safePosition = findSafePosition(newClip, track.clips, currentTimeMs);
@@ -1615,7 +1616,7 @@ function Timeline({
           }
           const newClip = {
             ...item.clip,
-            id: crypto.randomUUID(),
+            id: createId(),
             timelineStartMs,
           };
           pastedIds.push(newClip.id);
@@ -1683,7 +1684,7 @@ function Timeline({
           const durationMs = getClipDurationMs(entry.clip);
           const duplicate = {
             ...entry.clip,
-            id: crypto.randomUUID(),
+            id: createId(),
             timelineStartMs: entry.clip.timelineStartMs + durationMs,
           };
           duplicateIds.push(duplicate.id);

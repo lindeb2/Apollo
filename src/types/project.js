@@ -1,5 +1,6 @@
 import { dbToVolume, normalizePanLawDb, DEFAULT_PAN_LAW_DB } from '../utils/audio';
 import { DEFAULT_AUTO_PAN_SETTINGS } from '../utils/choirAutoPan';
+import { createId } from '../utils/id';
 import {
   TRACK_ROLE_INSTRUMENT,
   TRACK_ROLE_LEAD,
@@ -116,7 +117,7 @@ export function createEmptyProject(
 ) {
   return {
     version: '1.0.0',
-    projectId: crypto.randomUUID(),
+    projectId: createId(),
     projectName: name,
     sampleRate: SAMPLE_RATE,
     masterVolume: dbToVolume(0),
@@ -135,7 +136,7 @@ export function createEmptyProject(
  */
 export function createTrack(name, role = TRACK_ROLES.OTHER) {
   return {
-    id: crypto.randomUUID(),
+    id: createId(),
     name,
     role,
     icon: getDefaultIconByRole(role),
@@ -152,7 +153,7 @@ export function createTrack(name, role = TRACK_ROLES.OTHER) {
  */
 export function createClip(blobId, timelineStartMs, sourceDurationMs) {
   return {
-    id: crypto.randomUUID(),
+    id: createId(),
     blobId,
     timelineStartMs,
     sourceStartMs: 0,
