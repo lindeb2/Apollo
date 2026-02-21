@@ -24,7 +24,7 @@ export async function exportAsJSON(project) {
  * Export project as ZIP file
  * Contains project.json + all audio files
  */
-export async function exportAsZIP(project, mediaMap, onProgress = null, signal = null) {
+export async function exportAsZIP(project, mediaMap, exportBaseName = null, onProgress = null, signal = null) {
   const throwIfAborted = () => {
     if (signal?.aborted) {
       const error = new Error('Export cancelled');
@@ -119,8 +119,8 @@ export async function exportAsZIP(project, mediaMap, onProgress = null, signal =
     );
   });
   
-  const base = normalizeProjectName(project.projectName) || 'project';
-  const filename = `${base}_project.zip`;
+  const base = normalizeProjectName(exportBaseName || project.projectName) || 'project';
+  const filename = `${base}.zip`;
   
   emitProgress('done', 'ZIP export complete', 100);
   return { blob: zipBlob, filename };

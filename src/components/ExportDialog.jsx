@@ -783,7 +783,15 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap, onUpdateExport
     abortControllerRef.current = abortController;
 
     try {
-      const { blob, filename } = await exportAsZIP(project, mediaMap, (info) => {
+      const normalizedExportName = normalizeExportName(exportBaseName);
+      if (!normalizedExportName) {
+        throw new Error('Export name cannot be empty.');
+      }
+      if (hasInvalidExportNameChars(normalizedExportName)) {
+        throw new Error('Export name cannot contain: \\ / : * ? " < > |');
+      }
+
+      const { blob, filename } = await exportAsZIP(project, mediaMap, normalizedExportName, (info) => {
         if (typeof info?.message === 'string') {
           setProgressMessage(info.message);
         }
@@ -958,12 +966,12 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap, onUpdateExport
                       />
                     </div>
                     <div className="mb-3">
-                      <label className="block text-xs text-gray-400 mb-1">
+                      <label className="block text-xs text-gray-400">
                         Practice focus difference (dB)
                       </label>
                       <div className="relative px-2 pt-5">
                         <div
-                          className="absolute top-2 text-[11px] tabular-nums whitespace-nowrap text-white font-medium leading-none pointer-events-none"
+                          className="absolute top-1.5 text-[11px] tabular-nums whitespace-nowrap text-white font-medium leading-none pointer-events-none"
                           style={{
                             left: practiceFocusDiffLabelLeft,
                             transform: 'translateX(-50%)',
