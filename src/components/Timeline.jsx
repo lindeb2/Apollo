@@ -2258,7 +2258,7 @@ function Timeline({
   const tracks = (
     <div 
       ref={timelineRef}
-      className={`${sharedVerticalScroll ? 'relative' : 'flex-1 overflow-hidden relative'} bg-gray-900 w-full min-w-0`}
+      className={`${sharedVerticalScroll ? 'relative' : 'flex-1 overflow-hidden relative'} h-full bg-gray-900 w-full min-w-0`}
       onMouseDown={handleTimelineMouseDown}
       onContextMenu={handleContextMenu}
     >
@@ -2269,7 +2269,7 @@ function Timeline({
             internalScrollRef.current = el;
           }
         }}
-        className={`${sharedVerticalScroll ? 'overflow-x-auto overflow-y-hidden' : 'absolute inset-0 overflow-auto'} scrollbar-hidden w-full min-w-0`}
+        className={`${sharedVerticalScroll ? 'h-full overflow-x-auto overflow-y-hidden' : 'absolute inset-0 overflow-auto'} scrollbar-hidden w-full min-w-0`}
         onScroll={(e) => {
           const newScrollLeft = e.target.scrollLeft;
           setScrollLeft(newScrollLeft);
@@ -2283,7 +2283,7 @@ function Timeline({
         }}
         style={{ '--scroll-left': '0px' }}
       >
-        <div style={{ width: `${timelineWidthPx}px`, height: `${totalTimelineHeight}px`, position: 'relative' }}>
+        <div style={{ width: `${timelineWidthPx}px`, height: `${totalTimelineHeight}px`, minHeight: '100%', position: 'relative' }}>
               {/* Playhead (tracks) */}
               <div
                 className="absolute top-0 bottom-0 w-0.5 bg-red-500 pointer-events-none z-30"

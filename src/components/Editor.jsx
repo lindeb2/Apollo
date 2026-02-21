@@ -41,6 +41,7 @@ import {
 } from '../utils/trackTree';
 
 const SUPPORTED_IMPORT_EXTENSIONS = new Set(['wav', 'mp3', 'flac']);
+const TRACK_CONFIG_COLUMN_WIDTH_PX = 384;
 
 const isFileDragEvent = (event) => {
   const types = event?.dataTransfer?.types;
@@ -1045,6 +1046,54 @@ function Editor({ onBackToDashboard }) {
     }, 'Drop import audio files');
   };
 
+  const handleDropImportToNewTracksAtPlayhead = async (files) => {
+    if (!files.length) return null;
+
+    const importedFiles = [];
+    for (const file of files) {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const audioBuffer = await audioManager.decodeAudioFile(arrayBuffer);
+        const blob = audioManager.audioBufferToBlob(audioBuffer);
+        const blobId = await storeMediaBlob(file.name, audioBuffer, blob);
+        audioManager.mediaCache.set(blobId, audioBuffer);
+        importedFiles.push({
+          name: file.name.replace(/\.[^/.]+$/, ''),
+          blobId,
+          durationMs: audioBuffer.duration * 1000,
+        });
+      } catch (error) {
+        console.error(`Failed to import ${file.name}:`, error);
+        throw new Error(`Failed to import ${file.name}: ${error.message}`);
+      }
+    }
+
+    if (!importedFiles.length) return null;
+
+    const newTracks = importedFiles.map((fileData, index) => {
+      const fallbackName = `Track ${projectRef.current?.tracks?.length + index + 1 || index + 1}`;
+      const track = createTrack(fileData.name || fallbackName, TRACK_ROLES.INSTRUMENT);
+      track.clips.push(createClip(fileData.blobId, currentTimeMs, fileData.durationMs));
+      return track;
+    });
+    const firstTrackId = newTracks[0]?.id || null;
+
+    updateProject((proj) => {
+      let nextProject = {
+        ...proj,
+        tracks: [...proj.tracks, ...newTracks],
+      };
+      nextProject = normalizeTrackTree(nextProject);
+      newTracks.forEach((track) => {
+        nextProject = attachTrackNode(nextProject, track.id);
+      });
+      nextProject = syncDirectChildRolesFromGroupCategories(nextProject);
+      return reorderTracksByTree(nextProject);
+    }, 'Drop import audio files');
+
+    return firstTrackId;
+  };
+
   const getTrackRowAtClientY = (clientY) => {
     const scrollArea = timelineRowsScrollAreaRef.current;
     if (!scrollArea) return null;
@@ -1060,6 +1109,25 @@ function Editor({ onBackToDashboard }) {
       cursor = rowEnd;
     }
     return null;
+  };
+
+  const isDropInsideTimelineFreeArea = (clientX, clientY) => {
+    const scrollArea = timelineRowsScrollAreaRef.current;
+    if (!scrollArea) return false;
+
+    const rect = scrollArea.getBoundingClientRect();
+    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+      return false;
+    }
+
+    const xWithin = clientX - rect.left;
+    if (xWithin < TRACK_CONFIG_COLUMN_WIDTH_PX) {
+      return false;
+    }
+
+    const yWithinContent = clientY - rect.top + scrollArea.scrollTop;
+    const renderedRowsHeight = timelineRows.reduce((sum, row) => sum + row.height, 0);
+    return yWithinContent >= renderedRowsHeight;
   };
 
   const handleSeek = (timeMs) => {
@@ -2182,12 +2250,20 @@ function Editor({ onBackToDashboard }) {
         const files = getSupportedAudioFiles(e.dataTransfer);
         if (!files.length) return;
 
-        const targetRow = getTrackRowAtClientY(e.clientY);
-        if (!targetRow?.trackId) return;
-
         try {
-          await handleDropImportToTrackAtPlayhead(files, targetRow);
-          handleSelectRow(targetRow);
+          const targetRow = getTrackRowAtClientY(e.clientY);
+          if (targetRow?.trackId) {
+            await handleDropImportToTrackAtPlayhead(files, targetRow);
+            handleSelectRow(targetRow);
+            return;
+          }
+
+          if (isDropInsideTimelineFreeArea(e.clientX, e.clientY)) {
+            const firstTrackId = await handleDropImportToNewTracksAtPlayhead(files);
+            if (firstTrackId) {
+              selectTrack(firstTrackId);
+            }
+          }
         } catch (error) {
           alert(`Import failed: ${error.message}`);
         }
@@ -2441,9 +2517,9 @@ function Editor({ onBackToDashboard }) {
                   }
                 }}
               >
-                <div className="grid grid-cols-[384px_1fr] min-w-0">
+                <div className="grid grid-cols-[384px_1fr] min-w-0 min-h-full">
                   <div
-                    className="bg-gray-850 border-r border-gray-700"
+                    className="bg-gray-850 border-r border-gray-700 min-h-full"
                     onContextMenu={(e) => {
                       e.preventDefault();
                       setTrackListContextMenu({
@@ -2480,7 +2556,7 @@ function Editor({ onBackToDashboard }) {
                       onClearEmptyContextMenu={() => setTrackListContextMenu(null)}
                     />
                   </div>
-                  <div className="min-w-0 bg-gray-900 relative overflow-hidden">
+                  <div className="min-w-0 bg-gray-900 relative overflow-hidden min-h-full">
                     {tracks}
                     {hasNoTracks && (
                       <div className="absolute inset-0 flex items-center justify-center">
