@@ -1,0 +1,1150 @@
+import fs from 'fs/promises';
+import fssync from 'fs';
+import path from 'path';
+import { randomUUID } from 'crypto';
+import http from 'http';
+import express from 'express';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';
+import morgan from 'morgan';
+import { WebSocketServer } from 'ws';
+import bcrypt from 'bcryptjs';
+
+import { config } from './config.js';
+import { pool, runMigrations, ensureDefaultAdmin, closeDb } from './db.js';
+import {
+  authenticateCredentials,
+  getProjectPermission,
+  isRefreshTokenPersisted,
+  persistRefreshToken,
+  requireAdmin,
+  requireAuth,
+  requireProjectPermission,
+  revokeRefreshToken,
+  signAccessToken,
+  signRefreshToken,
+  verifyAccessToken,
+  verifyRefreshToken,
+} from './auth.js';
+
+const app = express();
+const server = http.createServer(app);
+const wsServer = new WebSocketServer({ noServer: true });
+
+const clients = new Set();
+const projectRooms = new Map();
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function toSafeName(name, fallback = 'file') {
+  return (name || fallback).replace(/[^a-zA-Z0-9._-]+/g, '_');
+}
+
+async function ensureMediaRoot() {
+  await fs.mkdir(config.mediaRoot, { recursive: true });
+}
+
+function roomFor(projectId) {
+  if (!projectRooms.has(projectId)) {
+    projectRooms.set(projectId, new Set());
+  }
+  return projectRooms.get(projectId);
+}
+
+function sendWs(ws, type, payload = {}) {
+  if (ws.readyState !== ws.OPEN) return;
+  ws.send(JSON.stringify({ type, ...payload }));
+}
+
+function broadcastToProject(projectId, type, payload = {}, excludeWs = null) {
+  const room = roomFor(projectId);
+  room.forEach((ws) => {
+    if (excludeWs && ws === excludeWs) return;
+    sendWs(ws, type, payload);
+  });
+}
+
+async function applyOpToSnapshot(currentSnapshot, op) {
+  if (!op || typeof op !== 'object') return currentSnapshot;
+  if (op.type === 'project.replace' && op.project && typeof op.project === 'object') {
+    return op.project;
+  }
+  if (op.type === 'project.update' && op.updates && typeof op.updates === 'object') {
+    return {
+      ...currentSnapshot,
+      ...op.updates,
+    };
+  }
+  return currentSnapshot;
+}
+
+function collectSnapshotMediaIds(snapshot) {
+  const ids = new Set();
+  const tracks = Array.isArray(snapshot?.tracks) ? snapshot.tracks : [];
+  tracks.forEach((track) => {
+    const clips = Array.isArray(track?.clips) ? track.clips : [];
+    clips.forEach((clip) => {
+      const blobId = typeof clip?.blobId === 'string' ? clip.blobId : null;
+      if (blobId) {
+        ids.add(blobId);
+      }
+    });
+  });
+  return Array.from(ids);
+}
+
+async function appendProjectOp({ projectId, userId, clientOpId, op }) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const headResult = await client.query(
+      `SELECT latest_seq, latest_snapshot_json, last_checkpoint_at
+       FROM project_heads
+       WHERE project_id = $1
+       FOR UPDATE`,
+      [projectId]
+    );
+
+    if (headResult.rowCount === 0) {
+      throw new Error('Project head missing');
+    }
+
+    const head = headResult.rows[0];
+    const latestSeq = Number(head.latest_seq || 0);
+    const nextSeq = latestSeq + 1;
+    const currentSnapshot = head.latest_snapshot_json || {};
+    const nextSnapshot = await applyOpToSnapshot(currentSnapshot, op);
+
+    await client.query(
+      `INSERT INTO project_ops(project_id, server_seq, client_op_id, user_id, op_json)
+       VALUES($1, $2, $3, $4, $5::jsonb)`,
+      [projectId, nextSeq, clientOpId || null, userId, JSON.stringify(op || {})]
+    );
+
+    const checkpointEveryMs = config.checkpointEverySeconds * 1000;
+    const lastCheckpointAt = head.last_checkpoint_at ? new Date(head.last_checkpoint_at).getTime() : 0;
+    const shouldCheckpoint = (nextSeq % config.checkpointEveryOps === 0)
+      || (Date.now() - lastCheckpointAt >= checkpointEveryMs)
+      || latestSeq === 0;
+
+    await client.query(
+      `UPDATE project_heads
+       SET latest_seq = $2,
+           latest_snapshot_json = $3::jsonb,
+           updated_at = NOW(),
+           last_checkpoint_at = CASE WHEN $4 THEN NOW() ELSE last_checkpoint_at END
+       WHERE project_id = $1`,
+      [projectId, nextSeq, JSON.stringify(nextSnapshot), shouldCheckpoint]
+    );
+
+    const mediaIds = collectSnapshotMediaIds(nextSnapshot);
+    if (mediaIds.length > 0) {
+      await client.query(
+        `INSERT INTO project_media_refs(project_id, media_id, snapshot_id)
+         SELECT $1, m.id, NULL
+         FROM unnest($2::text[]) AS t(id)
+         JOIN media_objects m ON m.id = t.id
+         ON CONFLICT (project_id, media_id) DO NOTHING`,
+        [projectId, mediaIds]
+      );
+    }
+
+    if (shouldCheckpoint) {
+      await client.query(
+        `INSERT INTO project_snapshots(project_id, server_seq, snapshot_json, created_by)
+         VALUES($1, $2, $3::jsonb, $4)`,
+        [projectId, nextSeq, JSON.stringify(nextSnapshot), userId]
+      );
+    }
+
+    await client.query('COMMIT');
+
+    return {
+      serverSeq: nextSeq,
+      snapshot: nextSnapshot,
+      checkpointed: shouldCheckpoint,
+    };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function fetchProjectBootstrap(projectId, knownSeq = 0) {
+  const [headResult, projectResult] = await Promise.all([
+    pool.query(
+      `SELECT latest_seq, latest_snapshot_json
+       FROM project_heads
+       WHERE project_id = $1`,
+      [projectId]
+    ),
+    pool.query(
+      `SELECT id, name
+       FROM projects
+       WHERE id = $1`,
+      [projectId]
+    ),
+  ]);
+
+  if (headResult.rowCount === 0 || projectResult.rowCount === 0) {
+    throw new Error('Project not found');
+  }
+
+  const head = headResult.rows[0];
+  const latestSeq = Number(head.latest_seq || 0);
+  const snapshot = head.latest_snapshot_json || {};
+
+  let missingOps = [];
+  const seq = Number(knownSeq || 0);
+  if (seq > 0 && seq < latestSeq) {
+    const opsResult = await pool.query(
+      `SELECT server_seq, op_json, user_id
+       FROM project_ops
+       WHERE project_id = $1 AND server_seq > $2
+       ORDER BY server_seq ASC
+       LIMIT 5000`,
+      [projectId, seq]
+    );
+    missingOps = opsResult.rows.map((row) => ({
+      serverSeq: Number(row.server_seq),
+      op: row.op_json,
+      actor: { userId: row.user_id },
+    }));
+  }
+
+  return {
+    project: {
+      id: projectResult.rows[0].id,
+      name: projectResult.rows[0].name,
+    },
+    latestSeq,
+    snapshot,
+    missingOps,
+  };
+}
+
+async function broadcastLockState(projectId, trackId) {
+  const result = await pool.query(
+    `SELECT owner_user_id, owner_name, expires_at
+     FROM record_locks
+     WHERE project_id = $1 AND track_id = $2`,
+    [projectId, trackId]
+  );
+
+  if (result.rowCount === 0) {
+    broadcastToProject(projectId, 'lock.state', {
+      projectId,
+      trackId,
+      ownerUserId: null,
+      ownerName: null,
+      expiresAt: null,
+    });
+    return;
+  }
+
+  const row = result.rows[0];
+  broadcastToProject(projectId, 'lock.state', {
+    projectId,
+    trackId,
+    ownerUserId: row.owner_user_id,
+    ownerName: row.owner_name,
+    expiresAt: row.expires_at,
+  });
+}
+
+async function sendProjectLockStatesToClient(projectId, ws) {
+  const result = await pool.query(
+    `SELECT track_id, owner_user_id, owner_name, expires_at
+     FROM record_locks
+     WHERE project_id = $1 AND expires_at > NOW()`,
+    [projectId]
+  );
+
+  result.rows.forEach((row) => {
+    sendWs(ws, 'lock.state', {
+      projectId,
+      trackId: row.track_id,
+      ownerUserId: row.owner_user_id,
+      ownerName: row.owner_name,
+      expiresAt: row.expires_at,
+    });
+  });
+}
+
+async function cleanupExpiredLocks() {
+  const result = await pool.query(
+    `DELETE FROM record_locks
+     WHERE expires_at < NOW()
+     RETURNING project_id, track_id`
+  );
+  if (!result.rowCount) return;
+  await Promise.all(result.rows.map((row) => broadcastLockState(row.project_id, row.track_id)));
+}
+
+app.use(cors({
+  origin: config.corsOrigin === '*' ? true : config.corsOrigin,
+  credentials: true,
+}));
+app.use(cookieParser());
+app.use(express.json({ limit: '10mb' }));
+app.use(morgan('dev'));
+
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', now: nowIso() });
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const username = String(req.body?.username || '').trim();
+    const password = String(req.body?.password || '');
+    if (!username || !password) {
+      res.status(400).json({ error: 'Username and password are required' });
+      return;
+    }
+
+    const user = await authenticateCredentials(username, password);
+    if (!user) {
+      res.status(401).json({ error: 'Invalid credentials' });
+      return;
+    }
+
+    const accessToken = signAccessToken(user);
+    const refreshToken = signRefreshToken(user);
+    await persistRefreshToken(refreshToken, user.id);
+
+    res.json({
+      accessToken,
+      refreshToken,
+      user: {
+        id: user.id,
+        username: user.username,
+        isAdmin: Boolean(user.is_admin),
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to login' });
+  }
+});
+
+app.post('/api/auth/refresh', async (req, res) => {
+  try {
+    const refreshToken = req.body?.refreshToken;
+    if (!refreshToken) {
+      res.status(400).json({ error: 'Missing refresh token' });
+      return;
+    }
+
+    const persisted = await isRefreshTokenPersisted(refreshToken);
+    if (!persisted) {
+      res.status(401).json({ error: 'Invalid refresh token' });
+      return;
+    }
+
+    const payload = verifyRefreshToken(refreshToken);
+    const userResult = await pool.query(
+      'SELECT id, username, is_admin, is_active FROM users WHERE id = $1',
+      [payload.sub]
+    );
+    if (userResult.rowCount === 0 || !userResult.rows[0].is_active) {
+      res.status(401).json({ error: 'User is not active' });
+      return;
+    }
+
+    const user = userResult.rows[0];
+    const newAccess = signAccessToken(user);
+    const newRefresh = signRefreshToken(user);
+    await revokeRefreshToken(refreshToken);
+    await persistRefreshToken(newRefresh, user.id);
+
+    res.json({
+      accessToken: newAccess,
+      refreshToken: newRefresh,
+      user: {
+        id: user.id,
+        username: user.username,
+        isAdmin: Boolean(user.is_admin),
+      },
+    });
+  } catch (error) {
+    res.status(401).json({ error: 'Invalid refresh token' });
+  }
+});
+
+app.post('/api/auth/logout', async (req, res) => {
+  try {
+    const refreshToken = req.body?.refreshToken;
+    if (refreshToken) {
+      await revokeRefreshToken(refreshToken);
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to logout' });
+  }
+});
+
+app.get('/api/me', requireAuth, async (req, res) => {
+  res.json({
+    user: {
+      id: req.user.id,
+      username: req.user.username,
+      isAdmin: req.user.isAdmin,
+    },
+  });
+});
+
+app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const username = String(req.body?.username || '').trim();
+    const password = String(req.body?.password || '');
+    const isAdmin = Boolean(req.body?.isAdmin);
+
+    if (!username || !password || password.length < 12) {
+      res.status(400).json({ error: 'Username and password (>=12 chars) are required' });
+      return;
+    }
+
+    const id = randomUUID();
+    const hash = await bcrypt.hash(password, 12);
+    await pool.query(
+      `INSERT INTO users(id, username, password_hash, is_admin, is_active)
+       VALUES($1, $2, $3, $4, TRUE)`,
+      [id, username, hash, isAdmin]
+    );
+
+    res.status(201).json({ id, username, isAdmin });
+  } catch (error) {
+    if (String(error?.message || '').includes('users_username_key')) {
+      res.status(409).json({ error: 'Username already exists' });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+app.get('/api/admin/users', requireAuth, requireAdmin, async (_req, res) => {
+  const result = await pool.query(
+    `SELECT id, username, is_admin AS "isAdmin", is_active AS "isActive", created_at AS "createdAt"
+     FROM users
+     ORDER BY username ASC`
+  );
+  res.json({ users: result.rows });
+});
+
+app.patch('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const updates = [];
+    const values = [];
+    let idx = 1;
+
+    if (typeof req.body?.isActive === 'boolean') {
+      updates.push(`is_active = $${idx++}`);
+      values.push(req.body.isActive);
+    }
+    if (typeof req.body?.isAdmin === 'boolean') {
+      updates.push(`is_admin = $${idx++}`);
+      values.push(req.body.isAdmin);
+    }
+    if (typeof req.body?.password === 'string' && req.body.password.length > 0) {
+      if (req.body.password.length < 12) {
+        res.status(400).json({ error: 'Password must be at least 12 characters' });
+        return;
+      }
+      const hash = await bcrypt.hash(req.body.password, 12);
+      updates.push(`password_hash = $${idx++}`);
+      values.push(hash);
+    }
+
+    if (!updates.length) {
+      res.status(400).json({ error: 'No valid fields to update' });
+      return;
+    }
+
+    updates.push(`updated_at = NOW()`);
+    values.push(userId);
+
+    const result = await pool.query(
+      `UPDATE users
+       SET ${updates.join(', ')}
+       WHERE id = $${idx}
+       RETURNING id, username, is_admin AS "isAdmin", is_active AS "isActive"`,
+      values
+    );
+
+    if (result.rowCount === 0) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    res.json({ user: result.rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to update user' });
+  }
+});
+
+app.get('/api/projects', requireAuth, async (req, res) => {
+  const result = await pool.query(
+    `SELECT p.id, p.name,
+            pp.can_read AS "canRead",
+            pp.can_write AS "canWrite",
+            ph.latest_seq AS "latestSeq",
+            ph.updated_at AS "updatedAt"
+     FROM projects p
+     LEFT JOIN project_permissions pp
+       ON pp.project_id = p.id AND pp.user_id = $1
+     LEFT JOIN project_heads ph
+       ON ph.project_id = p.id
+     WHERE $2::boolean = TRUE OR COALESCE(pp.can_read, FALSE) = TRUE
+     ORDER BY p.created_at DESC`,
+    [req.user.id, req.user.isAdmin]
+  );
+
+  res.json({ projects: result.rows });
+});
+
+app.post('/api/projects', requireAuth, async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    const initialSnapshot = req.body?.initialSnapshot;
+
+    if (!name) {
+      res.status(400).json({ error: 'Project name is required' });
+      return;
+    }
+
+    const projectId = String(req.body?.projectId || randomUUID());
+    const snapshot = initialSnapshot && typeof initialSnapshot === 'object'
+      ? { ...initialSnapshot, projectId, projectName: name }
+      : {
+        version: '1.0.0',
+        projectId,
+        projectName: name,
+        sampleRate: 44100,
+        masterVolume: 100,
+        tracks: [],
+        trackTree: [],
+        loop: { enabled: false, startMs: 0, endMs: 0 },
+        undoStackSize: 100,
+      };
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO projects(id, name, created_by)
+         VALUES($1, $2, $3)`,
+        [projectId, name, req.user.id]
+      );
+
+      await client.query(
+        `INSERT INTO project_heads(project_id, latest_seq, latest_snapshot_json)
+         VALUES($1, 0, $2::jsonb)`,
+        [projectId, JSON.stringify(snapshot)]
+      );
+
+      await client.query(
+        `INSERT INTO project_permissions(project_id, user_id, can_read, can_write, granted_by)
+         VALUES($1, $2, TRUE, TRUE, $3)
+         ON CONFLICT (project_id, user_id)
+         DO UPDATE SET can_read = TRUE, can_write = TRUE, granted_by = EXCLUDED.granted_by, updated_at = NOW()`,
+        [projectId, req.user.id, req.user.id]
+      );
+
+      await client.query(
+        `INSERT INTO project_snapshots(project_id, server_seq, snapshot_json, created_by)
+         VALUES($1, 0, $2::jsonb, $3)`,
+        [projectId, JSON.stringify(snapshot), req.user.id]
+      );
+
+      const mediaIds = collectSnapshotMediaIds(snapshot);
+      if (mediaIds.length > 0) {
+        await client.query(
+          `INSERT INTO project_media_refs(project_id, media_id, snapshot_id)
+           SELECT $1, m.id, NULL
+           FROM unnest($2::text[]) AS t(id)
+           JOIN media_objects m ON m.id = t.id
+           ON CONFLICT (project_id, media_id) DO NOTHING`,
+          [projectId, mediaIds]
+        );
+      }
+
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    res.status(201).json({
+      project: {
+        id: projectId,
+        name,
+        latestSeq: 0,
+      },
+      snapshot,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to create project' });
+  }
+});
+
+app.get('/api/projects/:id/bootstrap', requireAuth, async (req, res) => {
+  const permission = await requireProjectPermission(req, res, 'read');
+  if (!permission) return;
+
+  try {
+    const knownSeq = Number(req.query.knownSeq || 0);
+    const payload = await fetchProjectBootstrap(permission.projectId, knownSeq);
+    res.json(payload);
+  } catch (error) {
+    console.error(error);
+    res.status(404).json({ error: 'Project not found' });
+  }
+});
+
+app.post('/api/projects/:id/checkpoint', requireAuth, async (req, res) => {
+  const permission = await requireProjectPermission(req, res, 'write');
+  if (!permission) return;
+
+  const headResult = await pool.query(
+    `SELECT latest_seq, latest_snapshot_json
+     FROM project_heads
+     WHERE project_id = $1`,
+    [permission.projectId]
+  );
+  if (headResult.rowCount === 0) {
+    res.status(404).json({ error: 'Project not found' });
+    return;
+  }
+
+  const head = headResult.rows[0];
+  await pool.query(
+    `INSERT INTO project_snapshots(project_id, server_seq, snapshot_json, created_by)
+     VALUES($1, $2, $3::jsonb, $4)`,
+    [permission.projectId, Number(head.latest_seq || 0), JSON.stringify(head.latest_snapshot_json || {}), req.user.id]
+  );
+
+  await pool.query(
+    `UPDATE project_heads
+     SET last_checkpoint_at = NOW(), updated_at = NOW()
+     WHERE project_id = $1`,
+    [permission.projectId]
+  );
+
+  res.json({ ok: true, latestSeq: Number(head.latest_seq || 0) });
+});
+
+app.get('/api/projects/:projectId/permissions', requireAuth, async (req, res) => {
+  const permission = await requireProjectPermission(req, res, 'read');
+  if (!permission) return;
+
+  const result = await pool.query(
+    `SELECT pp.user_id AS "userId",
+            u.username,
+            pp.can_read AS "canRead",
+            pp.can_write AS "canWrite",
+            pp.updated_at AS "updatedAt"
+     FROM project_permissions pp
+     JOIN users u ON u.id = pp.user_id
+     WHERE pp.project_id = $1
+     ORDER BY u.username ASC`,
+    [permission.projectId]
+  );
+
+  res.json({ permissions: result.rows });
+});
+
+app.put('/api/projects/:projectId/permissions/:userId', requireAuth, async (req, res) => {
+  const permission = await requireProjectPermission(req, res, 'write');
+  if (!permission) return;
+
+  const canRead = Boolean(req.body?.canRead);
+  const canWrite = Boolean(req.body?.canWrite);
+
+  await pool.query(
+    `INSERT INTO project_permissions(project_id, user_id, can_read, can_write, granted_by)
+     VALUES($1, $2, $3, $4, $5)
+     ON CONFLICT (project_id, user_id)
+     DO UPDATE SET can_read = EXCLUDED.can_read,
+                   can_write = EXCLUDED.can_write,
+                   granted_by = EXCLUDED.granted_by,
+                   updated_at = NOW()`,
+    [permission.projectId, req.params.userId, canRead, canWrite, req.user.id]
+  );
+
+  res.json({ ok: true });
+});
+
+app.post('/api/media/register', requireAuth, async (req, res) => {
+  try {
+    const mediaId = String(req.body?.mediaId || randomUUID());
+    const sha256 = String(req.body?.sha256 || '').trim();
+    const mimeType = String(req.body?.mimeType || 'application/octet-stream');
+    const sizeBytes = Number(req.body?.sizeBytes || 0);
+    const fileName = toSafeName(String(req.body?.fileName || mediaId));
+
+    if (!sha256 || sizeBytes <= 0) {
+      res.status(400).json({ error: 'sha256 and sizeBytes are required' });
+      return;
+    }
+
+    const existing = await pool.query(
+      `SELECT id
+       FROM media_objects
+       WHERE sha256 = $1 OR id = $2`,
+      [sha256, mediaId]
+    );
+
+    if (existing.rowCount > 0) {
+      res.json({ mediaId: existing.rows[0].id, exists: true });
+      return;
+    }
+
+    const diskPath = path.join(config.mediaRoot, `${mediaId}_${fileName}`);
+    await pool.query(
+      `INSERT INTO media_objects(id, sha256, mime_type, size_bytes, path, created_by)
+       VALUES($1, $2, $3, $4, $5, $6)`,
+      [mediaId, sha256, mimeType, sizeBytes, diskPath, req.user.id]
+    );
+
+    res.status(201).json({ mediaId, exists: false });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to register media' });
+  }
+});
+
+app.put('/api/media/:mediaId/content', requireAuth, express.raw({ type: '*/*', limit: config.maxUploadBytes }), async (req, res) => {
+  try {
+    const mediaId = req.params.mediaId;
+    const recordResult = await pool.query(
+      `SELECT path, size_bytes AS "sizeBytes"
+       FROM media_objects
+       WHERE id = $1`,
+      [mediaId]
+    );
+
+    if (recordResult.rowCount === 0) {
+      res.status(404).json({ error: 'Media not registered' });
+      return;
+    }
+
+    const record = recordResult.rows[0];
+    const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+
+    if (buffer.length === 0) {
+      res.status(400).json({ error: 'Missing binary payload' });
+      return;
+    }
+
+    if (Number(record.sizeBytes || 0) !== buffer.length) {
+      res.status(400).json({ error: 'Upload size mismatch' });
+      return;
+    }
+
+    await fs.writeFile(record.path, buffer);
+    res.json({ ok: true, mediaId });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to store media content' });
+  }
+});
+
+app.get('/api/media/:mediaId', requireAuth, async (req, res) => {
+  try {
+    const mediaId = req.params.mediaId;
+    const result = await pool.query(
+      `SELECT path, mime_type AS "mimeType", size_bytes AS "sizeBytes"
+       FROM media_objects
+       WHERE id = $1`,
+      [mediaId]
+    );
+
+    if (result.rowCount === 0) {
+      res.status(404).json({ error: 'Media not found' });
+      return;
+    }
+
+    const media = result.rows[0];
+    if (!fssync.existsSync(media.path)) {
+      res.status(404).json({ error: 'Media file is missing on disk' });
+      return;
+    }
+
+    const stat = await fs.stat(media.path);
+    const totalSize = Number(media.sizeBytes || stat.size || 0);
+
+    const range = req.headers.range;
+    if (range) {
+      const match = /bytes=(\d+)-(\d*)/.exec(range);
+      if (!match) {
+        res.status(416).end();
+        return;
+      }
+      const start = Number(match[1]);
+      const end = match[2] ? Number(match[2]) : totalSize - 1;
+      if (Number.isNaN(start) || Number.isNaN(end) || start > end || end >= totalSize) {
+        res.status(416).end();
+        return;
+      }
+
+      res.status(206);
+      res.setHeader('Content-Type', media.mimeType || 'application/octet-stream');
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Length', end - start + 1);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
+      fssync.createReadStream(media.path, { start, end }).pipe(res);
+      return;
+    }
+
+    res.setHeader('Content-Type', media.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Length', totalSize);
+    fssync.createReadStream(media.path).pipe(res);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to stream media' });
+  }
+});
+
+app.post('/api/media/batch-resolve', requireAuth, async (req, res) => {
+  try {
+    const mediaIds = Array.isArray(req.body?.mediaIds) ? req.body.mediaIds.slice(0, 5000) : [];
+    if (!mediaIds.length) {
+      res.json({ found: [] });
+      return;
+    }
+
+    const result = await pool.query(
+      `SELECT id
+       FROM media_objects
+       WHERE id = ANY($1::text[])`,
+      [mediaIds]
+    );
+    const found = new Set(result.rows.map((row) => row.id));
+    res.json({
+      found: mediaIds.filter((id) => found.has(id)),
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to resolve media ids' });
+  }
+});
+
+wsServer.on('connection', (ws) => {
+  ws.session = {
+    userId: null,
+    username: null,
+    isAdmin: false,
+    joinedProjects: new Set(),
+  };
+  clients.add(ws);
+
+  ws.on('message', async (raw) => {
+    let message;
+    try {
+      message = JSON.parse(raw.toString('utf8'));
+    } catch (error) {
+      sendWs(ws, 'error', { code: 'BAD_JSON', message: 'Invalid JSON payload', retryable: false });
+      return;
+    }
+
+    try {
+      switch (message.type) {
+        case 'auth.hello': {
+          const token = String(message.accessToken || '');
+          if (!token) {
+            sendWs(ws, 'error', { code: 'AUTH_REQUIRED', message: 'accessToken is required', retryable: false });
+            return;
+          }
+          const payload = verifyAccessToken(token);
+          ws.session.userId = payload.sub;
+          ws.session.username = payload.username;
+          ws.session.isAdmin = Boolean(payload.isAdmin);
+          sendWs(ws, 'auth.ok', {
+            user: {
+              id: ws.session.userId,
+              username: ws.session.username,
+              isAdmin: ws.session.isAdmin,
+            },
+          });
+          return;
+        }
+
+        case 'project.join': {
+          if (!ws.session.userId) {
+            sendWs(ws, 'error', { code: 'AUTH_REQUIRED', message: 'Authenticate first', retryable: false });
+            return;
+          }
+          const projectId = String(message.projectId || '');
+          const knownSeq = Number(message.knownSeq || 0);
+          if (!projectId) {
+            sendWs(ws, 'error', { code: 'BAD_REQUEST', message: 'projectId is required', retryable: false });
+            return;
+          }
+
+          const permission = await getProjectPermission(ws.session.userId, projectId, ws.session.isAdmin);
+          if (!permission.canRead) {
+            sendWs(ws, 'error', { code: 'NO_READ_PERMISSION', message: 'No read permission', retryable: false });
+            return;
+          }
+
+          const payload = await fetchProjectBootstrap(projectId, knownSeq);
+          ws.session.joinedProjects.add(projectId);
+          roomFor(projectId).add(ws);
+
+          sendWs(ws, 'project.joined', {
+            projectId,
+            latestSeq: payload.latestSeq,
+            snapshot: payload.snapshot,
+            missingOps: payload.missingOps,
+          });
+          await sendProjectLockStatesToClient(projectId, ws);
+          return;
+        }
+
+        case 'op.submit': {
+          if (!ws.session.userId) {
+            sendWs(ws, 'error', { code: 'AUTH_REQUIRED', message: 'Authenticate first', retryable: false });
+            return;
+          }
+          const projectId = String(message.projectId || '');
+          const clientOpId = String(message.clientOpId || randomUUID());
+          const op = message.op;
+
+          if (!projectId || !op || typeof op !== 'object') {
+            sendWs(ws, 'error', { code: 'BAD_REQUEST', message: 'projectId and op are required', retryable: false });
+            return;
+          }
+
+          const permission = await getProjectPermission(ws.session.userId, projectId, ws.session.isAdmin);
+          if (!permission.canWrite) {
+            sendWs(ws, 'error', { code: 'NO_WRITE_PERMISSION', message: 'No write permission', retryable: false });
+            return;
+          }
+
+          const result = await appendProjectOp({
+            projectId,
+            userId: ws.session.userId,
+            clientOpId,
+            op,
+          });
+
+          sendWs(ws, 'op.ack', {
+            projectId,
+            clientOpId,
+            serverSeq: result.serverSeq,
+          });
+
+          broadcastToProject(projectId, 'op.broadcast', {
+            projectId,
+            serverSeq: result.serverSeq,
+            clientOpId,
+            op,
+            actor: {
+              userId: ws.session.userId,
+              username: ws.session.username,
+            },
+          });
+          return;
+        }
+
+        case 'lock.acquire': {
+          if (!ws.session.userId) {
+            sendWs(ws, 'error', { code: 'AUTH_REQUIRED', message: 'Authenticate first', retryable: false });
+            return;
+          }
+          const projectId = String(message.projectId || '');
+          const trackId = String(message.trackId || '');
+          if (!projectId || !trackId) {
+            sendWs(ws, 'error', { code: 'BAD_REQUEST', message: 'projectId and trackId are required', retryable: false });
+            return;
+          }
+
+          const permission = await getProjectPermission(ws.session.userId, projectId, ws.session.isAdmin);
+          if (!permission.canWrite) {
+            sendWs(ws, 'error', { code: 'NO_WRITE_PERMISSION', message: 'No write permission', retryable: false });
+            return;
+          }
+
+          const client = await pool.connect();
+          let locked = false;
+          try {
+            await client.query('BEGIN');
+            const lockResult = await client.query(
+              `SELECT owner_user_id, expires_at
+               FROM record_locks
+               WHERE project_id = $1 AND track_id = $2
+               FOR UPDATE`,
+              [projectId, trackId]
+            );
+
+            if (lockResult.rowCount === 0) {
+              locked = true;
+            } else {
+              const row = lockResult.rows[0];
+              const isExpired = row.expires_at ? new Date(row.expires_at).getTime() < Date.now() : true;
+              const ownedBySelf = row.owner_user_id === ws.session.userId;
+              locked = isExpired || ownedBySelf;
+            }
+
+            if (!locked) {
+              await client.query('ROLLBACK');
+              await broadcastLockState(projectId, trackId);
+              sendWs(ws, 'error', {
+                code: 'TRACK_LOCKED',
+                message: 'Track is currently locked by another user',
+                retryable: true,
+              });
+              break;
+            }
+
+            await client.query(
+              `INSERT INTO record_locks(project_id, track_id, owner_user_id, owner_name, expires_at)
+               VALUES($1, $2, $3, $4, NOW() + ($5 || ' seconds')::INTERVAL)
+               ON CONFLICT (project_id, track_id)
+               DO UPDATE SET owner_user_id = EXCLUDED.owner_user_id,
+                             owner_name = EXCLUDED.owner_name,
+                             expires_at = EXCLUDED.expires_at,
+                             updated_at = NOW()`,
+              [projectId, trackId, ws.session.userId, ws.session.username, String(config.lockTimeoutSeconds)]
+            );
+
+            await client.query('COMMIT');
+          } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+          } finally {
+            client.release();
+          }
+
+          await broadcastLockState(projectId, trackId);
+          sendWs(ws, 'lock.acquired', { projectId, trackId, ownerUserId: ws.session.userId });
+          return;
+        }
+
+        case 'lock.heartbeat': {
+          if (!ws.session.userId) {
+            sendWs(ws, 'error', { code: 'AUTH_REQUIRED', message: 'Authenticate first', retryable: false });
+            return;
+          }
+          const projectId = String(message.projectId || '');
+          const trackId = String(message.trackId || '');
+          if (!projectId || !trackId) {
+            sendWs(ws, 'error', { code: 'BAD_REQUEST', message: 'projectId and trackId are required', retryable: false });
+            return;
+          }
+
+          const result = await pool.query(
+            `UPDATE record_locks
+             SET expires_at = NOW() + ($4 || ' seconds')::INTERVAL,
+                 updated_at = NOW()
+             WHERE project_id = $1 AND track_id = $2 AND owner_user_id = $3
+             RETURNING track_id`,
+            [projectId, trackId, ws.session.userId, String(config.lockTimeoutSeconds)]
+          );
+
+          if (result.rowCount > 0) {
+            await broadcastLockState(projectId, trackId);
+          }
+          return;
+        }
+
+        case 'lock.release': {
+          if (!ws.session.userId) {
+            sendWs(ws, 'error', { code: 'AUTH_REQUIRED', message: 'Authenticate first', retryable: false });
+            return;
+          }
+          const projectId = String(message.projectId || '');
+          const trackId = String(message.trackId || '');
+          if (!projectId || !trackId) {
+            sendWs(ws, 'error', { code: 'BAD_REQUEST', message: 'projectId and trackId are required', retryable: false });
+            return;
+          }
+
+          await pool.query(
+            `DELETE FROM record_locks
+             WHERE project_id = $1 AND track_id = $2 AND owner_user_id = $3`,
+            [projectId, trackId, ws.session.userId]
+          );
+
+          await broadcastLockState(projectId, trackId);
+          return;
+        }
+
+        default:
+          sendWs(ws, 'error', { code: 'UNKNOWN_TYPE', message: `Unknown message type: ${message.type}`, retryable: false });
+      }
+    } catch (error) {
+      console.error(error);
+      sendWs(ws, 'error', {
+        code: 'SERVER_ERROR',
+        message: error.message || 'Unexpected server error',
+        retryable: true,
+      });
+    }
+  });
+
+  ws.on('close', async () => {
+    clients.delete(ws);
+    ws.session?.joinedProjects?.forEach((projectId) => {
+      const room = roomFor(projectId);
+      room.delete(ws);
+      if (room.size === 0) {
+        projectRooms.delete(projectId);
+      }
+    });
+  });
+});
+
+server.on('upgrade', (req, socket, head) => {
+  if (!req.url?.startsWith('/ws')) {
+    socket.destroy();
+    return;
+  }
+
+  wsServer.handleUpgrade(req, socket, head, (ws) => {
+    wsServer.emit('connection', ws, req);
+  });
+});
+
+async function start() {
+  await ensureMediaRoot();
+  await runMigrations();
+  await ensureDefaultAdmin();
+
+  server.listen(config.port, () => {
+    console.log(`ChoirMaster server listening on http://0.0.0.0:${config.port}`);
+  });
+
+  setInterval(() => {
+    cleanupExpiredLocks().catch((error) => {
+      console.error('Failed to cleanup expired locks', error);
+    });
+  }, 5000).unref();
+}
+
+start().catch(async (error) => {
+  console.error('Failed to start server', error);
+  await closeDb();
+  process.exit(1);
+});
+
+process.on('SIGINT', async () => {
+  await closeDb();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  await closeDb();
+  process.exit(0);
+});

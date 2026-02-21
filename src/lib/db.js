@@ -9,6 +9,8 @@ import { reportUserError } from '../utils/errorReporter';
  * - media: Audio blob storage with metadata
  * - undo: Undo/redo history (last 100 actions per project)
  * - exportDirs: Last-used export directory handles
+ * - remoteProjects: Remote sync metadata by project id
+ * - syncQueue: Pending sync operations for offline replay
  */
 class ChoirMasterDB extends Dexie {
   constructor() {
@@ -37,10 +39,21 @@ class ChoirMasterDB extends Dexie {
       exportDirs: 'id, updatedAt',
     });
 
+    this.version(3).stores({
+      projects: 'projectId, projectName, lastModified',
+      media: 'blobId, fileName, sampleRate, durationMs, channels, createdAt',
+      undo: '[projectId+actionIndex], projectId, actionIndex, timestamp',
+      exportDirs: 'id, updatedAt',
+      remoteProjects: 'projectId, serverProjectId, updatedAt',
+      syncQueue: 'id, projectId, status, updatedAt',
+    });
+
     this.projects = this.table('projects');
     this.media = this.table('media');
     this.undo = this.table('undo');
     this.exportDirs = this.table('exportDirs');
+    this.remoteProjects = this.table('remoteProjects');
+    this.syncQueue = this.table('syncQueue');
   }
 }
 
@@ -278,4 +291,44 @@ export async function importProjectJSON(jsonString) {
   await saveProject(project);
   
   return project;
+}
+
+/**
+ * Save remote project metadata (for hybrid local/server sync)
+ */
+export async function saveRemoteProjectMeta(meta) {
+  if (!meta?.projectId) return;
+  await db.remoteProjects.put({
+    ...meta,
+    updatedAt: Date.now(),
+  });
+}
+
+export async function loadRemoteProjectMeta(projectId) {
+  return await db.remoteProjects.get(projectId);
+}
+
+/**
+ * Queue or replace pending sync operation for a project.
+ * Uses one snapshot-style pending item per project id.
+ */
+export async function upsertPendingSyncOp(projectId, payload) {
+  const id = `${projectId}:pending`;
+  await db.syncQueue.put({
+    id,
+    projectId,
+    payload,
+    status: 'pending',
+    updatedAt: Date.now(),
+  });
+}
+
+export async function getPendingSyncOp(projectId) {
+  const id = `${projectId}:pending`;
+  return await db.syncQueue.get(id);
+}
+
+export async function clearPendingSyncOp(projectId) {
+  const id = `${projectId}:pending`;
+  await db.syncQueue.delete(id);
 }

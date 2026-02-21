@@ -38,6 +38,60 @@ npm run build
 npm run preview
 ```
 
+## Server Hosting Mode (Self-Host / LAN)
+
+ChoirMaster now supports a hosted mode (Postgres + API + WebSocket + shared media storage) in addition to local IndexedDB mode.
+
+### Start Full Hosted Stack (Docker Compose)
+
+```bash
+npm run dev:full
+```
+
+Services:
+- `web` at `http://localhost:3000`
+- `api` at `http://localhost:8787`
+- `db` Postgres at `localhost:5432`
+
+Default admin credentials (change immediately in `docker-compose.yml` / env):
+- Username: `admin`
+- Password: `changemechangeme`
+
+### Frontend Env for Direct API (non-proxied dev)
+
+Create `.env` from `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+Then run frontend dev server:
+
+```bash
+npm run dev
+```
+
+### Backend Env (standalone API run)
+
+Create `server/.env` from `server/.env.example`:
+
+```bash
+cp server/.env.example server/.env
+```
+
+Then run:
+
+```bash
+npm run dev:server
+```
+
+### Backup / Restore (Docker stack)
+
+```bash
+bash server/scripts/backup.sh
+bash server/scripts/restore.sh ./backups/<timestamp>
+```
+
 ## Tech Stack
 
 - **Framework:** React 18 + Vite

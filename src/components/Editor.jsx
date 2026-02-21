@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
-import { ArrowLeft, Download, Play, Pause, Square, Volume2, Circle, Upload, SkipBack, SkipForward, Settings } from 'lucide-react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { ArrowLeft, Download, Play, Pause, Square, Volume2, Circle, Upload, SkipBack, SkipForward, Settings, Lock } from 'lucide-react';
 import useStore from '../store/useStore';
 import { audioManager } from '../lib/audioManager';
 import { recordingManager } from '../lib/recordingManager';
@@ -17,6 +17,8 @@ import { isPrimaryModifierPressed } from '../utils/keyboard';
 import { normalizeProjectName } from '../utils/naming';
 import { reportUserError } from '../utils/errorReporter';
 import { measureTuttiPeak } from '../lib/exportEngine';
+import useRealtimeProjectSync from '../hooks/useRealtimeProjectSync';
+import { downloadMediaBlob, forceCheckpoint } from '../lib/serverApi';
 import {
   GROUP_ROLE_CHOIRS,
   isChoirRole,
@@ -56,7 +58,7 @@ const getSupportedAudioFiles = (dataTransfer) => {
   });
 };
 
-function Editor({ onBackToDashboard }) {
+function Editor({ onBackToDashboard, remoteSession = null }) {
   const {
     project,
     updateProject,
@@ -113,6 +115,27 @@ function Editor({ onBackToDashboard }) {
   const isTrackListScrollingRef = useRef(false);
   const isTimelineScrollingRef = useRef(false);
   const timelineRowsScrollAreaRef = useRef(null);
+  const missingRemoteBlobIdsRef = useRef(new Set());
+  const recordingLockTrackIdRef = useRef(null);
+  const lockByTrackIdRef = useRef({});
+  const isHostedSession = Boolean(remoteSession?.session && remoteSession?.serverProjectId);
+  const remoteUserId = remoteSession?.session?.user?.id || null;
+
+  const {
+    connected: syncConnected,
+    syncError,
+    lockByTrackId,
+    lockHelpers,
+  } = useRealtimeProjectSync({
+    enabled: isHostedSession,
+    project,
+    remoteSession,
+    updateProject,
+  });
+
+  useEffect(() => {
+    lockByTrackIdRef.current = lockByTrackId || {};
+  }, [lockByTrackId]);
 
   // Keep project ref updated
   useEffect(() => {
@@ -221,24 +244,12 @@ function Editor({ onBackToDashboard }) {
     }
   }, [project, selectedTrackId, selectedRowKind, selectedNodeId, selectTrack]);
 
-  // Initialize audio context on mount
-  useEffect(() => {
-    audioManager.init();
-    
-    if (project && project.tracks) {
-      loadProjectAudio();
-    }
-    
-    return () => {
-      audioManager.stop();
-    };
-  }, [project?.projectId]);
-
-  const loadProjectAudio = async () => {
-    if (!project) return;
+  const loadProjectAudio = useCallback(async () => {
+    const currentProject = projectRef.current;
+    if (!currentProject) return;
 
     const blobIds = new Set();
-    for (const track of project.tracks) {
+    for (const track of currentProject.tracks) {
       for (const clip of track.clips) {
         blobIds.add(clip.blobId);
       }
@@ -248,8 +259,29 @@ function Editor({ onBackToDashboard }) {
     for (const blobId of blobIds) {
       if (!audioManager.mediaCache.has(blobId)) {
         try {
-          const media = await getMediaBlob(blobId);
-          const audioBuffer = await audioManager.loadAudioBuffer(blobId, media.blob);
+          let media = null;
+          try {
+            media = await getMediaBlob(blobId);
+          } catch (localError) {
+            if (!isHostedSession || missingRemoteBlobIdsRef.current.has(blobId)) {
+              throw localError;
+            }
+
+            try {
+              const remoteBlob = await downloadMediaBlob(blobId, remoteSession.session);
+              const remoteArrayBuffer = await remoteBlob.arrayBuffer();
+              const decodedBuffer = await audioManager.decodeAudioFile(remoteArrayBuffer);
+              const fallbackFileName = `${blobId}.${remoteBlob.type?.split('/')[1] || 'bin'}`;
+              await storeMediaBlob(fallbackFileName, decodedBuffer, remoteBlob, blobId);
+              media = await getMediaBlob(blobId);
+              missingRemoteBlobIdsRef.current.delete(blobId);
+            } catch (remoteError) {
+              missingRemoteBlobIdsRef.current.add(blobId);
+              throw remoteError;
+            }
+          }
+
+          await audioManager.loadAudioBuffer(blobId, media.blob);
           newMediaMap.set(blobId, media);
           console.log(`Loaded audio buffer for ${blobId}`);
         } catch (error) {
@@ -273,7 +305,39 @@ function Editor({ onBackToDashboard }) {
       }
     }
     setMediaMap(newMediaMap);
-  };
+  }, [isHostedSession, remoteSession?.session]);
+
+  // Initialize audio context on mount
+  useEffect(() => {
+    audioManager.init();
+
+    return () => {
+      audioManager.stop();
+    };
+  }, []);
+
+  const mediaLoadSignature = useMemo(() => {
+    if (!project?.tracks) return '';
+    const ids = [];
+    project.tracks.forEach((track) => {
+      track.clips.forEach((clip) => {
+        if (clip?.blobId) ids.push(clip.blobId);
+      });
+    });
+    ids.sort();
+    return ids.join('|');
+  }, [project?.tracks]);
+
+  useEffect(() => {
+    if (!project || !project.tracks) return;
+    loadProjectAudio().catch((error) => {
+      reportUserError(
+        'Failed to load project audio.',
+        error,
+        { onceKey: `editor:load-project-audio:${project.projectId}` }
+      );
+    });
+  }, [project?.projectId, mediaLoadSignature, loadProjectAudio]);
 
   useEffect(() => {
     audioManager.setMasterVolume(masterVolume);
@@ -468,17 +532,60 @@ function Editor({ onBackToDashboard }) {
     return { clip: durationMs > 0 ? nextClip : null, durationMs };
   };
 
-  if (!project) {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <p className="text-gray-500">No project loaded</p>
-      </div>
-    );
-  }
+  const waitForOwnTrackLock = async (trackId, timeoutMs = 2500) => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const lockState = lockByTrackIdRef.current?.[trackId];
+      if (lockState?.ownerUserId === remoteUserId) {
+        return true;
+      }
+      if (lockState?.ownerUserId && lockState.ownerUserId !== remoteUserId) {
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    return false;
+  };
 
-  const treeProject = normalizeTrackTree(project);
-  const timelineRows = getVisibleTimelineRows(treeProject);
+  const releaseRecordingLock = () => {
+    const trackId = recordingLockTrackIdRef.current;
+    if (!isHostedSession || !trackId) return;
+    lockHelpers.release(trackId);
+    recordingLockTrackIdRef.current = null;
+  };
+
+  useEffect(() => {
+    if (!isHostedSession || !isRecording) return undefined;
+    const trackId = recordingLockTrackIdRef.current;
+    if (!trackId) return undefined;
+
+    const intervalId = setInterval(() => {
+      lockHelpers.heartbeat(trackId);
+    }, 10000);
+
+    return () => clearInterval(intervalId);
+  }, [isHostedSession, isRecording, lockHelpers]);
+
+  useEffect(() => {
+    return () => {
+      const trackId = recordingLockTrackIdRef.current;
+      if (isHostedSession && trackId) {
+        lockHelpers.release(trackId);
+      }
+      recordingLockTrackIdRef.current = null;
+    };
+  }, [isHostedSession, lockHelpers]);
+
+  const treeProject = useMemo(
+    () => (project ? normalizeTrackTree(project) : null),
+    [project]
+  );
+  const timelineRows = useMemo(
+    () => (treeProject ? getVisibleTimelineRows(treeProject) : []),
+    [treeProject]
+  );
   const trackEffectiveRoleById = useMemo(() => {
+    if (!treeProject) return {};
     const mix = getEffectiveTrackMix(treeProject);
     const map = {};
     mix.statesByTrackId.forEach((state, trackId) => {
@@ -486,7 +593,24 @@ function Editor({ onBackToDashboard }) {
     });
     return map;
   }, [treeProject]);
+
+  if (!project || !treeProject) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <p className="text-gray-500">No project loaded</p>
+      </div>
+    );
+  }
   const hasNoTracks = !project.tracks || project.tracks.length === 0;
+  const selectedTrackLock = selectedTrackId ? lockByTrackId?.[selectedTrackId] : null;
+  const selectedTrackLockedByOther = Boolean(
+    selectedTrackLock?.ownerUserId
+    && selectedTrackLock.ownerUserId !== remoteUserId
+  );
+  const selectedTrackLockOwnerName = selectedTrackLock?.ownerName || 'another user';
+  const recordButtonDisabled = hasNoTracks
+    || !selectedTrackId
+    || (isHostedSession && !isRecording && (!syncConnected || selectedTrackLockedByOther));
 
   const handleSelectRow = (row) => {
     if (!row) return;
@@ -782,6 +906,8 @@ function Editor({ onBackToDashboard }) {
       stopRecording();
       setRecordingSegments([]);
       recordingOriginalClipsRef.current = null;
+    } finally {
+      releaseRecordingLock();
     }
   };
 
@@ -802,6 +928,30 @@ function Editor({ onBackToDashboard }) {
     } else {
       // Start recording
       try {
+        if (isHostedSession) {
+          if (!syncConnected) {
+            alert('Cannot record while disconnected from server.');
+            return;
+          }
+          if (selectedTrackLockedByOther) {
+            alert(`Track is locked by ${selectedTrackLockOwnerName}.`);
+            return;
+          }
+
+          const lockSent = lockHelpers.acquire(selectedTrackId);
+          if (!lockSent) {
+            alert('Could not request recording lock. Try again.');
+            return;
+          }
+
+          const lockGranted = await waitForOwnTrackLock(selectedTrackId);
+          if (!lockGranted) {
+            alert(`Track is locked by ${selectedTrackLockOwnerName}.`);
+            return;
+          }
+          recordingLockTrackIdRef.current = selectedTrackId;
+        }
+
         const track = project.tracks.find(t => t.id === selectedTrackId);
         const offsetMs = normalizeRecordingOffset(recordingOffsetMs);
         
@@ -824,6 +974,7 @@ function Editor({ onBackToDashboard }) {
         console.error('Failed to start recording:', error);
         alert('Failed to start recording: ' + error.message);
         setRecordingSegments([]);
+        releaseRecordingLock();
       }
     }
   };
@@ -2359,20 +2510,44 @@ function Editor({ onBackToDashboard }) {
 
                 <button
                   onClick={handleRecord}
-                  disabled={hasNoTracks || !selectedTrackId}
+                  disabled={recordButtonDisabled}
                   className={`p-2 ${
                     isRecording
                       ? 'bg-red-600 hover:bg-red-700 animate-pulse'
                       : 'bg-red-600 hover:bg-red-700'
                   } disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded transition-colors`}
-                  title={isRecording ? 'Stop Recording' : 'Record'}
+                  title={
+                    isRecording
+                      ? 'Stop Recording'
+                      : selectedTrackLockedByOther
+                        ? `Locked by ${selectedTrackLockOwnerName}`
+                        : (isHostedSession && !syncConnected)
+                          ? 'Disconnected from server'
+                          : 'Record'
+                  }
                 >
-                  <Circle size={18} fill={isRecording ? 'currentColor' : 'none'} />
+                  {!isRecording && selectedTrackLockedByOther ? (
+                    <Lock size={18} />
+                  ) : (
+                    <Circle size={18} fill={isRecording ? 'currentColor' : 'none'} />
+                  )}
                 </button>
               </div>
 
-              <div className="flex-shrink-0 text-xl font-mono bg-gray-900 px-3 py-1 rounded">
-                {formatTime(currentTimeMs)}
+              <div className="flex-shrink-0 flex flex-col items-center">
+                <div className="text-xl font-mono bg-gray-900 px-3 py-1 rounded">
+                  {formatTime(currentTimeMs)}
+                </div>
+                {isHostedSession && (
+                  <div
+                    className={`mt-1 text-[11px] ${
+                      syncConnected ? 'text-green-300' : 'text-red-300'
+                    }`}
+                  >
+                    {syncConnected ? 'Synced' : 'Offline'}
+                    {syncError ? ` · ${syncError}` : ''}
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center gap-4 flex-shrink-0">
@@ -2461,7 +2636,20 @@ function Editor({ onBackToDashboard }) {
                 </button>
 
                 <button
-                  onClick={() => setShowExportDialog(true)}
+                  onClick={async () => {
+                    if (isHostedSession) {
+                      try {
+                        await forceCheckpoint(remoteSession.serverProjectId, remoteSession.session);
+                      } catch (error) {
+                        reportUserError(
+                          'Failed to create server checkpoint before export.',
+                          error,
+                          { onceKey: 'editor:force-checkpoint-before-export' }
+                        );
+                      }
+                    }
+                    setShowExportDialog(true);
+                  }}
                   disabled={hasNoTracks}
                   className="flex items-center gap-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-3 py-2 rounded transition-colors"
                 >
