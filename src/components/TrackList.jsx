@@ -888,7 +888,7 @@ function TrackList({
                     className={`w-14 h-14 rounded-lg ${getRoleColor(displayGroupRole)} text-white flex items-center justify-center ${hasDirectParentTypeLock(row) ? 'opacity-80 cursor-not-allowed' : ''}`}
                     title="Click to cycle group category"
                   >
-                    <GroupIcon size={22} />
+                    <GroupIcon size={32} />
                   </button>
                 </div>
 
@@ -1178,7 +1178,7 @@ function TrackList({
                   className={`w-14 h-14 rounded-lg ${getRoleColor(displayTrackRole)} text-white flex items-center justify-center ${canEditTrackIcon ? '' : 'opacity-80 cursor-not-allowed'}`}
                   title="Click to change icon"
                 >
-                  <TrackIcon size={22} />
+                  <TrackIcon size={32} />
                 </button>
               </div>
 
