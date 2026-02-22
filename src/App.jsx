@@ -12,18 +12,15 @@ import {
   bootstrapServerProject,
   clearServerSession,
   createServerProject,
-  createUser,
   deleteServerProject,
-  getProjectPermissions,
   isServerModeEnabled,
   listServerProjects,
-  listUsers,
   loadServerSession,
   login,
   logout,
+  renameServerProject,
   registerMedia,
   saveServerSession,
-  setProjectPermission,
   uploadMedia,
 } from './lib/serverApi';
 
@@ -58,15 +55,12 @@ function App() {
   const [view, setView] = useState('dashboard'); // 'dashboard' | 'editor'
   const [serverSession, setServerSession] = useState(loadServerSession());
   const [serverProjects, setServerProjects] = useState([]);
-  const [serverUsers, setServerUsers] = useState([]);
-  const [selectedServerProjectId, setSelectedServerProjectId] = useState(null);
-  const [serverPermissions, setServerPermissions] = useState([]);
   const [serverError, setServerError] = useState('');
   const [serverLoading, setServerLoading] = useState(false);
   const [remoteEditorSession, setRemoteEditorSession] = useState(null);
   const { loadProject: loadProjectToStore } = useStore();
 
-  const refreshServerData = async (projectIdOverride = null, sessionOverride = null) => {
+  const refreshServerData = async (sessionOverride = null) => {
     const activeSession = sessionOverride || serverSession;
     if (!activeSession) return;
 
@@ -75,21 +69,6 @@ function App() {
     try {
       const projects = await listServerProjects(activeSession);
       setServerProjects(projects);
-
-      const effectiveProjectId = projectIdOverride ?? selectedServerProjectId;
-      if (activeSession.user?.isAdmin) {
-        const users = await listUsers(activeSession);
-        setServerUsers(users);
-      } else {
-        setServerUsers([]);
-      }
-
-      if (effectiveProjectId) {
-        const permissions = await getProjectPermissions(effectiveProjectId, activeSession);
-        setServerPermissions(permissions);
-      } else {
-        setServerPermissions([]);
-      }
     } catch (error) {
       setServerError(error.message || 'Failed to refresh server data');
     } finally {
@@ -99,7 +78,7 @@ function App() {
 
   useEffect(() => {
     if (!serverSession) return;
-    refreshServerData(undefined, serverSession);
+    refreshServerData(serverSession);
   }, [serverSession]);
 
   const handleServerLogin = async (username, password) => {
@@ -109,7 +88,7 @@ function App() {
       const session = await login(username, password);
       saveServerSession(session);
       setServerSession(session);
-      await refreshServerData(undefined, session);
+      await refreshServerData(session);
     } catch (error) {
       setServerError(error.message || 'Login failed');
     } finally {
@@ -128,9 +107,6 @@ function App() {
     clearServerSession();
     setServerSession(null);
     setServerProjects([]);
-    setServerUsers([]);
-    setServerPermissions([]);
-    setSelectedServerProjectId(null);
     setRemoteEditorSession(null);
     setView('dashboard');
   };
@@ -146,7 +122,6 @@ function App() {
         serverProjectId: projectMeta.id,
         latestSeq: Number(payload.latestSeq || 0),
       });
-      setSelectedServerProjectId(projectMeta.id);
       setRemoteEditorSession({
         session: serverSession,
         serverProjectId: projectMeta.id,
@@ -165,7 +140,10 @@ function App() {
     setServerLoading(true);
     try {
       const created = await createServerProject(name, serverSession);
-      await refreshServerData(created?.project?.id || null);
+      await refreshServerData();
+      if (created?.project) {
+        await handleOpenServerProject(created.project);
+      }
     } catch (error) {
       setServerError(error.message || 'Failed to create project');
     } finally {
@@ -223,21 +201,12 @@ function App() {
         }
       }
 
-      await refreshServerData(created?.project?.id || null);
+      await refreshServerData();
       await handleOpenServerProject(created.project);
     } catch (error) {
       setServerError(error.message || 'Failed to import ZIP project to server');
     } finally {
       setServerLoading(false);
-    }
-  };
-
-  const handleCreateServerUser = async (username, password) => {
-    try {
-      await createUser({ username, password, isAdmin: false }, serverSession);
-      await refreshServerData();
-    } catch (error) {
-      setServerError(error.message || 'Failed to create user');
     }
   };
 
@@ -247,9 +216,6 @@ function App() {
     try {
       await deleteServerProject(projectMeta.id, serverSession);
       await deleteCachedProject(projectMeta.id).catch(() => {});
-      if (selectedServerProjectId === projectMeta.id) {
-        setSelectedServerProjectId(null);
-      }
       await refreshServerData();
     } catch (error) {
       setServerError(error.message || 'Failed to delete project');
@@ -258,13 +224,16 @@ function App() {
     }
   };
 
-  const handleUpdateServerPermission = async (projectId, userId, permission) => {
+  const handleRenameServerProject = async (projectMeta, nextName) => {
+    setServerError('');
+    setServerLoading(true);
     try {
-      await setProjectPermission(projectId, userId, permission, serverSession);
-      setSelectedServerProjectId(projectId);
-      await refreshServerData(projectId);
+      await renameServerProject(projectMeta.id, nextName, serverSession);
+      await refreshServerData();
     } catch (error) {
-      setServerError(error.message || 'Failed to update permission');
+      setServerError(error.message || 'Failed to rename project');
+    } finally {
+      setServerLoading(false);
     }
   };
 
@@ -296,17 +265,12 @@ function App() {
           <HostedDashboard
             session={serverSession}
             projects={serverProjects}
-            users={serverUsers}
-            selectedProjectId={selectedServerProjectId}
-            permissions={serverPermissions}
             onOpenProject={handleOpenServerProject}
             onCreateProject={handleCreateServerProject}
             onImportProject={handleImportServerProject}
-            onRefresh={() => refreshServerData()}
             onLogout={handleServerLogout}
-            onCreateUser={handleCreateServerUser}
-            onUpdatePermission={handleUpdateServerPermission}
             onDeleteProject={handleDeleteServerProject}
+            onRenameProject={handleRenameServerProject}
             loading={serverLoading}
             error={serverError}
           />
@@ -324,7 +288,7 @@ function App() {
             remoteEditorSession
               ? {
                 ...remoteEditorSession,
-                session: loadServerSession() || remoteEditorSession.session,
+                session: serverSession || remoteEditorSession.session,
               }
               : null
           }

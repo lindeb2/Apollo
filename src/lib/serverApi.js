@@ -164,6 +164,13 @@ export async function deleteServerProject(projectId, session) {
   }, session);
 }
 
+export async function renameServerProject(projectId, name, session) {
+  return await apiFetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: 'PATCH',
+    body: { name },
+  }, session);
+}
+
 export async function bootstrapServerProject(projectId, session, knownSeq = 0) {
   return await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/bootstrap?knownSeq=${Number(knownSeq || 0)}`, {}, session);
 }

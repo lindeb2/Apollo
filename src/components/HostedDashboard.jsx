@@ -1,225 +1,277 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { FolderOpen, Plus, Download, FileAudio, LogOut } from 'lucide-react';
+import { normalizeProjectName } from '../utils/naming';
 
 function HostedDashboard({
   session,
   projects,
-  users,
-  selectedProjectId,
-  permissions,
   onOpenProject,
   onCreateProject,
-  onRefresh,
   onLogout,
-  onCreateUser,
-  onUpdatePermission,
   onImportProject,
   onDeleteProject,
+  onRenameProject,
   loading = false,
   error = '',
 }) {
   const [newProjectName, setNewProjectName] = useState('');
-  const [createMode, setCreateMode] = useState('create');
-  const [newUsername, setNewUsername] = useState('');
-  const [newPassword, setNewPassword] = useState('');
+  const [showNewProjectDialog, setShowNewProjectDialog] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [contextMenu, setContextMenu] = useState(null);
+  const [editingProjectId, setEditingProjectId] = useState(null);
+  const [editingProjectName, setEditingProjectName] = useState('');
 
-  const permissionByUserId = useMemo(() => {
-    const map = new Map();
-    (permissions || []).forEach((item) => {
-      map.set(item.userId, item);
-    });
-    return map;
-  }, [permissions]);
+  const formatRelativeTime = (timestamp) => {
+    const value = Number(timestamp);
+    if (!Number.isFinite(value)) return 'unknown';
+
+    const diffMs = Date.now() - value;
+    if (diffMs < 0) return 'just now';
+
+    const minuteMs = 60 * 1000;
+    const hourMs = 60 * minuteMs;
+    const dayMs = 24 * hourMs;
+    const weekMs = 7 * dayMs;
+    const monthMs = 30 * dayMs;
+    const yearMs = 365 * dayMs;
+
+    if (diffMs < minuteMs) return 'just now';
+    if (diffMs < hourMs) return `${Math.floor(diffMs / minuteMs)} min ago`;
+    if (diffMs < dayMs) return `${Math.floor(diffMs / hourMs)} h ago`;
+    if (diffMs < weekMs) return `${Math.floor(diffMs / dayMs)} d ago`;
+    if (diffMs < monthMs) return `${Math.floor(diffMs / weekMs)} w ago`;
+    if (diffMs < yearMs) return `${Math.floor(diffMs / monthMs)} mo ago`;
+    return `${Math.floor(diffMs / yearMs)} y ago`;
+  };
+
+  const handleCreateProject = async () => {
+    const normalizedName = normalizeProjectName(newProjectName);
+    if (!normalizedName) return;
+    await onCreateProject(normalizedName);
+    setNewProjectName('');
+    setShowNewProjectDialog(false);
+  };
+
+  useEffect(() => {
+    const closeMenu = () => setContextMenu(null);
+    window.addEventListener('click', closeMenu);
+    return () => window.removeEventListener('click', closeMenu);
+  }, []);
+
+  const beginProjectRename = (project) => {
+    setEditingProjectId(project.id);
+    setEditingProjectName(project.name || '');
+  };
+
+  const commitProjectRename = async () => {
+    if (!editingProjectId) return;
+    const project = (projects || []).find((p) => p.id === editingProjectId);
+    if (!project) {
+      setEditingProjectId(null);
+      setEditingProjectName('');
+      return;
+    }
+    const normalized = normalizeProjectName(editingProjectName);
+    if (normalized && normalized !== project.name) {
+      await onRenameProject(project, normalized);
+    }
+    setEditingProjectId(null);
+    setEditingProjectName('');
+  };
+
+  const cancelProjectRename = () => {
+    setEditingProjectId(null);
+    setEditingProjectName('');
+  };
 
   return (
-    <div className="h-full bg-gray-900 text-white flex flex-col">
-      <div className="border-b border-gray-700 px-4 py-3 flex items-center justify-between">
+    <div className="h-full flex flex-col bg-gray-900 text-white">
+      <div className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-lg font-semibold">ChoirMaster Server</h1>
-          <p className="text-xs text-gray-400">Signed in as {session?.user?.username}</p>
+          <h1 className="text-2xl font-bold">ChoirMaster</h1>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <button
-            className="bg-gray-700 hover:bg-gray-600 rounded px-3 py-2 text-sm"
-            onClick={onRefresh}
+            onClick={() => setShowNewProjectDialog(true)}
+            className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 py-2 flex items-center justify-center gap-2 transition-colors disabled:bg-gray-700"
             disabled={loading}
           >
-            Refresh
+            <Plus size={18} />
+            <span className="text-sm font-semibold">New Project</span>
           </button>
-          <button
-            className="bg-gray-700 hover:bg-gray-600 rounded px-3 py-2 text-sm"
-            onClick={onLogout}
-          >
-            Logout
-          </button>
-        </div>
-      </div>
 
-      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[1.2fr_1fr] gap-4 p-4 overflow-hidden">
-        <div className="rounded border border-gray-700 bg-gray-800 p-3 overflow-auto">
-          <div className="flex items-center gap-2 mb-3">
-            <select
-              className="rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-              value={createMode}
-              onChange={(e) => setCreateMode(e.target.value)}
-            >
-              <option value="create">Create</option>
-              <option value="import">Import ZIP</option>
-            </select>
-            {createMode === 'create' ? (
-              <input
-                className="flex-1 rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                placeholder="New project name"
-                value={newProjectName}
-                onChange={(e) => setNewProjectName(e.target.value)}
-              />
-            ) : (
-              <label className="flex-1 rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm text-gray-300 cursor-pointer hover:bg-gray-850">
-                Select .zip project file
-                <input
-                  type="file"
-                  accept=".zip"
-                  className="hidden"
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    await onImportProject(file);
-                    e.target.value = '';
-                  }}
-                />
-              </label>
-            )}
-            <button
-              className="rounded bg-green-600 hover:bg-green-700 px-3 py-2 text-sm disabled:bg-gray-700"
-              disabled={createMode === 'import' || (createMode === 'create' && !newProjectName.trim()) || loading}
-              onClick={async () => {
-                if (createMode === 'create') {
-                  await onCreateProject(newProjectName.trim());
-                  setNewProjectName('');
+          <label className={`bg-green-600 hover:bg-green-700 text-white rounded-lg px-4 py-2 flex items-center justify-center gap-2 transition-colors cursor-pointer ${loading ? 'opacity-60 pointer-events-none' : ''}`}>
+            <Download size={18} />
+            <span className="text-sm font-semibold">
+              {isImporting ? 'Importing...' : 'Import Project'}
+            </span>
+            <input
+              type="file"
+              accept=".zip"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                setIsImporting(true);
+                try {
+                  await onImportProject(file);
+                } finally {
+                  setIsImporting(false);
+                  e.target.value = '';
                 }
               }}
-            >
-              Create
-            </button>
-          </div>
+            />
+          </label>
 
-          {error ? <p className="text-sm text-red-300 mb-2">{error}</p> : null}
-
-          <div className="space-y-2">
-            {(projects || []).map((project) => (
-              <div
-                key={project.id}
-                className="w-full rounded border border-gray-700 bg-gray-900 hover:bg-gray-850 px-3 py-3"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <button
-                    className="flex-1 text-left min-w-0"
-                    onClick={() => onOpenProject(project)}
-                  >
-                    <div className="font-medium truncate">{project.name}</div>
-                    <div className="text-xs text-gray-400 mt-1">
-                      Seq: {project.latestSeq ?? 0} · Read: {project.canRead ? 'yes' : 'no'} · Write: {project.canWrite ? 'yes' : 'no'}
-                    </div>
-                  </button>
-                  <button
-                    className="rounded bg-red-700/70 hover:bg-red-700 text-white text-xs px-2 py-1 disabled:bg-gray-700 disabled:text-gray-300"
-                    disabled={!project.canWrite || loading}
-                    onClick={async () => {
-                      const confirmed = window.confirm(`Delete project \"${project.name}\"?`);
-                      if (!confirmed) return;
-                      await onDeleteProject(project);
-                    }}
-                    title={project.canWrite ? 'Delete project' : 'Requires write permission'}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-            ))}
-            {projects?.length === 0 && (
-              <div className="text-sm text-gray-400">No projects available.</div>
-            )}
-          </div>
+          <button
+            onClick={onLogout}
+            className="bg-gray-700 hover:bg-gray-600 text-white rounded-lg px-4 py-2 flex items-center justify-center gap-2 transition-colors"
+          >
+            <LogOut size={18} />
+            <span className="text-sm font-semibold">Logout</span>
+          </button>
         </div>
-
-        {session?.user?.isAdmin ? (
-          <div className="rounded border border-gray-700 bg-gray-800 p-3 overflow-auto">
-            <h2 className="text-sm font-semibold mb-2">Admin</h2>
-
-            <div className="mb-4 space-y-2">
-              <div className="text-xs uppercase text-gray-400">Create User</div>
-              <input
-                className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                placeholder="Username"
-                value={newUsername}
-                onChange={(e) => setNewUsername(e.target.value)}
-              />
-              <input
-                type="password"
-                className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                placeholder="Password (min 12 chars)"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-              />
-              <button
-                className="rounded bg-blue-600 hover:bg-blue-700 px-3 py-2 text-sm disabled:bg-gray-700"
-                disabled={!newUsername.trim() || newPassword.length < 12}
-                onClick={async () => {
-                  await onCreateUser(newUsername.trim(), newPassword);
-                  setNewUsername('');
-                  setNewPassword('');
-                }}
-              >
-                Add User
-              </button>
-            </div>
-
-            <div className="space-y-2">
-              <div className="text-xs uppercase text-gray-400">Permissions {selectedProjectId ? `for ${selectedProjectId}` : ''}</div>
-              {!selectedProjectId ? (
-                <p className="text-sm text-gray-400">Open/select a project to edit permissions.</p>
-              ) : (
-                (users || []).map((user) => {
-                  const permission = permissionByUserId.get(user.id) || { canRead: false, canWrite: false };
-                  return (
-                    <div key={user.id} className="rounded border border-gray-700 bg-gray-900 px-3 py-2">
-                      <div className="text-sm font-medium">{user.username}</div>
-                      <div className="mt-2 flex items-center gap-3 text-xs text-gray-300">
-                        <label className="inline-flex items-center gap-1">
-                          <input
-                            type="checkbox"
-                            checked={Boolean(permission.canRead)}
-                            onChange={(e) => onUpdatePermission(selectedProjectId, user.id, {
-                              canRead: e.target.checked,
-                              canWrite: e.target.checked ? Boolean(permission.canWrite) : false,
-                            })}
-                          />
-                          Read
-                        </label>
-                        <label className="inline-flex items-center gap-1">
-                          <input
-                            type="checkbox"
-                            checked={Boolean(permission.canWrite)}
-                            onChange={(e) => onUpdatePermission(selectedProjectId, user.id, {
-                              canRead: e.target.checked ? true : Boolean(permission.canRead),
-                              canWrite: e.target.checked,
-                            })}
-                          />
-                          Write
-                        </label>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="rounded border border-gray-700 bg-gray-800 p-3 overflow-auto">
-            <h2 className="text-sm font-semibold mb-2">Permissions</h2>
-            <p className="text-sm text-gray-400">Admin-only permission management panel.</p>
-          </div>
-        )}
       </div>
+
+      <div className="flex-1 overflow-auto p-6">
+        <div className="max-w-4xl mx-auto">
+          {showNewProjectDialog && (
+            <div className="mb-6 bg-gray-800 border border-gray-700 rounded-lg p-6">
+              <h2 className="text-lg font-semibold mb-4">Create New Project</h2>
+              <input
+                type="text"
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleCreateProject();
+                  }
+                }}
+                placeholder="Enter project name..."
+                className="w-full bg-gray-900 border border-gray-700 rounded px-4 py-2 mb-4 focus:outline-none focus:border-blue-500"
+                autoFocus
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={handleCreateProject}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 transition-colors disabled:bg-gray-700"
+                  disabled={!normalizeProjectName(newProjectName) || loading}
+                >
+                  Create
+                </button>
+                <button
+                  onClick={() => {
+                    setShowNewProjectDialog(false);
+                    setNewProjectName('');
+                  }}
+                  className="flex-1 bg-gray-700 hover:bg-gray-600 text-white rounded px-4 py-2 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {error ? (
+            <div className="mb-4 rounded border border-red-600/40 bg-red-900/20 px-4 py-2 text-sm text-red-200">
+              {error}
+            </div>
+          ) : null}
+
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-xl font-semibold flex items-center gap-2">
+              <FolderOpen size={20} />
+              Recent Projects
+            </h2>
+          </div>
+
+          {projects?.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              <FileAudio size={48} className="mx-auto mb-4 opacity-50" />
+              <p>No projects yet. Create one to get started!</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {projects.map((project) => (
+                <div
+                  key={project.id}
+                  onClick={() => {
+                    if (editingProjectId === project.id) return;
+                    onOpenProject(project);
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setContextMenu({
+                      x: e.clientX,
+                      y: e.clientY,
+                      project,
+                    });
+                  }}
+                  className="bg-gray-800 hover:bg-gray-750 border border-gray-700 rounded-lg px-6 py-4 transition-colors flex items-center justify-between gap-3 cursor-pointer"
+                >
+                  <div className="flex-1 text-left min-w-0">
+                    {editingProjectId === project.id ? (
+                      <input
+                        type="text"
+                        value={editingProjectName}
+                        autoFocus
+                        onChange={(e) => setEditingProjectName(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        onBlur={commitProjectRename}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            commitProjectRename();
+                          } else if (e.key === 'Escape') {
+                            cancelProjectRename();
+                          }
+                        }}
+                        className="font-semibold text-lg bg-transparent border-b border-blue-500 px-0 py-0 leading-none focus:outline-none w-full h-[28px]"
+                      />
+                    ) : (
+                      <h3 className="font-semibold text-lg h-[28px] flex items-center truncate">
+                        {project.name}
+                      </h3>
+                    )}
+                    <div className="text-sm text-gray-400 mt-1">
+                      <span>Seq: {project.latestSeq ?? 0}</span>
+                      <span className="mx-2">•</span>
+                      <span>Last modified: {formatRelativeTime(project.updatedAt)}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-1"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700"
+            onClick={() => {
+              beginProjectRename(contextMenu.project);
+              setContextMenu(null);
+            }}
+          >
+            Rename
+          </button>
+          <button
+            className="w-full text-left px-3 py-1.5 text-sm text-red-300 hover:bg-gray-700"
+            onClick={async () => {
+              setContextMenu(null);
+              const confirmed = window.confirm(`Delete project "${contextMenu.project.name}"?`);
+              if (!confirmed) return;
+              await onDeleteProject(contextMenu.project);
+            }}
+          >
+            Delete
+          </button>
+        </div>
+      )}
     </div>
   );
 }

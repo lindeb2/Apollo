@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { ArrowLeft, Download, Play, Pause, Square, Volume2, Circle, Upload, SkipBack, SkipForward, Settings, Lock } from 'lucide-react';
+import { ArrowLeft, Download, Play, Pause, Square, Volume2, Circle, Upload, SkipBack, SkipForward, Settings, Lock, WifiOff } from 'lucide-react';
 import useStore from '../store/useStore';
 import { audioManager } from '../lib/audioManager';
 import { recordingManager } from '../lib/recordingManager';
@@ -124,7 +124,6 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
 
   const {
     connected: syncConnected,
-    syncError,
     lockByTrackId,
     lockHelpers,
   } = useRealtimeProjectSync({
@@ -2533,22 +2532,18 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
                     <Circle size={18} fill={isRecording ? 'currentColor' : 'none'} />
                   )}
                 </button>
+
+                {isHostedSession && !syncConnected && (
+                  <div className="p-1 text-red-500" title="Disconnected from server">
+                    <WifiOff size={18} />
+                  </div>
+                )}
               </div>
 
               <div className="flex-shrink-0 flex flex-col items-center">
                 <div className="text-xl font-mono bg-gray-900 px-3 py-1 rounded">
                   {formatTime(currentTimeMs)}
                 </div>
-                {isHostedSession && (
-                  <div
-                    className={`mt-1 text-[11px] ${
-                      syncConnected ? 'text-green-300' : 'text-red-300'
-                    }`}
-                  >
-                    {syncConnected ? 'Synced' : 'Offline'}
-                    {syncError ? ` · ${syncError}` : ''}
-                  </div>
-                )}
               </div>
 
               <div className="flex items-center gap-4 flex-shrink-0">

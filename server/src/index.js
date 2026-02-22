@@ -674,6 +674,37 @@ app.delete('/api/projects/:id', requireAuth, async (req, res) => {
   res.json({ ok: true, projectId: permission.projectId });
 });
 
+app.patch('/api/projects/:id', requireAuth, async (req, res) => {
+  const permission = await requireProjectPermission(req, res, 'write');
+  if (!permission) return;
+
+  try {
+    const name = String(req.body?.name || '').trim();
+    if (!name) {
+      res.status(400).json({ error: 'Project name is required' });
+      return;
+    }
+
+    const updated = await pool.query(
+      `UPDATE projects
+       SET name = $2, updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, name`,
+      [permission.projectId, name]
+    );
+
+    if (updated.rowCount === 0) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+
+    res.json({ project: updated.rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to rename project' });
+  }
+});
+
 app.get('/api/projects/:id/bootstrap', requireAuth, async (req, res) => {
   const permission = await requireProjectPermission(req, res, 'read');
   if (!permission) return;
