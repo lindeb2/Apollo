@@ -144,10 +144,10 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
 
   useEffect(() => {
     if (!project) return;
-    if (typeof project.masterVolume === 'number' && project.masterVolume !== masterVolume) {
+    if (typeof project.masterVolume === 'number') {
       setMasterVolume(project.masterVolume);
     }
-  }, [project?.masterVolume, masterVolume, project]);
+  }, [project?.masterVolume]);
 
   useEffect(() => {
     if (project) {
@@ -357,12 +357,24 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
       masterDragRef.current.moved = true;
       if (masterEditTooltip) setMasterEditTooltip(null);
       const next = Math.min(100, Math.max(0, startValue + (deltaX / width) * 100));
-      applyMasterVolume(next);
+      if (Math.abs(next - masterDragRef.current.lastValue) < 1e-6) {
+        setMasterDragTooltip(next);
+        return;
+      }
+      masterDragRef.current.lastValue = next;
+      setMasterVolume(next);
       setMasterDragTooltip(next);
     };
     const handleUp = () => {
+      const dragState = masterDragRef.current;
       masterDragRef.current = null;
       setMasterDragTooltip(null);
+      if (!dragState || !dragState.moved) return;
+      const finalValue = Number.isFinite(dragState.lastValue)
+        ? dragState.lastValue
+        : dragState.startValue;
+      if (Math.abs(finalValue - dragState.startValue) < 1e-6) return;
+      applyMasterVolume(finalValue);
     };
     window.addEventListener('mousemove', handleMove);
     window.addEventListener('mouseup', handleUp);
@@ -610,6 +622,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
   const selectedTrackLockOwnerName = selectedTrackLock?.ownerName || 'another user';
   const recordButtonDisabled = hasNoTracks
     || !selectedTrackId
+    || selectedRowKind !== 'track'
     || (isHostedSession && !isRecording && (!syncConnected || selectedTrackLockedByOther));
 
   const handleSelectRow = (row) => {
@@ -1964,12 +1977,15 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
     masterDragRef.current = {
       startX: e.clientX,
       startValue: masterVolume,
+      lastValue: masterVolume,
       width: rect.width,
       moved: false,
     };
   };
 
   const applyMasterVolume = (value) => {
+    const currentMaster = Number(projectRef.current?.masterVolume);
+    if (Number.isFinite(currentMaster) && Math.abs(currentMaster - value) < 1e-6) return;
     setMasterVolume(value);
     updateProject((proj) => ({
       ...proj,

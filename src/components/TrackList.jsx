@@ -487,22 +487,34 @@ function TrackList({
   };
 
   const handleVolumeChange = (trackId, value) => {
-    onUpdateTrack(trackId, { volume: parseFloat(value) });
+    const next = parseFloat(value);
+    const current = trackMap.get(trackId)?.volume;
+    if (Number.isFinite(current) && Math.abs(current - next) < 1e-6) return;
+    onUpdateTrack(trackId, { volume: next });
   };
 
   const handlePanChange = (trackId, value) => {
-    onUpdateTrack(trackId, { pan: parseFloat(value) });
+    const next = parseFloat(value);
+    const current = trackMap.get(trackId)?.pan;
+    if (Number.isFinite(current) && Math.abs(current - next) < 1e-6) return;
+    onUpdateTrack(trackId, { pan: next });
   };
 
   const handleGroupVolumeChange = (groupNodeId, value) => {
-    onUpdateGroup?.(groupNodeId, { volume: parseFloat(value) });
+    const next = parseFloat(value);
+    const current = rowByNodeId.get(groupNodeId)?.volume;
+    if (Number.isFinite(current) && Math.abs(current - next) < 1e-6) return;
+    onUpdateGroup?.(groupNodeId, { volume: next });
   };
 
   const handleGroupPanChange = (groupNodeId, value) => {
-    onUpdateGroup?.(groupNodeId, { pan: parseFloat(value) });
+    const next = parseFloat(value);
+    const current = rowByNodeId.get(groupNodeId)?.pan;
+    if (Number.isFinite(current) && Math.abs(current - next) < 1e-6) return;
+    onUpdateGroup?.(groupNodeId, { pan: next });
   };
 
-  const beginDrag = (e, entityId, type, startValue, onChange) => {
+  const beginDrag = (e, entityId, type, startValue, onCommit) => {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
@@ -520,9 +532,10 @@ function TrackList({
       type,
       startX: e.clientX,
       startValue,
+      lastValue: startValue,
       width: rect.width,
       moved: false,
-      onChange,
+      onCommit,
     };
   };
 
@@ -584,7 +597,7 @@ function TrackList({
 
   const handleDragMove = (e) => {
     if (!dragRef.current) return;
-    const { entityId, type, startX, startValue, width, moved, onChange } = dragRef.current;
+    const { entityId, type, startX, startValue, width, moved } = dragRef.current;
     const deltaX = e.clientX - startX;
     if (!moved && Math.abs(deltaX) < 2) return;
     dragRef.current.moved = true;
@@ -593,19 +606,41 @@ function TrackList({
     if (type === 'volume') {
       const range = 100;
       const next = Math.min(100, Math.max(0, startValue + (deltaX / width) * range));
-      onChange?.(next);
+      if (Math.abs(next - dragRef.current.lastValue) < 1e-6) {
+        setDragTooltip((prev) => (prev ? { ...prev, value: next } : { entityId, type, value: next }));
+        return;
+      }
+      dragRef.current.lastValue = next;
       setDragTooltip((prev) => (prev ? { ...prev, value: next } : { entityId, type, value: next }));
     } else {
       const range = 200;
       const next = Math.min(100, Math.max(-100, startValue + (deltaX / width) * range));
-      onChange?.(next);
+      if (Math.abs(next - dragRef.current.lastValue) < 1e-6) {
+        setDragTooltip((prev) => (prev ? { ...prev, value: next } : { entityId, type, value: next }));
+        return;
+      }
+      dragRef.current.lastValue = next;
       setDragTooltip((prev) => (prev ? { ...prev, value: next } : { entityId, type, value: next }));
     }
   };
 
   const endDrag = () => {
+    const dragState = dragRef.current;
     dragRef.current = null;
     setDragTooltip(null);
+    if (!dragState || !dragState.moved) return;
+    const finalValue = Number.isFinite(dragState.lastValue)
+      ? dragState.lastValue
+      : dragState.startValue;
+    if (Math.abs(finalValue - dragState.startValue) < 1e-6) return;
+    dragState.onCommit?.(finalValue);
+  };
+
+  const getDraggedValue = (entityId, type, fallback) => {
+    if (dragTooltip?.entityId === entityId && dragTooltip.type === type) {
+      return dragTooltip.value;
+    }
+    return fallback;
   };
 
   const handleRowReorderMove = (e) => {
@@ -838,6 +873,8 @@ function TrackList({
           const groupIconKey = getDefaultIconKey(displayGroupRole);
           const GroupIcon = iconOptions.find((opt) => opt.key === groupIconKey)?.Icon || Waves;
           const isSelectedRow = selectedNodeId === row.nodeId;
+          const groupVolumeValue = getDraggedValue(row.nodeId, 'volume', row.volume ?? 100);
+          const groupPanValue = getDraggedValue(row.nodeId, 'pan', row.pan ?? 0);
 
           return (
             <div
@@ -965,6 +1002,7 @@ function TrackList({
                         data-track-interactive="true"
                         onClick={(e) => {
                           e.stopPropagation();
+                          onSelectRow?.(row);
                           onToggleGroupCollapse?.(row.nodeId);
                         }}
                         className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-600 transition-colors bg-gray-800 hover:bg-gray-600 text-gray-300"
@@ -986,7 +1024,7 @@ function TrackList({
                         min="0"
                         max="100"
                         step="0.1"
-                        value={row.volume ?? 100}
+                        value={groupVolumeValue}
                         readOnly
                         onMouseDown={(e) => {
                           if (e.detail > 1) return;
@@ -994,13 +1032,13 @@ function TrackList({
                             e,
                             row.nodeId,
                             'volume',
-                            row.volume ?? 100,
+                            groupVolumeValue,
                             (next) => handleGroupVolumeChange(row.nodeId, next)
                           );
                         }}
                         onDoubleClick={(e) => {
                           e.stopPropagation();
-                          handleVolumeDoubleClick(row.nodeId, row.volume ?? 100, e);
+                          handleVolumeDoubleClick(row.nodeId, groupVolumeValue, e);
                         }}
                         className="w-full volume-slider volume-slider-lg cursor-pointer"
                       />
@@ -1049,7 +1087,7 @@ function TrackList({
                         <div className="absolute left-1/2 top-1/2 w-6 h-6 rounded-full bg-gray-700 border border-gray-600 -translate-x-1/2 -translate-y-1/2 pointer-events-none" />
                         <div
                           className="absolute left-1/2 top-1/2 w-[3px] h-3 bg-gray-200 rounded-full origin-bottom pointer-events-none"
-                          style={{ transform: `translate(-50%, -100%) rotate(${((row.pan ?? 0) / 100) * 135}deg)` }}
+                          style={{ transform: `translate(-50%, -100%) rotate(${(groupPanValue / 100) * 135}deg)` }}
                         />
                       </div>
                       <input
@@ -1057,7 +1095,7 @@ function TrackList({
                         min="-100"
                         max="100"
                         step="1"
-                        value={row.pan ?? 0}
+                        value={groupPanValue}
                         readOnly
                         onMouseDown={(e) => {
                           if (e.detail > 1) return;
@@ -1065,13 +1103,13 @@ function TrackList({
                             e,
                             row.nodeId,
                             'pan',
-                            row.pan ?? 0,
+                            groupPanValue,
                             (next) => handleGroupPanChange(row.nodeId, next)
                           );
                         }}
                         onDoubleClick={(e) => {
                           e.stopPropagation();
-                          handlePanDoubleClick(row.nodeId, row.pan ?? 0, e);
+                          handlePanDoubleClick(row.nodeId, groupPanValue, e);
                         }}
                         className="absolute top-0 left-0 right-0 h-4 pan-knob opacity-0 cursor-pointer z-10 pointer-events-auto appearance-none touch-none"
                         aria-label="Group pan"
@@ -1123,6 +1161,8 @@ function TrackList({
         const displayTrackRole = trackEffectiveRoleById[track.id] || track.role;
         const isInPartTrackChain = hasPartTrackAncestor(row);
         const canEditTrackIcon = isInPartTrackChain || !hasDirectParentTypeLock(row);
+        const trackVolumeValue = getDraggedValue(track.id, 'volume', track.volume);
+        const trackPanValue = getDraggedValue(track.id, 'pan', track.pan);
 
         const trackHeight = row.height || TRACK_HEIGHT;
         const { Icon: TrackIcon } = getIconForTrack(track, row);
@@ -1261,7 +1301,7 @@ function TrackList({
                       min="0"
                       max="100"
                       step="0.1"
-                      value={track.volume}
+                      value={trackVolumeValue}
                       readOnly
                       onMouseDown={(e) => {
                         if (e.detail > 1) return;
@@ -1269,13 +1309,13 @@ function TrackList({
                           e,
                           track.id,
                           'volume',
-                          track.volume,
+                          trackVolumeValue,
                           (next) => handleVolumeChange(track.id, next)
                         );
                       }}
                       onDoubleClick={(e) => {
                         e.stopPropagation();
-                        handleVolumeDoubleClick(track.id, track.volume, e);
+                        handleVolumeDoubleClick(track.id, trackVolumeValue, e);
                       }}
                       className="w-full volume-slider volume-slider-lg cursor-pointer"
                     />
@@ -1324,7 +1364,7 @@ function TrackList({
                       <div className="absolute left-1/2 top-1/2 w-6 h-6 rounded-full bg-gray-700 border border-gray-600 -translate-x-1/2 -translate-y-1/2 pointer-events-none" />
                       <div
                         className="absolute left-1/2 top-1/2 w-[3px] h-3 bg-gray-200 rounded-full origin-bottom pointer-events-none"
-                        style={{ transform: `translate(-50%, -100%) rotate(${(track.pan / 100) * 135}deg)` }}
+                        style={{ transform: `translate(-50%, -100%) rotate(${(trackPanValue / 100) * 135}deg)` }}
                       />
                     </div>
                     <input
@@ -1332,7 +1372,7 @@ function TrackList({
                       min="-100"
                       max="100"
                       step="1"
-                      value={track.pan}
+                      value={trackPanValue}
                       readOnly
                       onMouseDown={(e) => {
                         if (e.detail > 1) return;
@@ -1340,13 +1380,13 @@ function TrackList({
                           e,
                           track.id,
                           'pan',
-                          track.pan,
+                          trackPanValue,
                           (next) => handlePanChange(track.id, next)
                         );
                       }}
                       onDoubleClick={(e) => {
                         e.stopPropagation();
-                        handlePanDoubleClick(track.id, track.pan, e);
+                        handlePanDoubleClick(track.id, trackPanValue, e);
                       }}
                       className="absolute top-0 left-0 right-0 h-4 pan-knob opacity-0 cursor-pointer z-10 pointer-events-auto appearance-none touch-none"
                       aria-label="Pan"
