@@ -88,7 +88,7 @@ function HostedDashboard({
     <div className="h-full flex flex-col bg-gray-900 text-white">
       <div className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">ChoirMaster</h1>
+          <h1 className="text-2xl font-bold">Apollo</h1>
         </div>
         <div className="flex items-center gap-3">
           <button

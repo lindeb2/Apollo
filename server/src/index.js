@@ -1230,7 +1230,7 @@ async function start() {
   await ensureDefaultAdmin();
 
   server.listen(config.port, () => {
-    console.log(`ChoirMaster server listening on http://0.0.0.0:${config.port}`);
+    console.log(`Apollo server listening on http://0.0.0.0:${config.port}`);
   });
 
   setInterval(() => {

@@ -3,7 +3,7 @@ import { reportUserError } from '../utils/errorReporter';
 import { createId } from '../utils/id';
 
 /**
- * ChoirMaster IndexedDB Database
+ * Apollo IndexedDB Database
  * 
  * Stores:
  * - projects: Full project metadata and state
@@ -13,9 +13,9 @@ import { createId } from '../utils/id';
  * - remoteProjects: Remote sync metadata by project id
  * - syncQueue: Pending sync operations for offline replay
  */
-class ChoirMasterDB extends Dexie {
+class ApolloDB extends Dexie {
   constructor() {
-    super('ChoirMasterDB');
+    super('ApolloDB');
     
     this.version(1).stores({
       // Projects table
@@ -59,7 +59,7 @@ class ChoirMasterDB extends Dexie {
 }
 
 // Singleton instance
-export const db = new ChoirMasterDB();
+export const db = new ApolloDB();
 
 /**
  * Save a project to IndexedDB
@@ -103,7 +103,7 @@ export async function deleteProject(projectId) {
   
   // Update recent projects
   const recent = getRecentProjects().filter(p => p.id !== projectId);
-  localStorage.setItem('choirmaster_recent_projects', JSON.stringify(recent));
+  localStorage.setItem('apollo_recent_projects', JSON.stringify(recent));
 }
 
 /**
@@ -207,12 +207,12 @@ function updateRecentProjects(projectId, projectName) {
   // Keep only last 10
   const limited = filtered.slice(0, 10);
   
-  localStorage.setItem('choirmaster_recent_projects', JSON.stringify(limited));
+  localStorage.setItem('apollo_recent_projects', JSON.stringify(limited));
 }
 
 export function getRecentProjects() {
   try {
-    const data = localStorage.getItem('choirmaster_recent_projects');
+    const data = localStorage.getItem('apollo_recent_projects');
     return data ? JSON.parse(data) : [];
   } catch (error) {
     reportUserError(

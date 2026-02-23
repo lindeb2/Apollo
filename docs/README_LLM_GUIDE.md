@@ -1,4 +1,4 @@
-# 🎵 ChoirMaster - LLM Development Guide
+# 🎵 Apollo - LLM Development Guide
 
 **Need to make changes with an LLM? Start here!**
 
@@ -13,7 +13,7 @@
 1. **Start a new chat** with your LLM (Claude, ChatGPT, etc.)
 
 2. **Copy and paste this file:** [`LLM_CONTEXT.md`](LLM_CONTEXT.md)
-   - This gives the LLM all essential context about ChoirMaster
+   - This gives the LLM all essential context about Apollo
    - ~400 lines of focused, technical information
    - Much cheaper than carrying 100k+ tokens of chat history
 
@@ -42,7 +42,7 @@
 | [README.md](../README.md) | User guide, installation, features |
 | [IMPLEMENTATION.md](IMPLEMENTATION.md) | Detailed technical documentation |
 | [SPEC_CHANGES.md](SPEC_CHANGES.md) | Tracks deviations (currently zero) |
-| [PHASE_0-3_SUMMARY.md](choirmaster-app/) | Implementation details per phase |
+| [PHASE_0-3_SUMMARY.md](apollo-app/) | Implementation details per phase |
 | [MVP_DELIVERY.md](MVP_DELIVERY.md) | Final delivery summary |
 
 ---
@@ -112,12 +112,12 @@ Then you're ready to start making changes efficiently!
 
 ## 🔍 File Locations
 
-All documentation is in the `choirmaster-app/` folder:
+All documentation is in the `apollo-app/` folder:
 
 ```
-ChoirMaster/
+Apollo/
 ├── MASTER SYSTEM PROMPT v1.0.md  (Original spec - don't modify)
-└── choirmaster-app/
+└── apollo-app/
     ├── LLM_CONTEXT.md ⭐ (Paste this in new chats)
     ├── PROMPT_TEMPLATES.md
     ├── WORKING_WITH_LLMS.md
@@ -137,12 +137,12 @@ ChoirMaster/
 - **What should I paste in a new chat?** → [`LLM_CONTEXT.md`](LLM_CONTEXT.md)
 - **How should I phrase my request?** → See [`PROMPT_TEMPLATES.md`](PROMPT_TEMPLATES.md)
 - **What's the architecture?** → Check [`IMPLEMENTATION.md`](IMPLEMENTATION.md)
-- **What's implemented?** → Read phase summaries: [`PHASE_0-3_SUMMARY.md`](choirmaster-app/)
+- **What's implemented?** → Read phase summaries: [`PHASE_0-3_SUMMARY.md`](apollo-app/)
 
 ---
 
 ## 🎵 Happy Coding!
 
-You now have everything you need to efficiently work with LLMs on ChoirMaster.
+You now have everything you need to efficiently work with LLMs on Apollo.
 
 **Remember:** Fresh chat + `LLM_CONTEXT.md` = Success! 🚀

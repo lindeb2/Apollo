@@ -1,6 +1,6 @@
-# ChoirMaster - LLM Developer Context
+# Apollo - LLM Developer Context
 
-**Quick Start for LLMs:** This document provides all essential context needed to understand and modify the ChoirMaster codebase. Read this before requesting changes.
+**Quick Start for LLMs:** This document provides all essential context needed to understand and modify the Apollo codebase. Read this before requesting changes.
 
 ---
 
@@ -58,7 +58,7 @@
 
 ## Project Overview
 
-**ChoirMaster** is a browser-based DAW for creating choir practice files. It allows importing audio, recording vocals, editing clips non-destructively, and exporting specialized WAV files for choir rehearsal.
+**Apollo** is a browser-based DAW for creating choir practice files. It allows importing audio, recording vocals, editing clips non-destructively, and exporting specialized WAV files for choir rehearsal.
 
 **Tech Stack:**
 - React 18.3.1 + Vite 5.1.4
@@ -411,7 +411,7 @@ useStore.getState().isPlaying  // Transport state
 ### Inspect IndexedDB
 
 1. Open DevTools → Application → Storage → IndexedDB
-2. Expand `ChoirMasterDB`
+2. Expand `ApolloDB`
 3. Check tables: `projects`, `media`, `undo`
 
 ### Verify Audio Processing

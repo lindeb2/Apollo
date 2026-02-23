@@ -7,7 +7,7 @@ import { normalizePanLawDb } from '../utils/audio';
 import { reportUserError } from '../utils/errorReporter';
 
 /**
- * ChoirMaster Zustand Store
+ * Apollo Zustand Store
  * 
  * Central state management with:
  * - Project state
@@ -49,7 +49,7 @@ const useStore = create((set, get) => ({
     let exportSettings = normalizeExportSettings();
     let panLawDb = normalizePanLawDb();
     try {
-      const saved = localStorage.getItem('choirmaster.settings');
+      const saved = localStorage.getItem('apollo.settings');
       if (saved) {
         const parsed = JSON.parse(saved);
         const strategy = parsed?.defaultChoirPanning;

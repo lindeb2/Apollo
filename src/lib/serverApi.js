@@ -4,7 +4,7 @@ import { createId } from '../utils/id';
 const API_BASE = import.meta.env.VITE_SERVER_API_BASE || '';
 const WS_BASE = import.meta.env.VITE_SERVER_WS_BASE || '';
 
-const SESSION_KEY = 'choirmaster.server.session';
+const SESSION_KEY = 'apollo.server.session';
 
 function isObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);

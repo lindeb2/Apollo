@@ -1,4 +1,4 @@
-# ChoirMaster Server Hosting Plan (LAN / Self-Host First, Chapter-Ready Later)
+# Apollo Server Hosting Plan (LAN / Self-Host First, Chapter-Ready Later)
 
 ## Summary
 
@@ -29,10 +29,10 @@ Build a **hybrid local+server architecture** so users can upload, open, edit, an
 
 Current app is fully browser-local:
 
-* Projects/audio stored in IndexedDB via Dexie (`/Users/johan/PycharmProjects/ChoirMaster/src/lib/db.js`).
-* App has no server API integration (`/Users/johan/PycharmProjects/ChoirMaster/src/App.jsx`, `src/components/*`).
-* Clips reference `blobId` and audio is loaded from local DB into `audioManager.mediaCache` (`/Users/johan/PycharmProjects/ChoirMaster/src/components/Editor.jsx`, `src/lib/audioManager.js`).
-* Export/import exists via JSON/ZIP (`/Users/johan/PycharmProjects/ChoirMaster/src/lib/projectPortability.js`).
+* Projects/audio stored in IndexedDB via Dexie (`/Users/johan/PycharmProjects/Apollo/src/lib/db.js`).
+* App has no server API integration (`/Users/johan/PycharmProjects/Apollo/src/App.jsx`, `src/components/*`).
+* Clips reference `blobId` and audio is loaded from local DB into `audioManager.mediaCache` (`/Users/johan/PycharmProjects/Apollo/src/components/Editor.jsx`, `src/lib/audioManager.js`).
+* Export/import exists via JSON/ZIP (`/Users/johan/PycharmProjects/Apollo/src/lib/projectPortability.js`).
 
 We need to add a server sync layer without breaking current editing/playback internals.
 
@@ -51,7 +51,7 @@ Docker Compose services:
 Persistent volumes:
 
 * Postgres data volume.
-* Filesystem media root (host bind mount, e.g. `/srv/choirmaster/media`).
+* Filesystem media root (host bind mount, e.g. `/srv/apollo/media`).
 
 ### 2) Data Flow
 

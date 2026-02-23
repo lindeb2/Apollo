@@ -273,7 +273,7 @@ Phase 0 provides the complete foundation. Phase 1 will implement:
 
 ```bash
 # Install dependencies
-cd C:\Users\Johan\Desktop\ChoirMaster\choirmaster-app
+cd C:\Users\Johan\Desktop\Apollo\apollo-app
 npm install
 
 # Run development server

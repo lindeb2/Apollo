@@ -1,4 +1,4 @@
-# ChoirMaster Keyboard Shortcuts
+# Apollo Keyboard Shortcuts
 
 `Primary modifier` means:
 - macOS: `Command (⌘)`

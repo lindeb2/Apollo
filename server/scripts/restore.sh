@@ -17,7 +17,7 @@ if [[ ! -f "$BACKUP_DIR/media.tgz" ]]; then
 fi
 
 echo "[restore] restoring database..."
-cat "$BACKUP_DIR/db.sql" | docker compose exec -T db psql -U choirmaster -d choirmaster
+cat "$BACKUP_DIR/db.sql" | docker compose exec -T db psql -U apollo -d apollo
 
 echo "[restore] restoring media..."
 cat "$BACKUP_DIR/media.tgz" | docker compose exec -T api sh -lc 'tar -xzf - -C /data'

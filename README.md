@@ -1,4 +1,4 @@
-# ChoirMaster
+# Apollo
 
 A browser-based simplified DAW for creating choir practice files. Import instrumental and choir audio, record vocals, edit clips non-destructively, and export deterministic WAV practice files according to strict presets.
 
@@ -40,7 +40,7 @@ npm run preview
 
 ## Server Hosting Mode (Self-Host / LAN)
 
-ChoirMaster now supports a hosted mode (Postgres + API + WebSocket + shared media storage) in addition to local IndexedDB mode.
+Apollo now supports a hosted mode (Postgres + API + WebSocket + shared media storage) in addition to local IndexedDB mode.
 
 ### Start Full Hosted Stack (Docker Compose)
 
@@ -240,7 +240,7 @@ Tested on Chrome 90+, Firefox 88+, Safari 14+, Edge 90+
   - Project portability (JSON + ZIP)
   - Cross-machine compatibility
 
-**ChoirMaster is production-ready for creating choir practice files.**
+**Apollo is production-ready for creating choir practice files.**
 
 See `IMPLEMENTATION.md` for technical details and `SPEC_CHANGES.md` for any deviations from spec.
 
@@ -264,4 +264,4 @@ MIT
 
 ## Acknowledgments
 
-Built according to the ChoirMaster specification v1.0
+Built according to the Apollo specification v1.0

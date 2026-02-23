@@ -156,7 +156,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
   }, [project?.projectName]);
 
   useEffect(() => {
-    const saved = localStorage.getItem('choirmaster.settings');
+    const saved = localStorage.getItem('apollo.settings');
     if (!saved) return;
     try {
       const parsed = JSON.parse(saved);
@@ -183,7 +183,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
     } else {
       let existing = {};
       try {
-        existing = JSON.parse(localStorage.getItem('choirmaster.settings') || '{}');
+        existing = JSON.parse(localStorage.getItem('apollo.settings') || '{}');
       } catch (error) {
         reportUserError(
           'Failed to parse existing app settings from local storage. They will be replaced.',
@@ -192,7 +192,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
         );
         existing = {};
       }
-      localStorage.setItem('choirmaster.settings', JSON.stringify({
+      localStorage.setItem('apollo.settings', JSON.stringify({
         ...existing,
         ...audioSettings,
       }));

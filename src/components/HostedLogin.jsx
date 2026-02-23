@@ -16,7 +16,7 @@ function HostedLogin({ onLogin, loading = false, error = '' }) {
         onSubmit={submit}
         className="w-full max-w-sm rounded-lg border border-gray-700 bg-gray-800 p-6 space-y-4"
       >
-        <h1 className="text-xl font-semibold">ChoirMaster Server Login</h1>
+        <h1 className="text-xl font-semibold">Apollo Server Login</h1>
         <div>
           <label className="block text-sm text-gray-300 mb-1">Username</label>
           <input

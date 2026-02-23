@@ -1,6 +1,6 @@
-# Working with LLMs on ChoirMaster
+# Working with LLMs on Apollo
 
-This guide explains how to efficiently work with LLMs (like Claude, ChatGPT, etc.) when making changes to ChoirMaster in **new chat sessions** without accumulating large token costs.
+This guide explains how to efficiently work with LLMs (like Claude, ChatGPT, etc.) when making changes to Apollo in **new chat sessions** without accumulating large token costs.
 
 ---
 
@@ -17,7 +17,7 @@ This guide explains how to efficiently work with LLMs (like Claude, ChatGPT, etc
 ## 📂 Important Files for LLM Work
 
 ### `LLM_CONTEXT.md` ⭐ **MOST IMPORTANT**
-**What:** Complete technical context about ChoirMaster  
+**What:** Complete technical context about Apollo  
 **When:** Paste this at the START of EVERY new chat  
 **Why:** Gives LLM architecture, patterns, constraints, file locations  
 **Size:** ~400 lines - designed to be comprehensive but concise  
@@ -59,7 +59,7 @@ Step 5: Test thoroughly
 ```
 [Paste entire LLM_CONTEXT.md]
 
-I'm working on ChoirMaster (context above). 
+I'm working on Apollo (context above). 
 
 I need to add a "duplicate track" button in the TrackList component 
 that creates a copy of the selected track with all its clips. The 
@@ -93,7 +93,7 @@ Step 6: Implement when design is clear
 ```
 [Paste LLM_CONTEXT.md]
 
-I'm working on ChoirMaster. I need to add a "loop region" playback 
+I'm working on Apollo. I need to add a "loop region" playback 
 feature where users can:
 1. Select a region on the timeline
 2. Toggle loop mode
@@ -193,7 +193,7 @@ Step 5: Test after each change
 **Before implementing:**
 1. Read the code carefully
 2. Understand what it does
-3. Check if it follows ChoirMaster patterns
+3. Check if it follows Apollo patterns
 4. Verify it uses store actions (not direct mutation)
 5. Confirm time units are correct (ms vs seconds)
 
@@ -378,7 +378,7 @@ Instead of spending 20 messages explaining the architecture, you give it upfront
 
 **Every new feature = fresh chat + LLM_CONTEXT.md**
 
-That's the formula for cost-effective, high-quality LLM assistance on ChoirMaster.
+That's the formula for cost-effective, high-quality LLM assistance on Apollo.
 
 ---
 

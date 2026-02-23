@@ -1,8 +1,8 @@
-# ChoirMaster Implementation Documentation
+# Apollo Implementation Documentation
 
 ## Architecture Overview
 
-ChoirMaster is a single-page web application built with React and Vite, using IndexedDB for local persistence and Web Audio API for audio processing.
+Apollo is a single-page web application built with React and Vite, using IndexedDB for local persistence and Web Audio API for audio processing.
 
 ### Core Design Principles
 
@@ -75,7 +75,7 @@ React Components (via hooks)
 
 ### IndexedDB Structure
 
-**Database:** `ChoirMasterDB` (version 1)
+**Database:** `ApolloDB` (version 1)
 
 **Tables:**
 
