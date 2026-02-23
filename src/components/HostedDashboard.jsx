@@ -233,7 +233,7 @@ function HostedDashboard({
                       </h3>
                     )}
                     <div className="text-sm text-gray-400 mt-1">
-                      <span>Seq: {project.latestSeq ?? 0}</span>
+                      <span>{project.trackCount ?? 0} tracks</span>
                       <span className="mx-2">•</span>
                       <span>Last modified: {formatRelativeTime(project.updatedAt)}</span>
                     </div>

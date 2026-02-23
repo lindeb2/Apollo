@@ -496,6 +496,7 @@ app.get('/api/projects', requireAuth, async (req, res) => {
             pp.can_read AS "canRead",
             pp.can_write AS "canWrite",
             ph.latest_seq AS "latestSeq",
+            COALESCE(jsonb_array_length(ph.latest_snapshot_json -> 'tracks'), 0) AS "trackCount",
             ph.updated_at AS "updatedAt"
      FROM projects p
      LEFT JOIN project_permissions pp
