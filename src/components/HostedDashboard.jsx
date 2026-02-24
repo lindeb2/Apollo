@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { FolderOpen, Plus, Download, FileAudio, LogOut } from 'lucide-react';
+import { Plus, Download, FileAudio, LogOut } from 'lucide-react';
 import { isValidMusicalNumber, normalizeMusicalNumber, normalizeProjectName } from '../utils/naming';
 
 function HostedDashboard({
@@ -141,7 +141,7 @@ function HostedDashboard({
       </div>
 
       <div className="flex-1 overflow-auto p-6">
-        <div className="max-w-4xl mx-auto">
+        <div className="max-w-2xl mx-auto">
           {showNewProjectDialog && (
             <div className="mb-6 bg-gray-800 border border-gray-700 rounded-lg p-6">
               <h2 className="text-lg font-semibold mb-4">Create New Project</h2>
@@ -200,13 +200,6 @@ function HostedDashboard({
             </div>
           ) : null}
 
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-xl font-semibold flex items-center gap-2">
-              <FolderOpen size={20} />
-              Recent Projects
-            </h2>
-          </div>
-
           {projects?.length === 0 ? (
             <div className="text-center py-12 text-gray-500">
               <FileAudio size={48} className="mx-auto mb-4 opacity-50" />
@@ -214,8 +207,8 @@ function HostedDashboard({
             </div>
           ) : (
             <div className="overflow-x-auto rounded-lg border border-gray-700">
-              <div className="min-w-[680px]">
-                <div className="grid grid-cols-[110px_minmax(260px,1fr)_90px_160px] bg-gray-800 border-b border-gray-700 px-4 py-3 text-xs uppercase tracking-wide text-gray-400">
+              <div className="min-w-[500px]">
+                <div className="grid grid-cols-[68px_minmax(150px,1fr)_70px_106px] bg-gray-800 border-b border-gray-700 px-2 py-3 text-base font-semibold tracking-normal text-gray-200">
                   <div>No.</div>
                   <div>Original Title</div>
                   <div>Tracks</div>
@@ -237,12 +230,12 @@ function HostedDashboard({
                           project,
                         });
                       }}
-                      className="grid grid-cols-[110px_minmax(260px,1fr)_90px_160px] items-center px-4 py-3 bg-gray-900 hover:bg-gray-800 transition-colors cursor-pointer"
+                      className="grid grid-cols-[68px_minmax(150px,1fr)_70px_106px] items-center px-2 py-2.5 bg-gray-900 hover:bg-gray-800 transition-colors cursor-pointer"
                     >
-                      <div className="text-sm text-gray-300 font-mono truncate">
+                      <div className="text-lg text-gray-300 font-mono truncate">
                         {project.musicalNumber || '0.0'}
                       </div>
-                      <div className="min-w-0 pr-2">
+                      <div className="min-w-0">
                         {editingProjectId === project.id ? (
                           <input
                             type="text"
@@ -258,16 +251,16 @@ function HostedDashboard({
                                 cancelProjectRename();
                               }
                             }}
-                            className="font-semibold text-base bg-transparent border-b border-blue-500 px-0 py-0 leading-none focus:outline-none w-full"
+                            className="font-semibold text-xl bg-transparent border-b border-blue-500 px-0 py-0 leading-none focus:outline-none w-full"
                           />
                         ) : (
-                          <h3 className="font-semibold text-base truncate">{project.name}</h3>
+                          <h3 className="font-semibold text-xl truncate">{project.name}</h3>
                         )}
                       </div>
-                      <div className="text-sm text-gray-300">
+                      <div className="text-lg text-gray-300">
                         {project.trackCount ?? 0}
                       </div>
-                      <div className="text-sm text-gray-400">
+                      <div className="text-lg text-gray-400">
                         {formatRelativeTime(project.updatedAt)}
                       </div>
                     </div>
