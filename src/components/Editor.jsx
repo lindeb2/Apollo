@@ -483,6 +483,26 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
     let interval = null;
     let isCancelled = false;
     let loopRestartTimeout = null;
+    const getPlaybackEndMs = (currentProject) => {
+      if (!currentProject?.tracks?.length) return 0;
+      const mix = getEffectiveTrackMix(currentProject);
+      let maxEndMs = 0;
+      currentProject.tracks.forEach((track) => {
+        const trackState = mix.statesByTrackId.get(track.id);
+        if (!trackState?.audible) return;
+        (track.clips || []).forEach((clip) => {
+          if (clip?.muted) return;
+          const clipStart = Number(clip?.timelineStartMs || 0);
+          const clipDuration = Math.max(0, Number(clip?.cropEndMs || 0) - Number(clip?.cropStartMs || 0));
+          if (clipDuration <= 0) return;
+          const clipEnd = clipStart + clipDuration;
+          if (Number.isFinite(clipEnd)) {
+            maxEndMs = Math.max(maxEndMs, clipEnd);
+          }
+        });
+      });
+      return maxEndMs;
+    };
     
     if (isPlaying) {
       // Reset loop wrap flag when starting playback
@@ -509,6 +529,21 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
         if (newTime !== null) {
           const previousTime = previousTimeRef.current;
           const currentProject = projectRef.current;
+
+          const playbackEndMs = getPlaybackEndMs(currentProject);
+          if (
+            !currentProject.loop.enabled
+            && !isRecording
+            && playbackEndMs > 0
+            && previousTime < playbackEndMs
+            && newTime >= playbackEndMs
+          ) {
+            stop();
+            audioManager.stop();
+            setCurrentTime(0);
+            previousTimeRef.current = 0;
+            return;
+          }
           
           // Only trigger loop wrap if we're crossing the boundary
           if (currentProject.loop.enabled && 
@@ -1033,6 +1068,8 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
     if (isRecording) {
       // Stop recording
       await finalizeRecording();
+      pause();
+      await audioManager.pause(currentTimeMs);
     } else {
       // Start recording
       try {
