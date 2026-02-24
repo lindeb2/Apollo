@@ -729,15 +729,34 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
       values.push(musicalNumber);
     }
 
-    updates.push('updated_at = NOW()');
+    const client = await pool.connect();
+    let updated;
+    try {
+      await client.query('BEGIN');
+      updated = await client.query(
+        `UPDATE projects
+         SET ${updates.join(', ')}
+         WHERE id = $1
+         RETURNING id, name, musical_number AS "musicalNumber"`,
+        values
+      );
 
-    const updated = await pool.query(
-      `UPDATE projects
-       SET ${updates.join(', ')}
-       WHERE id = $1
-       RETURNING id, name, musical_number AS "musicalNumber"`,
-      values
-    );
+      if (updated.rowCount > 0) {
+        await client.query(
+          `UPDATE project_heads
+           SET updated_at = NOW()
+           WHERE project_id = $1`,
+          [permission.projectId]
+        );
+      }
+
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
 
     if (updated.rowCount === 0) {
       res.status(404).json({ error: 'Project not found' });
@@ -747,7 +766,7 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
     res.json({ project: updated.rows[0] });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Failed to rename project' });
+    res.status(500).json({ error: 'Failed to update project' });
   }
 });
 

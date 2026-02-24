@@ -213,57 +213,67 @@ function HostedDashboard({
               <p>No projects yet. Create one to get started!</p>
             </div>
           ) : (
-            <div className="space-y-2">
-              {projects.map((project) => (
-                <div
-                  key={project.id}
-                  onClick={() => {
-                    if (editingProjectId === project.id) return;
-                    onOpenProject(project);
-                  }}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setContextMenu({
-                      x: e.clientX,
-                      y: e.clientY,
-                      project,
-                    });
-                  }}
-                  className="bg-gray-800 hover:bg-gray-750 border border-gray-700 rounded-lg px-6 py-4 transition-colors flex items-center justify-between gap-3 cursor-pointer"
-                >
-                  <div className="flex-1 text-left min-w-0">
-                    {editingProjectId === project.id ? (
-                      <input
-                        type="text"
-                        value={editingProjectName}
-                        autoFocus
-                        onChange={(e) => setEditingProjectName(e.target.value)}
-                        onClick={(e) => e.stopPropagation()}
-                        onBlur={commitProjectRename}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            commitProjectRename();
-                          } else if (e.key === 'Escape') {
-                            cancelProjectRename();
-                          }
-                        }}
-                        className="font-semibold text-lg bg-transparent border-b border-blue-500 px-0 py-0 leading-none focus:outline-none w-full h-[28px]"
-                      />
-                    ) : (
-                      <h3 className="font-semibold text-lg h-[28px] flex items-center truncate">
-                        {project.name}
-                      </h3>
-                    )}
-                    <div className="text-sm text-gray-400 mt-1">
-                      <span>Musical: {project.musicalNumber || '0.0'}</span>
-                      <span className="mx-2">•</span>
-                      <span>{project.trackCount ?? 0} tracks</span>
-                      <span className="mx-2">•</span>
-                      <span>Last modified: {formatRelativeTime(project.updatedAt)}</span>
-                    </div>
-                  </div>
+            <div className="overflow-x-auto rounded-lg border border-gray-700">
+              <div className="min-w-[680px]">
+                <div className="grid grid-cols-[110px_minmax(260px,1fr)_90px_160px] bg-gray-800 border-b border-gray-700 px-4 py-3 text-xs uppercase tracking-wide text-gray-400">
+                  <div>No.</div>
+                  <div>Original Title</div>
+                  <div>Tracks</div>
+                  <div>Last Modified</div>
                 </div>
-              ))}
+                <div className="divide-y divide-gray-700">
+                  {projects.map((project) => (
+                    <div
+                      key={project.id}
+                      onClick={() => {
+                        if (editingProjectId === project.id) return;
+                        onOpenProject(project);
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        setContextMenu({
+                          x: e.clientX,
+                          y: e.clientY,
+                          project,
+                        });
+                      }}
+                      className="grid grid-cols-[110px_minmax(260px,1fr)_90px_160px] items-center px-4 py-3 bg-gray-900 hover:bg-gray-800 transition-colors cursor-pointer"
+                    >
+                      <div className="text-sm text-gray-300 font-mono truncate">
+                        {project.musicalNumber || '0.0'}
+                      </div>
+                      <div className="min-w-0 pr-2">
+                        {editingProjectId === project.id ? (
+                          <input
+                            type="text"
+                            value={editingProjectName}
+                            autoFocus
+                            onChange={(e) => setEditingProjectName(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            onBlur={commitProjectRename}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                commitProjectRename();
+                              } else if (e.key === 'Escape') {
+                                cancelProjectRename();
+                              }
+                            }}
+                            className="font-semibold text-base bg-transparent border-b border-blue-500 px-0 py-0 leading-none focus:outline-none w-full"
+                          />
+                        ) : (
+                          <h3 className="font-semibold text-base truncate">{project.name}</h3>
+                        )}
+                      </div>
+                      <div className="text-sm text-gray-300">
+                        {project.trackCount ?? 0}
+                      </div>
+                      <div className="text-sm text-gray-400">
+                        {formatRelativeTime(project.updatedAt)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
         </div>
