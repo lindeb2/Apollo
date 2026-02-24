@@ -1,4 +1,9 @@
-import { getWsUrl } from './serverApi';
+import {
+  getWsUrl,
+  loadServerSession,
+  refreshSession,
+  saveServerSession,
+} from './serverApi';
 
 export function createRealtimeSyncClient({
   session,
@@ -22,6 +27,7 @@ export function createRealtimeSyncClient({
   let disposed = false;
   let connected = false;
   let currentKnownSeq = Number(knownSeq || 0);
+  let authRefreshInFlight = false;
 
   const send = (type, payload = {}) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
@@ -36,7 +42,9 @@ export function createRealtimeSyncClient({
     ws.onopen = () => {
       connected = true;
       onConnected?.();
-      send('auth.hello', { accessToken: session.accessToken });
+      const latestSession = loadServerSession();
+      const accessToken = latestSession?.accessToken || session?.accessToken || '';
+      send('auth.hello', { accessToken });
       send('project.join', {
         projectId,
         knownSeq: currentKnownSeq,
@@ -63,6 +71,29 @@ export function createRealtimeSyncClient({
             onLockState?.(message);
             break;
           case 'error':
+            if (message?.code === 'AUTH_REQUIRED' && !authRefreshInFlight) {
+              authRefreshInFlight = true;
+              const activeSession = loadServerSession() || session;
+              const refreshToken = activeSession?.refreshToken || '';
+              if (refreshToken) {
+                refreshSession(refreshToken)
+                  .then((refreshed) => {
+                    if (!refreshed?.accessToken || !refreshed?.refreshToken) return;
+                    saveServerSession(refreshed);
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                      ws.close();
+                    }
+                  })
+                  .catch(() => {
+                    // Let consumer surface auth error.
+                  })
+                  .finally(() => {
+                    authRefreshInFlight = false;
+                  });
+              } else {
+                authRefreshInFlight = false;
+              }
+            }
             onError?.(message);
             break;
           default:

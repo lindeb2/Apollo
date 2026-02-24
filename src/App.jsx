@@ -82,6 +82,16 @@ function App() {
     refreshServerData(serverSession);
   }, [serverSession]);
 
+  useEffect(() => {
+    const handleSessionUpdated = () => {
+      setServerSession(loadServerSession());
+    };
+    window.addEventListener('apollo:server-session-updated', handleSessionUpdated);
+    return () => {
+      window.removeEventListener('apollo:server-session-updated', handleSessionUpdated);
+    };
+  }, []);
+
   const handleServerLogin = async (username, password) => {
     setServerError('');
     setServerLoading(true);

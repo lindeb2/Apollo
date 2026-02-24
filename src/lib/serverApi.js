@@ -40,6 +40,7 @@ export function getWsUrl() {
 
 export function saveServerSession(session) {
   localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  window.dispatchEvent(new CustomEvent('apollo:server-session-updated', { detail: session }));
 }
 
 export function loadServerSession() {
@@ -57,6 +58,7 @@ export function loadServerSession() {
 
 export function clearServerSession() {
   localStorage.removeItem(SESSION_KEY);
+  window.dispatchEvent(new CustomEvent('apollo:server-session-updated', { detail: null }));
 }
 
 async function apiFetch(path, options = {}, session = null, retryOnAuth = true) {
