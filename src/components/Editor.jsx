@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
 import { ArrowLeft, Download, Play, Pause, Square, Volume2, Circle, Upload, SkipBack, SkipForward, Settings, Lock, WifiOff } from 'lucide-react';
 import useStore from '../store/useStore';
 import { audioManager } from '../lib/audioManager';
@@ -45,6 +45,19 @@ import {
 
 const SUPPORTED_IMPORT_EXTENSIONS = new Set(['wav', 'mp3', 'flac']);
 const TRACK_CONFIG_COLUMN_WIDTH_PX = 384;
+const VALUE_ANIMATION_DURATION_MS = 800;
+
+function easeInOutQuint(t) {
+  if (t < 0.5) {
+    return 16 * t * t * t * t * t;
+  }
+  return 1 - Math.pow(-2 * t + 2, 5) / 2;
+}
+
+function toFiniteNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
 
 const isFileDragEvent = (event) => {
   const types = event?.dataTransfer?.types;
@@ -89,13 +102,15 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
     outputDeviceId: '',
     recordingOffsetMs: 0,
   });
-  const [masterVolume, setMasterVolume] = useState(100);
+  const [masterVolume, setMasterVolume] = useState(() => toFiniteNumber(project?.masterVolume, 100));
   const [masterEditTooltip, setMasterEditTooltip] = useState(null);
   const [masterDragTooltip, setMasterDragTooltip] = useState(null);
   const [trackListContextMenu, setTrackListContextMenu] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [selectedRowKind, setSelectedRowKind] = useState(null);
   const masterDragRef = useRef(null);
+  const masterVolumeRef = useRef(toFiniteNumber(project?.masterVolume, 100));
+  const masterAnimationFrameRef = useRef(null);
   const [isEditingProjectName, setIsEditingProjectName] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState('');
   const [mediaMap, setMediaMap] = useState(new Map());
@@ -125,6 +140,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
   const {
     connected: syncConnected,
     syncError,
+    remoteAnimation,
     lockByTrackId,
     lockHelpers,
   } = useRealtimeProjectSync({
@@ -144,11 +160,86 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
   }, [project]);
 
   useEffect(() => {
-    if (!project) return;
-    if (typeof project.masterVolume === 'number') {
-      setMasterVolume(project.masterVolume);
+    masterVolumeRef.current = masterVolume;
+  }, [masterVolume]);
+
+  const stopMasterVolumeAnimation = useCallback(() => {
+    if (masterAnimationFrameRef.current) {
+      cancelAnimationFrame(masterAnimationFrameRef.current);
+      masterAnimationFrameRef.current = null;
     }
+  }, []);
+
+  const startMasterVolumeAnimation = useCallback(
+    (fromRaw, toRaw, durationRaw = VALUE_ANIMATION_DURATION_MS) => {
+      const from = toFiniteNumber(fromRaw, masterVolumeRef.current);
+      const to = toFiniteNumber(toRaw, from);
+      const durationMs = Math.max(1, Number(durationRaw) || VALUE_ANIMATION_DURATION_MS);
+
+      stopMasterVolumeAnimation();
+
+      if (Math.abs(from - to) <= 1e-6) {
+        masterVolumeRef.current = to;
+        setMasterVolume(to);
+        return;
+      }
+
+      masterVolumeRef.current = from;
+      setMasterVolume(from);
+
+      const startedAt = performance.now();
+      const step = (now) => {
+        const progress = Math.min(1, (now - startedAt) / durationMs);
+        const eased = easeInOutQuint(progress);
+        const nextValue = from + ((to - from) * eased);
+        masterVolumeRef.current = nextValue;
+        setMasterVolume(nextValue);
+
+        if (progress < 1) {
+          masterAnimationFrameRef.current = requestAnimationFrame(step);
+          return;
+        }
+
+        masterAnimationFrameRef.current = null;
+        masterVolumeRef.current = to;
+        setMasterVolume(to);
+      };
+
+      masterAnimationFrameRef.current = requestAnimationFrame(step);
+    },
+    [stopMasterVolumeAnimation]
+  );
+
+  useLayoutEffect(() => {
+    if (!remoteAnimation?.token) return;
+    const master = remoteAnimation?.masterVolume;
+    if (!master) return;
+
+    const from = masterAnimationFrameRef.current
+      ? masterVolumeRef.current
+      : toFiniteNumber(master?.from, masterVolumeRef.current);
+    const to = toFiniteNumber(master?.to, from);
+    const durationMs = Number(remoteAnimation.durationMs || VALUE_ANIMATION_DURATION_MS);
+    startMasterVolumeAnimation(from, to, durationMs);
+  }, [remoteAnimation?.token, startMasterVolumeAnimation]);
+
+  useEffect(() => {
+    if (!project) return;
+    if (masterDragRef.current) return;
+    if (masterAnimationFrameRef.current) return;
+
+    const nextMaster = toFiniteNumber(project.masterVolume, 100);
+    if (Math.abs(nextMaster - masterVolumeRef.current) <= 1e-6) return;
+    masterVolumeRef.current = nextMaster;
+    setMasterVolume(nextMaster);
   }, [project?.masterVolume]);
+
+  useEffect(
+    () => () => {
+      stopMasterVolumeAnimation();
+    },
+    [stopMasterVolumeAnimation]
+  );
 
   useEffect(() => {
     if (project) {
@@ -354,15 +445,18 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
       if (!masterDragRef.current) return;
       const { startX, startValue, width, moved } = masterDragRef.current;
       const deltaX = e.clientX - startX;
-      if (!moved && Math.abs(deltaX) < 2) return;
-      masterDragRef.current.moved = true;
-      if (masterEditTooltip) setMasterEditTooltip(null);
+      if (!moved) {
+        if (Math.abs(deltaX) < 2) return;
+        masterDragRef.current.moved = true;
+        setMasterEditTooltip(null);
+      }
       const next = Math.min(100, Math.max(0, startValue + (deltaX / width) * 100));
       if (Math.abs(next - masterDragRef.current.lastValue) < 1e-6) {
         setMasterDragTooltip(next);
         return;
       }
       masterDragRef.current.lastValue = next;
+      masterVolumeRef.current = next;
       setMasterVolume(next);
       setMasterDragTooltip(next);
     };
@@ -1918,7 +2012,8 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
   };
 
   const handleMasterVolumeDoubleClick = () => {
-    const display = masterVolume <= 0 ? '-∞' : volumeToDb(masterVolume).toFixed(1);
+    const currentValue = toFiniteNumber(masterVolumeRef.current, masterVolume);
+    const display = currentValue <= 0 ? '-∞' : volumeToDb(currentValue).toFixed(1);
     setMasterEditTooltip({ text: display });
   };
 
@@ -1942,11 +2037,14 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
       const targetPeak = 0.9999;
       const gainFactor = targetPeak / peak;
 
-      const currentDb = volumeToDb(masterVolume);
+      const currentDb = volumeToDb(toFiniteNumber(masterVolumeRef.current, masterVolume));
       const desiredDb = currentDb + (20 * Math.log10(gainFactor));
       const nextVolume = dbToVolume(Math.max(-60, Math.min(6, desiredDb)));
 
-      applyMasterVolume(nextVolume);
+      applyMasterVolume(nextVolume, {
+        animate: true,
+        durationMs: VALUE_ANIMATION_DURATION_MS,
+      });
 
       if (gainFactor > 1 && nextVolume >= 100) {
         alert('Master volume is already at maximum; could not reach 0 dBFS peak without exceeding limits.');
@@ -1972,27 +2070,72 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
   const handleMasterVolumeMouseDown = (e) => {
     if (e.button !== 0) return;
     e.preventDefault();
+    stopMasterVolumeAnimation();
     if (masterEditTooltip) setMasterEditTooltip(null);
     const rect = e.currentTarget.getBoundingClientRect();
-    setMasterDragTooltip(masterVolume);
+    const currentValue = toFiniteNumber(masterVolumeRef.current, masterVolume);
+    setMasterDragTooltip(currentValue);
     masterDragRef.current = {
       startX: e.clientX,
-      startValue: masterVolume,
-      lastValue: masterVolume,
+      startValue: currentValue,
+      lastValue: currentValue,
       width: rect.width,
       moved: false,
     };
   };
 
-  const applyMasterVolume = (value) => {
-    const currentMaster = Number(projectRef.current?.masterVolume);
-    if (Number.isFinite(currentMaster) && Math.abs(currentMaster - value) < 1e-6) return;
-    setMasterVolume(value);
-    updateProject((proj) => ({
-      ...proj,
-      masterVolume: value,
-    }), 'Set master volume');
-  };
+  const applyMasterVolume = useCallback(
+    (value, options = {}) => {
+      const nextVolume = Math.min(100, Math.max(0, toFiniteNumber(value, masterVolumeRef.current)));
+      const shouldAnimate = Boolean(options?.animate);
+      const durationMs = Number(options?.durationMs || VALUE_ANIMATION_DURATION_MS);
+      const currentUiMaster = toFiniteNumber(masterVolumeRef.current, nextVolume);
+      const currentProjectMaster = toFiniteNumber(projectRef.current?.masterVolume, currentUiMaster);
+      const projectNeedsUpdate = Math.abs(currentProjectMaster - nextVolume) > 1e-6;
+
+      if (shouldAnimate) {
+        startMasterVolumeAnimation(currentUiMaster, nextVolume, durationMs);
+      } else {
+        stopMasterVolumeAnimation();
+        masterVolumeRef.current = nextVolume;
+        setMasterVolume(nextVolume);
+      }
+
+      if (!projectNeedsUpdate) return;
+      updateProject((proj) => ({
+        ...proj,
+        masterVolume: nextVolume,
+      }), 'Set master volume');
+    },
+    [startMasterVolumeAnimation, stopMasterVolumeAnimation, updateProject]
+  );
+
+  const parseMasterVolumeInput = useCallback((rawText) => {
+    const text = String(rawText || '').trim();
+    if (!text) return dbToVolume(0);
+
+    const normalized = text.toLowerCase();
+    if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
+      return 0;
+    }
+
+    const parsed = parseFloat(text);
+    if (Number.isNaN(parsed)) return null;
+    return dbToVolume(Math.min(6, Math.max(-60, parsed)));
+  }, []);
+
+  const commitMasterEditTooltip = useCallback(() => {
+    if (!masterEditTooltip) return;
+
+    const nextVolume = parseMasterVolumeInput(masterEditTooltip.text);
+    if (nextVolume !== null) {
+      applyMasterVolume(nextVolume, {
+        animate: true,
+        durationMs: VALUE_ANIMATION_DURATION_MS,
+      });
+    }
+    setMasterEditTooltip(null);
+  }, [applyMasterVolume, masterEditTooltip, parseMasterVolumeInput]);
 
   const commitProjectName = () => {
     const nextName = normalizeProjectName(projectNameDraft);
@@ -2599,42 +2742,14 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
                         type="text"
                         value={masterEditTooltip.text}
                         onChange={(e) => setMasterEditTooltip({ text: e.target.value })}
-                      onFocus={(e) => e.target.select()}
-                      onBlur={() => {
-                        const text = masterEditTooltip.text.trim();
-                        if (!text) {
-                          applyMasterVolume(dbToVolume(0));
-                        } else {
-                          const normalized = text.toLowerCase();
-                          if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
-                            applyMasterVolume(0);
-                          } else {
-                            const parsed = parseFloat(text);
-                            if (!Number.isNaN(parsed)) {
-                              applyMasterVolume(dbToVolume(Math.min(6, Math.max(-60, parsed))));
-                            }
-                          }
-                        }
-                        setMasterEditTooltip(null);
-                      }}
+                        onFocus={(e) => e.target.select()}
+                        onBlur={commitMasterEditTooltip}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
-                            const text = masterEditTooltip.text.trim();
-                          if (!text) {
-                            applyMasterVolume(dbToVolume(0));
-                          } else {
-                            const normalized = text.toLowerCase();
-                            if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
-                              applyMasterVolume(0);
-                            } else {
-                              const parsed = parseFloat(text);
-                              if (!Number.isNaN(parsed)) {
-                                applyMasterVolume(dbToVolume(Math.min(6, Math.max(-60, parsed))));
-                              }
-                            }
-                          }
-                            setMasterEditTooltip(null);
+                            e.preventDefault();
+                            e.currentTarget.blur();
                           } else if (e.key === 'Escape') {
+                            e.preventDefault();
                             setMasterEditTooltip(null);
                           }
                         }}
@@ -2686,6 +2801,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
         <Timeline
           project={treeProject}
           rows={timelineRows}
+          remoteAnimation={remoteAnimation}
           currentTimeMs={currentTimeMs}
           isPlaying={isPlaying}
           isRecording={isRecording}
@@ -2739,6 +2855,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
                     <TrackList
                       tracks={treeProject.tracks}
                       rows={timelineRows}
+                      remoteAnimation={remoteAnimation}
                       trackEffectiveRoleById={trackEffectiveRoleById}
                       onUpdateTrack={handleUpdateTrack}
                       onUpdateGroup={handleUpdateGroup}
