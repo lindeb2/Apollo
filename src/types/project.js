@@ -87,6 +87,7 @@ export function normalizeExportSettings(settings = {}) {
  * @property {string} version - Project format version
  * @property {string} projectId - UUID
  * @property {string} projectName - Project name
+ * @property {string} musicalNumber - Musical number (must start with "<number>.")
  * @property {number} sampleRate - Sample rate (always 44100)
  * @property {number} masterVolume - Master volume (0-100)
  * @property {Object} autoPan - Auto-pan configuration
@@ -113,12 +114,14 @@ export function createEmptyProject(
   name = 'Untitled Project',
   autoPan = null,
   exportSettings = null,
-  panLawDb = DEFAULT_PAN_LAW_DB
+  panLawDb = DEFAULT_PAN_LAW_DB,
+  musicalNumber = '0.0'
 ) {
   return {
     version: '1.0.0',
     projectId: createId(),
     projectName: name,
+    musicalNumber: String(musicalNumber || '0.0').trim() || '0.0',
     sampleRate: SAMPLE_RATE,
     masterVolume: dbToVolume(0),
     autoPan: autoPan ?? { ...DEFAULT_AUTO_PAN_SETTINGS },

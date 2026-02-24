@@ -42,6 +42,14 @@ function toSafeName(name, fallback = 'file') {
   return (name || fallback).replace(/[^a-zA-Z0-9._-]+/g, '_');
 }
 
+function normalizeMusicalNumber(value) {
+  return String(value || '').trim();
+}
+
+function isValidMusicalNumber(value) {
+  return /^[0-9]+\..+$/.test(normalizeMusicalNumber(value));
+}
+
 async function ensureMediaRoot() {
   await fs.mkdir(config.mediaRoot, { recursive: true });
 }
@@ -493,6 +501,7 @@ app.patch('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) =>
 app.get('/api/projects', requireAuth, async (req, res) => {
   const result = await pool.query(
     `SELECT p.id, p.name,
+            p.musical_number AS "musicalNumber",
             pp.can_read AS "canRead",
             pp.can_write AS "canWrite",
             ph.latest_seq AS "latestSeq",
@@ -515,19 +524,27 @@ app.post('/api/projects', requireAuth, async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim();
     const initialSnapshot = req.body?.initialSnapshot;
+    const requestedMusicalNumber = normalizeMusicalNumber(
+      req.body?.musicalNumber ?? initialSnapshot?.musicalNumber ?? '0.0'
+    );
 
     if (!name) {
       res.status(400).json({ error: 'Project name is required' });
       return;
     }
+    if (!isValidMusicalNumber(requestedMusicalNumber)) {
+      res.status(400).json({ error: 'Musical number must start with "<number>." (example: 2.1)' });
+      return;
+    }
 
     const projectId = String(req.body?.projectId || randomUUID());
     const snapshot = initialSnapshot && typeof initialSnapshot === 'object'
-      ? { ...initialSnapshot, projectId, projectName: name }
+      ? { ...initialSnapshot, projectId, projectName: name, musicalNumber: requestedMusicalNumber }
       : {
         version: '1.0.0',
         projectId,
         projectName: name,
+        musicalNumber: requestedMusicalNumber,
         sampleRate: 44100,
         masterVolume: 100,
         tracks: [],
@@ -540,9 +557,9 @@ app.post('/api/projects', requireAuth, async (req, res) => {
     try {
       await client.query('BEGIN');
       await client.query(
-        `INSERT INTO projects(id, name, created_by)
-         VALUES($1, $2, $3)`,
-        [projectId, name, req.user.id]
+        `INSERT INTO projects(id, name, musical_number, created_by)
+         VALUES($1, $2, $3, $4)`,
+        [projectId, name, requestedMusicalNumber, req.user.id]
       );
 
       await client.query(
@@ -589,6 +606,7 @@ app.post('/api/projects', requireAuth, async (req, res) => {
       project: {
         id: projectId,
         name,
+        musicalNumber: requestedMusicalNumber,
         latestSeq: 0,
       },
       snapshot,
@@ -680,18 +698,45 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
   if (!permission) return;
 
   try {
-    const name = String(req.body?.name || '').trim();
-    if (!name) {
-      res.status(400).json({ error: 'Project name is required' });
+    const hasName = Object.prototype.hasOwnProperty.call(req.body || {}, 'name');
+    const hasMusicalNumber = Object.prototype.hasOwnProperty.call(req.body || {}, 'musicalNumber');
+    if (!hasName && !hasMusicalNumber) {
+      res.status(400).json({ error: 'At least one field is required' });
       return;
     }
 
+    const updates = [];
+    const values = [permission.projectId];
+    let idx = 2;
+
+    if (hasName) {
+      const name = String(req.body?.name || '').trim();
+      if (!name) {
+        res.status(400).json({ error: 'Project name is required' });
+        return;
+      }
+      updates.push(`name = $${idx++}`);
+      values.push(name);
+    }
+
+    if (hasMusicalNumber) {
+      const musicalNumber = normalizeMusicalNumber(req.body?.musicalNumber);
+      if (!isValidMusicalNumber(musicalNumber)) {
+        res.status(400).json({ error: 'Musical number must start with "<number>." (example: 2.1)' });
+        return;
+      }
+      updates.push(`musical_number = $${idx++}`);
+      values.push(musicalNumber);
+    }
+
+    updates.push('updated_at = NOW()');
+
     const updated = await pool.query(
       `UPDATE projects
-       SET name = $2, updated_at = NOW()
+       SET ${updates.join(', ')}
        WHERE id = $1
-       RETURNING id, name`,
-      [permission.projectId, name]
+       RETURNING id, name, musical_number AS "musicalNumber"`,
+      values
     );
 
     if (updated.rowCount === 0) {

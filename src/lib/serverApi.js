@@ -141,16 +141,19 @@ export async function createServerProject(name, session, options = null) {
     : createEmptyProject(name);
   const projectId = String(options?.projectId || initial.projectId || createId());
   const projectName = String(options?.name || name || initial.projectName || '').trim();
+  const musicalNumber = String(options?.musicalNumber || initial.musicalNumber || '0.0').trim();
   const snapshot = {
     ...initial,
     projectId,
     projectName: projectName || initial.projectName,
+    musicalNumber: musicalNumber || '0.0',
   };
 
   const payload = await apiFetch('/api/projects', {
     method: 'POST',
     body: {
       name: snapshot.projectName,
+      musicalNumber: snapshot.musicalNumber,
       projectId,
       initialSnapshot: snapshot,
     },
@@ -168,6 +171,13 @@ export async function renameServerProject(projectId, name, session) {
   return await apiFetch(`/api/projects/${encodeURIComponent(projectId)}`, {
     method: 'PATCH',
     body: { name },
+  }, session);
+}
+
+export async function updateServerProjectMusicalNumber(projectId, musicalNumber, session) {
+  return await apiFetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: 'PATCH',
+    body: { musicalNumber },
   }, session);
 }
 

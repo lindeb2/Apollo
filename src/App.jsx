@@ -19,6 +19,7 @@ import {
   login,
   logout,
   renameServerProject,
+  updateServerProjectMusicalNumber,
   registerMedia,
   saveServerSession,
   uploadMedia,
@@ -135,11 +136,11 @@ function App() {
     }
   };
 
-  const handleCreateServerProject = async (name) => {
+  const handleCreateServerProject = async (name, musicalNumber) => {
     setServerError('');
     setServerLoading(true);
     try {
-      const created = await createServerProject(name, serverSession);
+      const created = await createServerProject(name, serverSession, { musicalNumber });
       await refreshServerData();
       if (created?.project) {
         await handleOpenServerProject(created.project);
@@ -237,6 +238,19 @@ function App() {
     }
   };
 
+  const handleUpdateServerProjectMusicalNumber = async (projectMeta, musicalNumber) => {
+    setServerError('');
+    setServerLoading(true);
+    try {
+      await updateServerProjectMusicalNumber(projectMeta.id, musicalNumber, serverSession);
+      await refreshServerData();
+    } catch (error) {
+      setServerError(error.message || 'Failed to update musical number');
+    } finally {
+      setServerLoading(false);
+    }
+  };
+
   const handleBackToDashboard = () => {
     setRemoteEditorSession(null);
     setView('dashboard');
@@ -271,6 +285,7 @@ function App() {
             onLogout={handleServerLogout}
             onDeleteProject={handleDeleteServerProject}
             onRenameProject={handleRenameServerProject}
+            onUpdateMusicalNumber={handleUpdateServerProjectMusicalNumber}
             loading={serverLoading}
             error={serverError}
           />

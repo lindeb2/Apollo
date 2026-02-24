@@ -1368,6 +1368,8 @@ function Timeline({
               )),
             })),
           }), shouldMute ? 'Mute clips' : 'Unmute clips');
+        } else {
+          commitDragPreview(dragState, dragPreviewRef.current);
         }
         rightClickDragRef.current = false;
       } else {

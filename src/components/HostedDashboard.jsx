@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { FolderOpen, Plus, Download, FileAudio, LogOut } from 'lucide-react';
-import { normalizeProjectName } from '../utils/naming';
+import { isValidMusicalNumber, normalizeMusicalNumber, normalizeProjectName } from '../utils/naming';
 
 function HostedDashboard({
   session,
@@ -11,10 +11,12 @@ function HostedDashboard({
   onImportProject,
   onDeleteProject,
   onRenameProject,
+  onUpdateMusicalNumber,
   loading = false,
   error = '',
 }) {
   const [newProjectName, setNewProjectName] = useState('');
+  const [newMusicalNumber, setNewMusicalNumber] = useState('0.0');
   const [showNewProjectDialog, setShowNewProjectDialog] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
@@ -22,7 +24,10 @@ function HostedDashboard({
   const [editingProjectName, setEditingProjectName] = useState('');
 
   const formatRelativeTime = (timestamp) => {
-    const value = Number(timestamp);
+    const numeric = Number(timestamp);
+    const value = Number.isFinite(numeric)
+      ? numeric
+      : Date.parse(String(timestamp || ''));
     if (!Number.isFinite(value)) return 'unknown';
 
     const diffMs = Date.now() - value;
@@ -46,9 +51,11 @@ function HostedDashboard({
 
   const handleCreateProject = async () => {
     const normalizedName = normalizeProjectName(newProjectName);
-    if (!normalizedName) return;
-    await onCreateProject(normalizedName);
+    const normalizedMusicalNumber = normalizeMusicalNumber(newMusicalNumber);
+    if (!normalizedName || !isValidMusicalNumber(normalizedMusicalNumber)) return;
+    await onCreateProject(normalizedName, normalizedMusicalNumber);
     setNewProjectName('');
+    setNewMusicalNumber('0.0');
     setShowNewProjectDialog(false);
   };
 
@@ -151,11 +158,25 @@ function HostedDashboard({
                 className="w-full bg-gray-900 border border-gray-700 rounded px-4 py-2 mb-4 focus:outline-none focus:border-blue-500"
                 autoFocus
               />
+              <input
+                type="text"
+                value={newMusicalNumber}
+                onChange={(e) => setNewMusicalNumber(e.target.value)}
+                placeholder="Musical number (e.g. 0.0, 2.1, 3.dk)"
+                className={`w-full bg-gray-900 border rounded px-4 py-2 mb-2 focus:outline-none ${
+                  isValidMusicalNumber(newMusicalNumber) ? 'border-gray-700 focus:border-blue-500' : 'border-red-500 focus:border-red-400'
+                }`}
+              />
+              <p className="text-xs text-gray-400 mb-4">Must start with a number and dot, e.g. <code>0.0</code>, <code>2.1</code>, <code>3.dk</code>.</p>
               <div className="flex gap-2">
                 <button
                   onClick={handleCreateProject}
                   className="flex-1 bg-blue-600 hover:bg-blue-700 text-white rounded px-4 py-2 transition-colors disabled:bg-gray-700"
-                  disabled={!normalizeProjectName(newProjectName) || loading}
+                  disabled={
+                    !normalizeProjectName(newProjectName)
+                    || !isValidMusicalNumber(newMusicalNumber)
+                    || loading
+                  }
                 >
                   Create
                 </button>
@@ -163,6 +184,7 @@ function HostedDashboard({
                   onClick={() => {
                     setShowNewProjectDialog(false);
                     setNewProjectName('');
+                    setNewMusicalNumber('0.0');
                   }}
                   className="flex-1 bg-gray-700 hover:bg-gray-600 text-white rounded px-4 py-2 transition-colors"
                 >
@@ -233,6 +255,8 @@ function HostedDashboard({
                       </h3>
                     )}
                     <div className="text-sm text-gray-400 mt-1">
+                      <span>Musical: {project.musicalNumber || '0.0'}</span>
+                      <span className="mx-2">•</span>
                       <span>{project.trackCount ?? 0} tracks</span>
                       <span className="mx-2">•</span>
                       <span>Last modified: {formatRelativeTime(project.updatedAt)}</span>
@@ -258,6 +282,26 @@ function HostedDashboard({
             }}
           >
             Rename
+          </button>
+          <button
+            className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700"
+            onClick={async () => {
+              const project = contextMenu.project;
+              setContextMenu(null);
+              const nextRaw = window.prompt(
+                'Set musical number (must start with "<number>.", e.g. 2.1)',
+                project.musicalNumber || '0.0'
+              );
+              if (nextRaw === null) return;
+              const normalized = normalizeMusicalNumber(nextRaw);
+              if (!isValidMusicalNumber(normalized)) {
+                window.alert('Invalid musical number format. Example valid values: 0.0, 2.1, 3.dk');
+                return;
+              }
+              await onUpdateMusicalNumber?.(project, normalized);
+            }}
+          >
+            Set Musical Number
           </button>
           <button
             className="w-full text-left px-3 py-1.5 text-sm text-red-300 hover:bg-gray-700"

@@ -41,6 +41,38 @@ function collectBlobIds(project) {
   return Array.from(ids);
 }
 
+function remapProjectBlobIds(project, idMap) {
+  if (!project || typeof project !== 'object' || !idMap || idMap.size === 0) {
+    return project;
+  }
+
+  let changed = false;
+  const nextTracks = (project.tracks || []).map((track) => {
+    let trackChanged = false;
+    const nextClips = (track.clips || []).map((clip) => {
+      const mapped = idMap.get(clip?.blobId);
+      if (!mapped || mapped === clip?.blobId) return clip;
+      trackChanged = true;
+      changed = true;
+      return {
+        ...clip,
+        blobId: mapped,
+      };
+    });
+    if (!trackChanged) return track;
+    return {
+      ...track,
+      clips: nextClips,
+    };
+  });
+
+  if (!changed) return project;
+  return {
+    ...project,
+    tracks: nextTracks,
+  };
+}
+
 function isMissingMediaBlobError(error) {
   const message = String(error?.message || '');
   return /^Media blob .+ not found$/.test(message);
@@ -233,9 +265,10 @@ export default function useRealtimeProjectSync({
   }), []);
 
   const ensureMediaUploaded = useCallback(async (currentProject) => {
-    if (!session) return;
+    if (!session) return currentProject;
 
     const blobIds = collectBlobIds(currentProject);
+    const canonicalByBlobId = new Map();
     for (const blobId of blobIds) {
       if (uploadedBlobIdsRef.current.has(blobId)) continue;
 
@@ -258,6 +291,11 @@ export default function useRealtimeProjectSync({
         sizeBytes: media.blob.size,
         fileName: media.fileName || blobId,
       }, session);
+      const canonicalMediaId = String(registration?.mediaId || blobId);
+      if (canonicalMediaId !== blobId) {
+        canonicalByBlobId.set(blobId, canonicalMediaId);
+        uploadedBlobIdsRef.current.add(canonicalMediaId);
+      }
 
       if (!registration.exists) {
         await uploadMedia(blobId, media.blob, session);
@@ -265,6 +303,7 @@ export default function useRealtimeProjectSync({
 
       uploadedBlobIdsRef.current.add(blobId);
     }
+    return remapProjectBlobIds(currentProject, canonicalByBlobId);
   }, [session]);
 
   useEffect(() => {
@@ -333,7 +372,16 @@ export default function useRealtimeProjectSync({
       const pending = await getPendingSyncOp(projectId);
       if (!pending?.payload) return;
       const payload = pending.payload;
-      await ensureMediaUploaded(payload.project);
+      const uploadReadyProject = await ensureMediaUploaded(payload.project);
+      if (uploadReadyProject !== payload.project) {
+        payload.project = uploadReadyProject;
+        payload.op = {
+          ...(payload.op || {}),
+          type: 'project.replace',
+          project: uploadReadyProject,
+        };
+        await upsertPendingSyncOp(projectId, payload);
+      }
       if (payload.clientOpId) {
         localClientOpIdsRef.current.add(String(payload.clientOpId));
       }
@@ -496,10 +544,19 @@ export default function useRealtimeProjectSync({
 
       try {
         await upsertPendingSyncOp(projectId, { op, clientOpId, project });
-        await ensureMediaUploaded(project);
+        const uploadReadyProject = await ensureMediaUploaded(project);
+        const opToSend = uploadReadyProject === project
+          ? op
+          : {
+            ...op,
+            project: uploadReadyProject,
+          };
+        if (opToSend !== op) {
+          await upsertPendingSyncOp(projectId, { op: opToSend, clientOpId, project: uploadReadyProject });
+        }
 
         localClientOpIdsRef.current.add(clientOpId);
-        const sent = clientRef.current.submitOp(op, clientOpId);
+        const sent = clientRef.current.submitOp(opToSend, clientOpId);
         if (!sent) return;
       } catch (error) {
         setSyncError(error.message || 'Failed to sync project update');
