@@ -105,6 +105,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
   const [masterVolume, setMasterVolume] = useState(() => toFiniteNumber(project?.masterVolume, 100));
   const [masterEditTooltip, setMasterEditTooltip] = useState(null);
   const [masterDragTooltip, setMasterDragTooltip] = useState(null);
+  const [showDisconnectedIndicator, setShowDisconnectedIndicator] = useState(false);
   const [trackListContextMenu, setTrackListContextMenu] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [selectedRowKind, setSelectedRowKind] = useState(null);
@@ -153,6 +154,21 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
   useEffect(() => {
     lockByTrackIdRef.current = lockByTrackId || {};
   }, [lockByTrackId]);
+
+  useEffect(() => {
+    if (!isHostedSession) {
+      setShowDisconnectedIndicator(false);
+      return undefined;
+    }
+    if (syncConnected) {
+      setShowDisconnectedIndicator(false);
+      return undefined;
+    }
+    const timeoutId = setTimeout(() => {
+      setShowDisconnectedIndicator(true);
+    }, 2500);
+    return () => clearTimeout(timeoutId);
+  }, [isHostedSession, syncConnected]);
 
   // Keep project ref updated
   useEffect(() => {
@@ -2730,7 +2746,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
                   )}
                 </button>
 
-                {isHostedSession && !syncConnected && (
+                {isHostedSession && showDisconnectedIndicator && !syncConnected && (
                   <div className="p-1 text-red-500" title="Disconnected from server">
                     <WifiOff size={18} />
                   </div>
