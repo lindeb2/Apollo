@@ -124,6 +124,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
 
   const {
     connected: syncConnected,
+    syncError,
     lockByTrackId,
     lockHelpers,
   } = useRealtimeProjectSync({
@@ -2552,6 +2553,12 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
                 {isHostedSession && !syncConnected && (
                   <div className="p-1 text-red-500" title="Disconnected from server">
                     <WifiOff size={18} />
+                  </div>
+                )}
+
+                {isHostedSession && syncError && (
+                  <div className="text-xs text-red-300 max-w-56 truncate" title={syncError}>
+                    Sync error: {syncError}
                   </div>
                 )}
               </div>

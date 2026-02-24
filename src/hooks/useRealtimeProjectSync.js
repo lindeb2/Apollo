@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRealtimeSyncClient } from '../lib/realtimeSyncClient';
 import {
   clearPendingSyncOp,
@@ -55,6 +55,7 @@ export default function useRealtimeProjectSync({
   const [latestSeq, setLatestSeq] = useState(0);
   const [syncError, setSyncError] = useState('');
   const [lockByTrackId, setLockByTrackId] = useState({});
+  const [joined, setJoined] = useState(false);
   const [retryTick, setRetryTick] = useState(0);
 
   const clientRef = useRef(null);
@@ -78,6 +79,41 @@ export default function useRealtimeProjectSync({
     },
   }), []);
 
+  const ensureMediaUploaded = useCallback(async (currentProject) => {
+    if (!session) return;
+
+    const blobIds = collectBlobIds(currentProject);
+    for (const blobId of blobIds) {
+      if (uploadedBlobIdsRef.current.has(blobId)) continue;
+
+      let media;
+      try {
+        media = await getMediaBlob(blobId);
+      } catch (error) {
+        if (isMissingMediaBlobError(error)) {
+          // Preserve forward progress for sync: keep submitting project updates even
+          // if some historical media IDs are unavailable in local IndexedDB.
+          continue;
+        }
+        throw error;
+      }
+      const sha256 = await hashBlob(media.blob);
+      const registration = await registerMedia({
+        mediaId: blobId,
+        sha256,
+        mimeType: media.blob.type || 'application/octet-stream',
+        sizeBytes: media.blob.size,
+        fileName: media.fileName || blobId,
+      }, session);
+
+      if (!registration.exists) {
+        await uploadMedia(blobId, media.blob, session);
+      }
+
+      uploadedBlobIdsRef.current.add(blobId);
+    }
+  }, [session]);
+
   useEffect(() => {
     latestSeqRef.current = latestSeq;
   }, [latestSeq]);
@@ -87,6 +123,7 @@ export default function useRealtimeProjectSync({
 
     let disposed = false;
     setLockByTrackId({});
+    setJoined(false);
 
     const applyRemoteSnapshot = async (snapshot, seq) => {
       if (!snapshot || typeof snapshot !== 'object') return;
@@ -105,39 +142,6 @@ export default function useRealtimeProjectSync({
       setTimeout(() => {
         applyingRemoteRef.current = false;
       }, 0);
-    };
-
-    const ensureMediaUploaded = async (currentProject) => {
-      const blobIds = collectBlobIds(currentProject);
-      for (const blobId of blobIds) {
-        if (uploadedBlobIdsRef.current.has(blobId)) continue;
-
-        let media;
-        try {
-          media = await getMediaBlob(blobId);
-        } catch (error) {
-          if (isMissingMediaBlobError(error)) {
-            // Preserve forward progress for sync: keep submitting project updates even
-            // if some historical media IDs are unavailable in local IndexedDB.
-            continue;
-          }
-          throw error;
-        }
-        const sha256 = await hashBlob(media.blob);
-        const registration = await registerMedia({
-          mediaId: blobId,
-          sha256,
-          mimeType: media.blob.type || 'application/octet-stream',
-          sizeBytes: media.blob.size,
-          fileName: media.fileName || blobId,
-        }, session);
-
-        if (!registration.exists) {
-          await uploadMedia(blobId, media.blob, session);
-        }
-
-        uploadedBlobIdsRef.current.add(blobId);
-      }
     };
 
     const flushPending = async () => {
@@ -161,13 +165,6 @@ export default function useRealtimeProjectSync({
           if (disposed) return;
           setConnected(true);
           setSyncError('');
-          try {
-            await flushPending();
-          } catch (error) {
-            if (!disposed) {
-              setSyncError(error?.message || 'Failed to flush pending sync operations');
-            }
-          }
         },
         onDisconnected: () => {
           if (disposed) return;
@@ -175,6 +172,7 @@ export default function useRealtimeProjectSync({
         },
         onJoined: async (message) => {
           if (disposed) return;
+          setJoined(true);
           const seq = Number(message.latestSeq || 0);
           if (message.snapshot) {
             await applyRemoteSnapshot(message.snapshot, seq);
@@ -199,7 +197,7 @@ export default function useRealtimeProjectSync({
         onBroadcast: async (message) => {
           if (disposed) return;
           const seq = Number(message.serverSeq || 0);
-          if (seq <= latestSeqRef.current) return;
+          if (seq < latestSeqRef.current) return;
 
           if (message?.op?.type === 'project.replace' && message.op.project) {
             await applyRemoteSnapshot(message.op.project, seq);
@@ -210,6 +208,15 @@ export default function useRealtimeProjectSync({
         onAck: async (message) => {
           if (disposed) return;
           const seq = Number(message.serverSeq || 0);
+          const pending = await getPendingSyncOp(projectId);
+
+          if (pending?.payload?.clientOpId && pending.payload.clientOpId === message.clientOpId) {
+            if (pending?.payload?.op?.type === 'project.replace' && pending.payload.op.project) {
+              await applyRemoteSnapshot(pending.payload.op.project, seq || latestSeqRef.current);
+            }
+            await clearPendingSyncOp(projectId);
+          }
+
           if (seq > 0) {
             setLatestSeq(seq);
             await saveRemoteProjectMeta({
@@ -217,11 +224,6 @@ export default function useRealtimeProjectSync({
               serverProjectId,
               latestSeq: seq,
             });
-          }
-
-          const pending = await getPendingSyncOp(projectId);
-          if (pending?.payload?.clientOpId && pending.payload.clientOpId === message.clientOpId) {
-            await clearPendingSyncOp(projectId);
           }
         },
         onLockState: (message) => {
@@ -245,15 +247,16 @@ export default function useRealtimeProjectSync({
     return () => {
       disposed = true;
       setConnected(false);
+      setJoined(false);
       if (clientRef.current) {
         clientRef.current.dispose();
         clientRef.current = null;
       }
     };
-  }, [enabled, session, serverProjectId, projectId, updateProject, remoteSession?.latestSeq]);
+  }, [enabled, session, serverProjectId, projectId, updateProject, remoteSession?.latestSeq, ensureMediaUploaded]);
 
   useEffect(() => {
-    if (!enabled || !project || !projectId || !session) return;
+    if (!enabled || !project || !projectId || !session || !joined) return;
     if (applyingRemoteRef.current) return;
 
     const snapshot = JSON.stringify(project);
@@ -296,7 +299,7 @@ export default function useRealtimeProjectSync({
     return () => {
       clearTimeout(timeoutId);
     };
-  }, [enabled, project, projectId, session, retryTick]);
+  }, [enabled, project, projectId, session, retryTick, ensureMediaUploaded, joined]);
 
   return {
     connected,
