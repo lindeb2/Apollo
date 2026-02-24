@@ -40,6 +40,11 @@ function collectBlobIds(project) {
   return Array.from(ids);
 }
 
+function isMissingMediaBlobError(error) {
+  const message = String(error?.message || '');
+  return /^Media blob .+ not found$/.test(message);
+}
+
 export default function useRealtimeProjectSync({
   enabled,
   project,
@@ -107,7 +112,17 @@ export default function useRealtimeProjectSync({
       for (const blobId of blobIds) {
         if (uploadedBlobIdsRef.current.has(blobId)) continue;
 
-        const media = await getMediaBlob(blobId);
+        let media;
+        try {
+          media = await getMediaBlob(blobId);
+        } catch (error) {
+          if (isMissingMediaBlobError(error)) {
+            // Preserve forward progress for sync: keep submitting project updates even
+            // if some historical media IDs are unavailable in local IndexedDB.
+            continue;
+          }
+          throw error;
+        }
         const sha256 = await hashBlob(media.blob);
         const registration = await registerMedia({
           mediaId: blobId,
@@ -130,10 +145,7 @@ export default function useRealtimeProjectSync({
       if (!pending?.payload) return;
       const payload = pending.payload;
       await ensureMediaUploaded(payload.project);
-      const sent = clientRef.current?.submitOp(payload.op, payload.clientOpId);
-      if (sent) {
-        await clearPendingSyncOp(projectId);
-      }
+      clientRef.current?.submitOp(payload.op, payload.clientOpId);
     };
 
     (async () => {
@@ -149,7 +161,13 @@ export default function useRealtimeProjectSync({
           if (disposed) return;
           setConnected(true);
           setSyncError('');
-          await flushPending();
+          try {
+            await flushPending();
+          } catch (error) {
+            if (!disposed) {
+              setSyncError(error?.message || 'Failed to flush pending sync operations');
+            }
+          }
         },
         onDisconnected: () => {
           if (disposed) return;
@@ -170,7 +188,13 @@ export default function useRealtimeProjectSync({
               }
             }
           }
-          await flushPending();
+          try {
+            await flushPending();
+          } catch (error) {
+            if (!disposed) {
+              setSyncError(error?.message || 'Failed to flush pending sync operations');
+            }
+          }
         },
         onBroadcast: async (message) => {
           if (disposed) return;
@@ -193,6 +217,11 @@ export default function useRealtimeProjectSync({
               serverProjectId,
               latestSeq: seq,
             });
+          }
+
+          const pending = await getPendingSyncOp(projectId);
+          if (pending?.payload?.clientOpId && pending.payload.clientOpId === message.clientOpId) {
+            await clearPendingSyncOp(projectId);
           }
         },
         onLockState: (message) => {
@@ -243,28 +272,11 @@ export default function useRealtimeProjectSync({
       }
 
       try {
-        const blobIds = collectBlobIds(project);
-        for (const blobId of blobIds) {
-          if (uploadedBlobIdsRef.current.has(blobId)) continue;
-          const media = await getMediaBlob(blobId);
-          const sha256 = await hashBlob(media.blob);
-          const registration = await registerMedia({
-            mediaId: blobId,
-            sha256,
-            mimeType: media.blob.type || 'application/octet-stream',
-            sizeBytes: media.blob.size,
-            fileName: media.fileName || blobId,
-          }, session);
-          if (!registration.exists) {
-            await uploadMedia(blobId, media.blob, session);
-          }
-          uploadedBlobIdsRef.current.add(blobId);
-        }
+        await upsertPendingSyncOp(projectId, { op, clientOpId, project });
+        await ensureMediaUploaded(project);
 
         const sent = clientRef.current.submitOp(op, clientOpId);
-        if (!sent) {
-          await upsertPendingSyncOp(projectId, { op, clientOpId, project });
-        }
+        if (!sent) return;
       } catch (error) {
         setSyncError(error.message || 'Failed to sync project update');
         await upsertPendingSyncOp(projectId, { op, clientOpId, project });

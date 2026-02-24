@@ -36,3 +36,5 @@ yarn-error.log*
 .cache/
 backups/
 server/media/
+certs/*.key
+certs/*.crt

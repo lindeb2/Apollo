@@ -49,7 +49,10 @@ services:
         VITE_SERVER_WS_BASE: /ws
     restart: unless-stopped
     ports:
-      - "3000:80"
+      - "3000:443"
+    volumes:
+      - ./certs/dev.crt:/etc/nginx/certs/dev.crt:ro
+      - ./certs/dev.key:/etc/nginx/certs/dev.key:ro
     depends_on:
       - api
 

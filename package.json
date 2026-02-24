@@ -9,7 +9,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest",
-    "server:start": "npm --prefix server run start"
+    "server:start": "npm --prefix server run start",
+    "dev:https": "./scripts/dev-https.sh",
+    "cert:lan": "./scripts/generate-lan-cert.sh"
   },
   "dependencies": {
     "@breezystack/lamejs": "^1.2.7",
