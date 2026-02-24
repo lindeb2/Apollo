@@ -61,6 +61,10 @@ export function clearServerSession() {
   window.dispatchEvent(new CustomEvent('apollo:server-session-updated', { detail: null }));
 }
 
+function isInvalidRefreshTokenError(error) {
+  return /invalid refresh token/i.test(String(error?.message || ''));
+}
+
 async function apiFetch(path, options = {}, session = null, retryOnAuth = true) {
   const headers = new Headers(options.headers || {});
   if (!headers.has('Content-Type') && options.body && !(options.body instanceof Blob) && !(options.body instanceof ArrayBuffer) && !(options.body instanceof FormData)) {
@@ -85,9 +89,17 @@ async function apiFetch(path, options = {}, session = null, retryOnAuth = true) 
   });
 
   if (response.status === 401 && session?.refreshToken && retryOnAuth) {
-    const refreshed = await refreshSession(session.refreshToken);
-    saveServerSession(refreshed);
-    return await apiFetch(path, options, refreshed, false);
+    try {
+      const refreshed = await refreshSession(session.refreshToken);
+      saveServerSession(refreshed);
+      return await apiFetch(path, options, refreshed, false);
+    } catch (error) {
+      if (isInvalidRefreshTokenError(error)) {
+        clearServerSession();
+        throw new Error('Session expired. Please log in again.');
+      }
+      throw error;
+    }
   }
 
   if (!response.ok) {

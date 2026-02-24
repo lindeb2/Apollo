@@ -1,4 +1,5 @@
 import {
+  clearServerSession,
   getWsUrl,
   loadServerSession,
   refreshSession,
@@ -43,7 +44,7 @@ export function createRealtimeSyncClient({
       connected = true;
       onConnected?.();
       const latestSession = loadServerSession();
-      const accessToken = latestSession?.accessToken || session?.accessToken || '';
+      const accessToken = latestSession?.accessToken || '';
       send('auth.hello', { accessToken });
       send('project.join', {
         projectId,
@@ -73,7 +74,7 @@ export function createRealtimeSyncClient({
           case 'error':
             if (message?.code === 'AUTH_REQUIRED' && !authRefreshInFlight) {
               authRefreshInFlight = true;
-              const activeSession = loadServerSession() || session;
+              const activeSession = loadServerSession();
               const refreshToken = activeSession?.refreshToken || '';
               if (refreshToken) {
                 refreshSession(refreshToken)
@@ -84,8 +85,14 @@ export function createRealtimeSyncClient({
                       ws.close();
                     }
                   })
-                  .catch(() => {
-                    // Let consumer surface auth error.
+                  .catch((error) => {
+                    if (/invalid refresh token/i.test(String(error?.message || ''))) {
+                      clearServerSession();
+                      onError?.({
+                        code: 'AUTH_EXPIRED',
+                        message: 'Session expired. Please log in again. Local edits continue unsynced.',
+                      });
+                    }
                   })
                   .finally(() => {
                     authRefreshInFlight = false;
@@ -107,7 +114,7 @@ export function createRealtimeSyncClient({
     ws.onclose = () => {
       connected = false;
       onDisconnected?.();
-      if (!disposed) {
+      if (!disposed && loadServerSession()?.accessToken) {
         reconnectTimer = setTimeout(connect, 2000);
       }
     };

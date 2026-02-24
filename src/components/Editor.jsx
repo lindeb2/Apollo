@@ -14,7 +14,6 @@ import { AUTO_PAN_STRATEGIES, applyChoirAutoPanToProject } from '../utils/choirA
 import useKeyboardShortcuts from '../utils/useKeyboardShortcuts';
 import { processRecordingOverwrites } from '../utils/clipCollision';
 import { isPrimaryModifierPressed } from '../utils/keyboard';
-import { normalizeProjectName } from '../utils/naming';
 import { reportUserError } from '../utils/errorReporter';
 import { measureTuttiPeak } from '../lib/exportEngine';
 import useRealtimeProjectSync from '../hooks/useRealtimeProjectSync';
@@ -112,8 +111,6 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
   const masterDragRef = useRef(null);
   const masterVolumeRef = useRef(toFiniteNumber(project?.masterVolume, 100));
   const masterAnimationFrameRef = useRef(null);
-  const [isEditingProjectName, setIsEditingProjectName] = useState(false);
-  const [projectNameDraft, setProjectNameDraft] = useState('');
   const [mediaMap, setMediaMap] = useState(new Map());
   const [recordingSegments, setRecordingSegments] = useState([]);
   const [recordingOffsetMs, setRecordingOffsetMs] = useState(0);
@@ -257,11 +254,19 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
     [stopMasterVolumeAnimation]
   );
 
-  useEffect(() => {
-    if (project) {
-      setProjectNameDraft(project.projectName);
-    }
-  }, [project?.projectName]);
+  const headerProjectTitle = useMemo(() => {
+    const projectName = String(
+      remoteSession?.projectName
+      || project?.projectName
+      || 'Untitled Project'
+    ).trim();
+    const musicalNumber = String(
+      remoteSession?.musicalNumber
+      || project?.musicalNumber
+      || '0.0'
+    ).trim();
+    return `${musicalNumber || '0.0'} - ${projectName || 'Untitled Project'}`;
+  }, [remoteSession?.musicalNumber, remoteSession?.projectName, project?.musicalNumber, project?.projectName]);
 
   useEffect(() => {
     const saved = localStorage.getItem('apollo.settings');
@@ -2190,21 +2195,6 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
     setMasterEditTooltip(null);
   }, [applyMasterVolume, masterEditTooltip, parseMasterVolumeInput]);
 
-  const commitProjectName = () => {
-    const nextName = normalizeProjectName(projectNameDraft);
-    if (!nextName || nextName === project.projectName) {
-      setProjectNameDraft(project.projectName);
-      setIsEditingProjectName(false);
-      return;
-    }
-
-    updateProject((proj) => ({
-      ...proj,
-      projectName: nextName,
-    }), 'Rename project');
-    setIsEditingProjectName(false);
-  };
-
   const handleAddEmptyTrack = (options = null) => {
     const trackNumber = project.tracks.length + 1;
     const trackName = `Track ${trackNumber}`;
@@ -2654,32 +2644,9 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
             >
               <Settings size={18} />
             </button>
-            {isEditingProjectName ? (
-              <input
-                type="text"
-                value={projectNameDraft}
-                autoFocus
-                onChange={(e) => setProjectNameDraft(e.target.value)}
-                onBlur={commitProjectName}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    commitProjectName();
-                  } else if (e.key === 'Escape') {
-                    setProjectNameDraft(project.projectName);
-                    setIsEditingProjectName(false);
-                  }
-                }}
-                className="text-lg font-semibold bg-transparent border-b border-blue-500 px-0 py-0 leading-tight focus:outline-none min-w-0"
-              />
-            ) : (
-              <h1
-                className="text-lg font-semibold truncate cursor-text"
-                onDoubleClick={() => setIsEditingProjectName(true)}
-                title="Double-click to rename project"
-              >
-                {project.projectName}
-              </h1>
-            )}
+            <h1 className="text-lg font-semibold truncate" title={headerProjectTitle}>
+              {headerProjectTitle}
+            </h1>
           </div>
 
           <div className="relative min-w-0">

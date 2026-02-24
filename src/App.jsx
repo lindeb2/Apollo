@@ -137,6 +137,8 @@ function App() {
         session: serverSession,
         serverProjectId: projectMeta.id,
         latestSeq: Number(payload.latestSeq || 0),
+        projectName: projectMeta?.name || payload?.project?.name || payload?.snapshot?.projectName || '',
+        musicalNumber: projectMeta?.musicalNumber || payload?.snapshot?.musicalNumber || '0.0',
       });
       setView('editor');
     } catch (error) {
@@ -307,13 +309,13 @@ function App() {
           />
         )
       ) : (
-        <Editor
-          onBackToDashboard={handleBackToDashboard}
-          remoteSession={
-            remoteEditorSession
-              ? {
+          <Editor
+            onBackToDashboard={handleBackToDashboard}
+            remoteSession={
+              remoteEditorSession
+                ? {
                 ...remoteEditorSession,
-                session: serverSession || remoteEditorSession.session,
+                session: serverSession || null,
               }
               : null
           }
