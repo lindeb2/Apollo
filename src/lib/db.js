@@ -262,11 +262,6 @@ export function exportProjectJSON(project) {
 export async function importProjectJSON(jsonString) {
   const project = JSON.parse(jsonString);
   
-  // Validate version
-  if (project.version !== '1.0.0') {
-    throw new Error(`Unsupported project version: ${project.version}`);
-  }
-  
   // Collect all referenced blob IDs
   const blobIds = new Set();
   for (const track of project.tracks) {

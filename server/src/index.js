@@ -628,7 +628,6 @@ app.post('/api/projects', requireAuth, async (req, res) => {
     const snapshot = initialSnapshot && typeof initialSnapshot === 'object'
       ? { ...initialSnapshot, projectId, projectName: name, musicalNumber: requestedMusicalNumber }
       : {
-        version: '1.0.0',
         projectId,
         projectName: name,
         musicalNumber: requestedMusicalNumber,
@@ -637,7 +636,6 @@ app.post('/api/projects', requireAuth, async (req, res) => {
         tracks: [],
         trackTree: [],
         loop: { enabled: false, startMs: 0, endMs: 0 },
-        undoStackSize: 100,
       };
 
     const client = await pool.connect();

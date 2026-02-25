@@ -152,11 +152,6 @@ export async function importFromZIP(file, storeMediaBlob, decodeAudioFile, onPro
   const projectJson = await projectFile.async('text');
   const project = JSON.parse(projectJson);
   
-  // Validate version
-  if (project.version !== '1.0.0') {
-    throw new Error(`Unsupported project version: ${project.version}`);
-  }
-
   let resolvedProject = project;
   if (typeof onProjectParsed === 'function') {
     const parsedResult = await onProjectParsed(project);

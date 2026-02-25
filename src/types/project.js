@@ -84,7 +84,6 @@ export function normalizeExportSettings(settings = {}) {
 
 /**
  * @typedef {Object} Project
- * @property {string} version - Project format version
  * @property {string} projectId - UUID
  * @property {string} projectName - Project name
  * @property {string} musicalNumber - Musical number (must start with "<number>.")
@@ -104,7 +103,6 @@ export function normalizeExportSettings(settings = {}) {
  * @property {Array} trackTree - Hierarchy nodes for groups/tracks
  * @property {Track[]} tracks - Array of tracks
  * @property {Loop} loop - Loop configuration
- * @property {number} undoStackSize - Max undo stack size (100)
  */
 
 /**
@@ -118,7 +116,6 @@ export function createEmptyProject(
   musicalNumber = '0.0'
 ) {
   return {
-    version: '1.0.0',
     projectId: createId(),
     projectName: name,
     musicalNumber: String(musicalNumber || '0.0').trim() || '0.0',
@@ -130,7 +127,6 @@ export function createEmptyProject(
     trackTree: [],
     tracks: [],
     loop: { enabled: false, startMs: 0, endMs: 0 },
-    undoStackSize: 100,
   };
 }
 
