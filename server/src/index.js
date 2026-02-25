@@ -50,6 +50,88 @@ function isValidMusicalNumber(value) {
   return /^[0-9]+\..+$/.test(normalizeMusicalNumber(value));
 }
 
+function normalizeSceneOrder(value) {
+  if (value == null || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isInteger(numeric) || numeric < 1) return NaN;
+  return numeric;
+}
+
+function parseMusicalNumberSegments(value) {
+  return normalizeMusicalNumber(value)
+    .split('.')
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function classifyMusicalToken(token) {
+  if (/^dk$/i.test(token)) return 0;
+  if (/^\d+$/.test(token)) return 1;
+  return 2;
+}
+
+function compareMusicalNumbers(leftRaw, rightRaw) {
+  const left = parseMusicalNumberSegments(leftRaw);
+  const right = parseMusicalNumberSegments(rightRaw);
+  const leftMajor = Number.parseInt(left[0] || '0', 10);
+  const rightMajor = Number.parseInt(right[0] || '0', 10);
+
+  if (leftMajor !== rightMajor) return leftMajor - rightMajor;
+
+  const maxParts = Math.max(left.length, right.length);
+  for (let i = 1; i < maxParts; i += 1) {
+    const leftPart = left[i];
+    const rightPart = right[i];
+
+    if (leftPart == null && rightPart == null) return 0;
+    if (leftPart == null) return -1;
+    if (rightPart == null) return 1;
+
+    const leftKind = classifyMusicalToken(leftPart);
+    const rightKind = classifyMusicalToken(rightPart);
+    if (leftKind !== rightKind) return leftKind - rightKind;
+
+    if (leftKind === 1) {
+      const leftNumber = Number.parseInt(leftPart, 10);
+      const rightNumber = Number.parseInt(rightPart, 10);
+      if (leftNumber !== rightNumber) return leftNumber - rightNumber;
+      continue;
+    }
+
+    const textCompare = leftPart.localeCompare(rightPart, undefined, {
+      sensitivity: 'base',
+      numeric: true,
+    });
+    if (textCompare !== 0) return textCompare;
+  }
+
+  return 0;
+}
+
+function compareProjectsByMusicalOrder(left, right) {
+  const musicalCompare = compareMusicalNumbers(left?.musicalNumber, right?.musicalNumber);
+  if (musicalCompare !== 0) return musicalCompare;
+
+  // Optional explicit per-scene order inside same X.* bucket.
+  const leftSceneOrder = normalizeSceneOrder(left?.sceneOrder);
+  const rightSceneOrder = normalizeSceneOrder(right?.sceneOrder);
+  const leftHasSceneOrder = Number.isFinite(leftSceneOrder);
+  const rightHasSceneOrder = Number.isFinite(rightSceneOrder);
+
+  if (leftHasSceneOrder && rightHasSceneOrder && leftSceneOrder !== rightSceneOrder) {
+    return leftSceneOrder - rightSceneOrder;
+  }
+  if (leftHasSceneOrder && !rightHasSceneOrder) return -1;
+  if (!leftHasSceneOrder && rightHasSceneOrder) return 1;
+
+  const nameCompare = String(left?.name || '').localeCompare(String(right?.name || ''), undefined, {
+    sensitivity: 'base',
+    numeric: true,
+  });
+  if (nameCompare !== 0) return nameCompare;
+  return String(left?.id || '').localeCompare(String(right?.id || ''));
+}
+
 async function ensureMediaRoot() {
   await fs.mkdir(config.mediaRoot, { recursive: true });
 }
@@ -502,6 +584,7 @@ app.get('/api/projects', requireAuth, async (req, res) => {
   const result = await pool.query(
     `SELECT p.id, p.name,
             p.musical_number AS "musicalNumber",
+            p.scene_order AS "sceneOrder",
             pp.can_read AS "canRead",
             pp.can_write AS "canWrite",
             ph.latest_seq AS "latestSeq",
@@ -512,12 +595,11 @@ app.get('/api/projects', requireAuth, async (req, res) => {
        ON pp.project_id = p.id AND pp.user_id = $1
      LEFT JOIN project_heads ph
        ON ph.project_id = p.id
-     WHERE $2::boolean = TRUE OR COALESCE(pp.can_read, FALSE) = TRUE
-     ORDER BY p.created_at DESC`,
+     WHERE $2::boolean = TRUE OR COALESCE(pp.can_read, FALSE) = TRUE`,
     [req.user.id, req.user.isAdmin]
   );
-
-  res.json({ projects: result.rows });
+  const sortedProjects = [...result.rows].sort(compareProjectsByMusicalOrder);
+  res.json({ projects: sortedProjects });
 });
 
 app.post('/api/projects', requireAuth, async (req, res) => {
@@ -527,6 +609,7 @@ app.post('/api/projects', requireAuth, async (req, res) => {
     const requestedMusicalNumber = normalizeMusicalNumber(
       req.body?.musicalNumber ?? initialSnapshot?.musicalNumber ?? '0.0'
     );
+    const requestedSceneOrder = normalizeSceneOrder(req.body?.sceneOrder);
 
     if (!name) {
       res.status(400).json({ error: 'Project name is required' });
@@ -534,6 +617,10 @@ app.post('/api/projects', requireAuth, async (req, res) => {
     }
     if (!isValidMusicalNumber(requestedMusicalNumber)) {
       res.status(400).json({ error: 'Musical number must start with "<number>." (example: 2.1)' });
+      return;
+    }
+    if (Number.isNaN(requestedSceneOrder)) {
+      res.status(400).json({ error: 'sceneOrder must be an integer >= 1 when provided' });
       return;
     }
 
@@ -557,9 +644,9 @@ app.post('/api/projects', requireAuth, async (req, res) => {
     try {
       await client.query('BEGIN');
       await client.query(
-        `INSERT INTO projects(id, name, musical_number, created_by)
-         VALUES($1, $2, $3, $4)`,
-        [projectId, name, requestedMusicalNumber, req.user.id]
+        `INSERT INTO projects(id, name, musical_number, scene_order, created_by)
+         VALUES($1, $2, $3, $4, $5)`,
+        [projectId, name, requestedMusicalNumber, requestedSceneOrder, req.user.id]
       );
 
       await client.query(
@@ -607,6 +694,7 @@ app.post('/api/projects', requireAuth, async (req, res) => {
         id: projectId,
         name,
         musicalNumber: requestedMusicalNumber,
+        sceneOrder: requestedSceneOrder,
         latestSeq: 0,
       },
       snapshot,
@@ -700,7 +788,8 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
   try {
     const hasName = Object.prototype.hasOwnProperty.call(req.body || {}, 'name');
     const hasMusicalNumber = Object.prototype.hasOwnProperty.call(req.body || {}, 'musicalNumber');
-    if (!hasName && !hasMusicalNumber) {
+    const hasSceneOrder = Object.prototype.hasOwnProperty.call(req.body || {}, 'sceneOrder');
+    if (!hasName && !hasMusicalNumber && !hasSceneOrder) {
       res.status(400).json({ error: 'At least one field is required' });
       return;
     }
@@ -729,6 +818,16 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
       values.push(musicalNumber);
     }
 
+    if (hasSceneOrder) {
+      const sceneOrder = normalizeSceneOrder(req.body?.sceneOrder);
+      if (Number.isNaN(sceneOrder)) {
+        res.status(400).json({ error: 'sceneOrder must be an integer >= 1 when provided' });
+        return;
+      }
+      updates.push(`scene_order = $${idx++}`);
+      values.push(sceneOrder);
+    }
+
     const client = await pool.connect();
     let updated;
     try {
@@ -737,7 +836,7 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
         `UPDATE projects
          SET ${updates.join(', ')}
          WHERE id = $1
-         RETURNING id, name, musical_number AS "musicalNumber"`,
+         RETURNING id, name, musical_number AS "musicalNumber", scene_order AS "sceneOrder"`,
         values
       );
 
