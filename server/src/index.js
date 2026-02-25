@@ -204,15 +204,53 @@ async function appendProjectOp({ projectId, userId, clientOpId, op }) {
 
     const head = headResult.rows[0];
     const latestSeq = Number(head.latest_seq || 0);
-    const nextSeq = latestSeq + 1;
+    const maxOpSeqResult = await client.query(
+      `SELECT COALESCE(MAX(server_seq), 0) AS max_op_seq
+       FROM project_ops
+       WHERE project_id = $1`,
+      [projectId]
+    );
+    const maxOpSeq = Number(maxOpSeqResult.rows?.[0]?.max_op_seq || 0);
+    const nextSeq = Math.max(latestSeq, maxOpSeq) + 1;
     const currentSnapshot = head.latest_snapshot_json || {};
     const nextSnapshot = await applyOpToSnapshot(currentSnapshot, op);
+
+    const projectMetadataUpdates = [];
+    const projectMetadataValues = [projectId];
+    let metadataIdx = 2;
+    const nextProjectName = String(nextSnapshot?.projectName || '').trim();
+    const currentProjectName = String(currentSnapshot?.projectName || '').trim();
+    if (nextProjectName && nextProjectName !== currentProjectName) {
+      projectMetadataUpdates.push(`name = $${metadataIdx++}`);
+      projectMetadataValues.push(nextProjectName);
+    }
+
+    const nextMusicalNumber = normalizeMusicalNumber(nextSnapshot?.musicalNumber || '');
+    const currentMusicalNumber = normalizeMusicalNumber(currentSnapshot?.musicalNumber || '');
+    if (nextMusicalNumber) {
+      if (!isValidMusicalNumber(nextMusicalNumber)) {
+        throw new Error('Invalid musicalNumber in operation payload');
+      }
+      if (nextMusicalNumber !== currentMusicalNumber) {
+        projectMetadataUpdates.push(`musical_number = $${metadataIdx++}`);
+        projectMetadataValues.push(nextMusicalNumber);
+      }
+    }
 
     await client.query(
       `INSERT INTO project_ops(project_id, server_seq, client_op_id, user_id, op_json)
        VALUES($1, $2, $3, $4, $5::jsonb)`,
       [projectId, nextSeq, clientOpId || null, userId, JSON.stringify(op || {})]
     );
+
+    if (projectMetadataUpdates.length > 0) {
+      await client.query(
+        `UPDATE projects
+         SET ${projectMetadataUpdates.join(', ')}
+         WHERE id = $1`,
+        projectMetadataValues
+      );
+    }
 
     const checkpointEveryMs = config.checkpointEverySeconds * 1000;
     const lastCheckpointAt = head.last_checkpoint_at ? new Date(head.last_checkpoint_at).getTime() : 0;
@@ -795,6 +833,7 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
     const updates = [];
     const values = [permission.projectId];
     let idx = 2;
+    const snapshotMetadataUpdates = {};
 
     if (hasName) {
       const name = String(req.body?.name || '').trim();
@@ -804,6 +843,7 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
       }
       updates.push(`name = $${idx++}`);
       values.push(name);
+      snapshotMetadataUpdates.projectName = name;
     }
 
     if (hasMusicalNumber) {
@@ -814,6 +854,7 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
       }
       updates.push(`musical_number = $${idx++}`);
       values.push(musicalNumber);
+      snapshotMetadataUpdates.musicalNumber = musicalNumber;
     }
 
     if (hasSceneOrder) {
@@ -828,6 +869,7 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
 
     const client = await pool.connect();
     let updated;
+    let broadcastPayload = null;
     try {
       await client.query('BEGIN');
       updated = await client.query(
@@ -838,7 +880,71 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
         values
       );
 
-      if (updated.rowCount > 0) {
+      if (updated.rowCount > 0 && Object.keys(snapshotMetadataUpdates).length > 0) {
+        const headResult = await client.query(
+          `SELECT latest_seq, latest_snapshot_json
+           FROM project_heads
+           WHERE project_id = $1
+           FOR UPDATE`,
+          [permission.projectId]
+        );
+        if (headResult.rowCount === 0) {
+          await client.query('ROLLBACK');
+          res.status(404).json({ error: 'Project head missing' });
+          return;
+        }
+
+        const head = headResult.rows[0];
+        const maxOpSeqResult = await client.query(
+          `SELECT COALESCE(MAX(server_seq), 0) AS max_op_seq
+           FROM project_ops
+           WHERE project_id = $1`,
+          [permission.projectId]
+        );
+        const headLatestSeq = Number(head.latest_seq || 0);
+        const maxOpSeq = Number(maxOpSeqResult.rows?.[0]?.max_op_seq || 0);
+        const nextSeq = Math.max(headLatestSeq, maxOpSeq) + 1;
+        const nextSnapshot = {
+          ...(head.latest_snapshot_json || {}),
+          ...snapshotMetadataUpdates,
+        };
+        const op = {
+          type: 'project.replace',
+          project: nextSnapshot,
+        };
+
+        await client.query(
+          `INSERT INTO project_ops(project_id, server_seq, client_op_id, user_id, op_json)
+           VALUES($1, $2, NULL, $3, $4::jsonb)`,
+          [permission.projectId, nextSeq, req.user.id, JSON.stringify(op)]
+        );
+
+        await client.query(
+          `UPDATE project_heads
+           SET latest_seq = $2,
+               latest_snapshot_json = $3::jsonb,
+               updated_at = NOW()
+           WHERE project_id = $1`,
+          [permission.projectId, nextSeq, JSON.stringify(nextSnapshot)]
+        );
+
+        await client.query(
+          `INSERT INTO project_snapshots(project_id, server_seq, snapshot_json, created_by)
+           VALUES($1, $2, $3::jsonb, $4)`,
+          [permission.projectId, nextSeq, JSON.stringify(nextSnapshot), req.user.id]
+        );
+
+        broadcastPayload = {
+          projectId: permission.projectId,
+          serverSeq: nextSeq,
+          clientOpId: null,
+          op,
+          actor: {
+            userId: req.user.id,
+            username: req.user.username,
+          },
+        };
+      } else if (updated.rowCount > 0) {
         await client.query(
           `UPDATE project_heads
            SET updated_at = NOW()
@@ -858,6 +964,10 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
     if (updated.rowCount === 0) {
       res.status(404).json({ error: 'Project not found' });
       return;
+    }
+
+    if (broadcastPayload) {
+      broadcastToProject(permission.projectId, 'op.broadcast', broadcastPayload);
     }
 
     res.json({ project: updated.rows[0] });

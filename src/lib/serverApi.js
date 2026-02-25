@@ -181,18 +181,126 @@ export async function deleteServerProject(projectId, session) {
   }, session);
 }
 
+async function submitProjectOpViaWebSocket(projectId, op, session, allowRefresh = true) {
+  const wsUrl = getWsUrl();
+  if (!wsUrl) {
+    throw new Error('WebSocket URL is not configured. Set VITE_SERVER_WS_BASE.');
+  }
+  const clientOpId = createId();
+
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    const ws = new WebSocket(wsUrl);
+
+    const cleanup = () => {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+    };
+
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      try { ws.close(); } catch { /* ignore */ }
+      reject(error instanceof Error ? error : new Error(String(error || 'WebSocket op submission failed')));
+    };
+
+    const succeed = (payload) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      try { ws.close(); } catch { /* ignore */ }
+      resolve(payload);
+    };
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        type: 'auth.hello',
+        accessToken: session?.accessToken || '',
+      }));
+    };
+
+    ws.onmessage = async (event) => {
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+      if (message.type === 'auth.ok') {
+        ws.send(JSON.stringify({
+          type: 'op.submit',
+          projectId,
+          clientOpId,
+          op,
+        }));
+        return;
+      }
+
+      if (message.type === 'op.ack' && message.clientOpId === clientOpId) {
+        succeed({
+          projectId,
+          clientOpId,
+          serverSeq: Number(message.serverSeq || 0),
+        });
+        return;
+      }
+
+      if (message.type === 'error') {
+        if (message.code === 'AUTH_REQUIRED' && allowRefresh && session?.refreshToken) {
+          try {
+            const refreshed = await refreshSession(session.refreshToken);
+            saveServerSession(refreshed);
+            succeed(await submitProjectOpViaWebSocket(projectId, op, refreshed, false));
+          } catch (error) {
+            if (isInvalidRefreshTokenError(error)) {
+              clearServerSession();
+              fail(new Error('Session expired. Please log in again.'));
+              return;
+            }
+            fail(error);
+          }
+          return;
+        }
+        fail(new Error(message?.message || 'Realtime op failed'));
+      }
+    };
+
+    ws.onerror = () => {
+      fail(new Error('Failed to connect to realtime server'));
+    };
+
+    ws.onclose = () => {
+      if (!settled) {
+        fail(new Error('Realtime connection closed before operation ack'));
+      }
+    };
+  });
+}
+
 export async function renameServerProject(projectId, name, session) {
-  return await apiFetch(`/api/projects/${encodeURIComponent(projectId)}`, {
-    method: 'PATCH',
-    body: { name },
-  }, session);
+  return await submitProjectOpViaWebSocket(
+    projectId,
+    {
+      type: 'project.update',
+      updates: { projectName: String(name || '').trim() },
+    },
+    session
+  );
 }
 
 export async function updateServerProjectMusicalNumber(projectId, musicalNumber, session) {
-  return await apiFetch(`/api/projects/${encodeURIComponent(projectId)}`, {
-    method: 'PATCH',
-    body: { musicalNumber },
-  }, session);
+  return await submitProjectOpViaWebSocket(
+    projectId,
+    {
+      type: 'project.update',
+      updates: { musicalNumber: String(musicalNumber || '').trim() },
+    },
+    session
+  );
 }
 
 export async function bootstrapServerProject(projectId, session, knownSeq = 0) {
