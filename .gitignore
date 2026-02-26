@@ -34,3 +34,7 @@ yarn-error.log*
 # Temporary files
 *.tmp
 .cache/
+backups/
+server/media/
+certs/*.key
+certs/*.crt

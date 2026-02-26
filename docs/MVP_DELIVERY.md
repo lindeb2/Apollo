@@ -1,4 +1,4 @@
-# ChoirMaster MVP - Final Delivery Summary
+# Apollo MVP - Final Delivery Summary
 
 ## 🎉 MVP COMPLETE - PRODUCTION READY
 
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-ChoirMaster is a fully functional browser-based DAW for creating choir practice files. The application allows users to import audio, record vocals, edit clips non-destructively, and export deterministic WAV practice files with specialized presets for choir rehearsal.
+Apollo is a fully functional browser-based DAW for creating choir practice files. The application allows users to import audio, record vocals, edit clips non-destructively, and export deterministic WAV practice files with specialized presets for choir rehearsal.
 
 **Key Achievement:** 100% specification compliance with zero deviations across all four phases.
 
@@ -112,7 +112,7 @@ All presets tested and verified against spec requirements.
 ## File Structure
 
 ```
-choirmaster-app/
+apollo-app/
 ├── src/
 │   ├── components/
 │   │   ├── Dashboard.jsx          # Project management
@@ -361,7 +361,7 @@ All documentation is complete and up-to-date.
 ### To Run
 
 ```bash
-cd choirmaster-app
+cd apollo-app
 npm install
 npm run dev
 ```
@@ -414,4 +414,4 @@ Built according to **MASTER SYSTEM PROMPT v1.0** with 100% specification complia
 **Document Version:** 1.0.0  
 **Delivery Date:** Phase 3 completion  
 **Author:** Claude (Anthropic)  
-**Project:** ChoirMaster MVP
+**Project:** Apollo MVP

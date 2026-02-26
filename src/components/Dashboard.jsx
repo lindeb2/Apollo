@@ -13,6 +13,7 @@ import { formatTime, PAN_LAW_OPTIONS_DB, normalizePanLawDb } from '../utils/audi
 import { AUTO_PAN_STRATEGIES } from '../utils/choirAutoPan';
 import { normalizeProjectName } from '../utils/naming';
 import { reportUserError } from '../utils/errorReporter';
+import { createId } from '../utils/id';
 
 function Dashboard({ onOpenProject, onNewProject }) {
   const [projects, setProjects] = useState([]);
@@ -42,7 +43,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
   }, []);
 
   useEffect(() => {
-    const saved = localStorage.getItem('choirmaster.settings');
+    const saved = localStorage.getItem('apollo.settings');
     if (!saved) return;
     try {
       const parsed = JSON.parse(saved);
@@ -85,7 +86,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
       hasHydratedSettingsRef.current = true;
       return;
     }
-    localStorage.setItem('choirmaster.settings', JSON.stringify(audioSettings));
+    localStorage.setItem('apollo.settings', JSON.stringify(audioSettings));
   }, [audioSettings]);
 
   const loadProjects = async () => {
@@ -117,7 +118,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
       overwrite: false,
       project: {
         ...importedProject,
-        projectId: crypto.randomUUID(),
+        projectId: createId(),
         projectName: buildImportedCopyName(importedProject.projectName, existingProjects),
       },
     });
@@ -339,7 +340,7 @@ function Dashboard({ onOpenProject, onNewProject }) {
       {/* Header */}
       <div className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold">ChoirMaster</h1>
+          <h1 className="text-2xl font-bold">Apollo</h1>
           <button
             className="p-2 rounded-md hover:bg-gray-700 text-gray-300"
             title="Settings"

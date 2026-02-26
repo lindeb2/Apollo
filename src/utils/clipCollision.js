@@ -2,6 +2,7 @@
  * Clip Collision Detection and Resolution
  * Ensures strict one-clip-per-track-at-a-time rule
  */
+import { createId } from './id';
 
 /**
  * Check if two time ranges overlap
@@ -291,7 +292,7 @@ export function processRecordingOverwrites(recordingStartMs, recordingEndMs, tra
           const amountCropped = recordingEndMs - clipRange.start;
           const rightPart = {
             ...clip,
-            id: crypto.randomUUID(), // New ID for the split part
+            id: createId(), // New ID for the split part
             timelineStartMs: recordingEndMs,
             cropStartMs: clip.cropStartMs + amountCropped,
           };

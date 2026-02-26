@@ -1,4 +1,4 @@
-# ChoirMaster
+# Apollo
 
 A browser-based simplified DAW for creating choir practice files. Import instrumental and choir audio, record vocals, edit clips non-destructively, and export deterministic WAV practice files according to strict presets.
 
@@ -36,6 +36,60 @@ A browser-based simplified DAW for creating choir practice files. Import instrum
 ```bash
 npm run build
 npm run preview
+```
+
+## Server Hosting Mode (Self-Host / LAN)
+
+Apollo now supports a hosted mode (Postgres + API + WebSocket + shared media storage) in addition to local IndexedDB mode.
+
+### Start Full Hosted Stack (Docker Compose)
+
+```bash
+npm run dev:full
+```
+
+Services:
+- `web` at `http://localhost:3000`
+- `api` at `http://localhost:8787`
+- `db` Postgres at `localhost:5432`
+
+Default admin credentials (change immediately in `docker-compose.yml` / env):
+- Username: `admin`
+- Password: `changemechangeme`
+
+### Frontend Env for Direct API (non-proxied dev)
+
+Create `.env` from `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+Then run frontend dev server:
+
+```bash
+npm run dev
+```
+
+### Backend Env (standalone API run)
+
+Create `server/.env` from `server/.env.example`:
+
+```bash
+cp server/.env.example server/.env
+```
+
+Then run:
+
+```bash
+npm run dev:server
+```
+
+### Backup / Restore (Docker stack)
+
+```bash
+bash server/scripts/backup.sh
+bash server/scripts/restore.sh ./backups/<timestamp>
 ```
 
 ## Tech Stack
@@ -186,7 +240,7 @@ Tested on Chrome 90+, Firefox 88+, Safari 14+, Edge 90+
   - Project portability (JSON + ZIP)
   - Cross-machine compatibility
 
-**ChoirMaster is production-ready for creating choir practice files.**
+**Apollo is production-ready for creating choir practice files.**
 
 See `IMPLEMENTATION.md` for technical details and `SPEC_CHANGES.md` for any deviations from spec.
 
@@ -210,4 +264,4 @@ MIT
 
 ## Acknowledgments
 
-Built according to the ChoirMaster specification v1.0
+Built according to the Apollo specification v1.0

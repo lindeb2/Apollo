@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
-import { ArrowLeft, Download, Play, Pause, Square, Volume2, Circle, Upload, SkipBack, SkipForward, Settings } from 'lucide-react';
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
+import { ArrowLeft, Download, Play, Pause, Square, Volume2, Circle, Upload, SkipBack, SkipForward, Settings, Lock, WifiOff } from 'lucide-react';
 import useStore from '../store/useStore';
 import { audioManager } from '../lib/audioManager';
 import { recordingManager } from '../lib/recordingManager';
@@ -14,9 +14,11 @@ import { AUTO_PAN_STRATEGIES, applyChoirAutoPanToProject } from '../utils/choirA
 import useKeyboardShortcuts from '../utils/useKeyboardShortcuts';
 import { processRecordingOverwrites } from '../utils/clipCollision';
 import { isPrimaryModifierPressed } from '../utils/keyboard';
-import { normalizeProjectName } from '../utils/naming';
 import { reportUserError } from '../utils/errorReporter';
 import { measureTuttiPeak } from '../lib/exportEngine';
+import useRealtimeProjectSync from '../hooks/useRealtimeProjectSync';
+import { downloadMediaBlob, forceCheckpoint } from '../lib/serverApi';
+import { createId } from '../utils/id';
 import {
   GROUP_ROLE_CHOIRS,
   isChoirRole,
@@ -42,6 +44,19 @@ import {
 
 const SUPPORTED_IMPORT_EXTENSIONS = new Set(['wav', 'mp3', 'flac']);
 const TRACK_CONFIG_COLUMN_WIDTH_PX = 384;
+const VALUE_ANIMATION_DURATION_MS = 800;
+
+function easeInOutQuint(t) {
+  if (t < 0.5) {
+    return 16 * t * t * t * t * t;
+  }
+  return 1 - Math.pow(-2 * t + 2, 5) / 2;
+}
+
+function toFiniteNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
 
 const isFileDragEvent = (event) => {
   const types = event?.dataTransfer?.types;
@@ -56,7 +71,7 @@ const getSupportedAudioFiles = (dataTransfer) => {
   });
 };
 
-function Editor({ onBackToDashboard }) {
+function Editor({ onBackToDashboard, remoteSession = null }) {
   const {
     project,
     updateProject,
@@ -86,15 +101,16 @@ function Editor({ onBackToDashboard }) {
     outputDeviceId: '',
     recordingOffsetMs: 0,
   });
-  const [masterVolume, setMasterVolume] = useState(100);
+  const [masterVolume, setMasterVolume] = useState(() => toFiniteNumber(project?.masterVolume, 100));
   const [masterEditTooltip, setMasterEditTooltip] = useState(null);
   const [masterDragTooltip, setMasterDragTooltip] = useState(null);
+  const [showDisconnectedIndicator, setShowDisconnectedIndicator] = useState(false);
   const [trackListContextMenu, setTrackListContextMenu] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [selectedRowKind, setSelectedRowKind] = useState(null);
   const masterDragRef = useRef(null);
-  const [isEditingProjectName, setIsEditingProjectName] = useState(false);
-  const [projectNameDraft, setProjectNameDraft] = useState('');
+  const masterVolumeRef = useRef(toFiniteNumber(project?.masterVolume, 100));
+  const masterAnimationFrameRef = useRef(null);
   const [mediaMap, setMediaMap] = useState(new Map());
   const [recordingSegments, setRecordingSegments] = useState([]);
   const [recordingOffsetMs, setRecordingOffsetMs] = useState(0);
@@ -113,6 +129,43 @@ function Editor({ onBackToDashboard }) {
   const isTrackListScrollingRef = useRef(false);
   const isTimelineScrollingRef = useRef(false);
   const timelineRowsScrollAreaRef = useRef(null);
+  const missingRemoteBlobIdsRef = useRef(new Set());
+  const recordingLockTrackIdRef = useRef(null);
+  const lockByTrackIdRef = useRef({});
+  const isHostedSession = Boolean(remoteSession?.session && remoteSession?.serverProjectId);
+  const remoteUserId = remoteSession?.session?.user?.id || null;
+
+  const {
+    connected: syncConnected,
+    syncError,
+    remoteAnimation,
+    lockByTrackId,
+    lockHelpers,
+  } = useRealtimeProjectSync({
+    enabled: isHostedSession,
+    project,
+    remoteSession,
+    updateProject,
+  });
+
+  useEffect(() => {
+    lockByTrackIdRef.current = lockByTrackId || {};
+  }, [lockByTrackId]);
+
+  useEffect(() => {
+    if (!isHostedSession) {
+      setShowDisconnectedIndicator(false);
+      return undefined;
+    }
+    if (syncConnected) {
+      setShowDisconnectedIndicator(false);
+      return undefined;
+    }
+    const timeoutId = setTimeout(() => {
+      setShowDisconnectedIndicator(true);
+    }, 2500);
+    return () => clearTimeout(timeoutId);
+  }, [isHostedSession, syncConnected]);
 
   // Keep project ref updated
   useEffect(() => {
@@ -120,20 +173,103 @@ function Editor({ onBackToDashboard }) {
   }, [project]);
 
   useEffect(() => {
+    masterVolumeRef.current = masterVolume;
+  }, [masterVolume]);
+
+  const stopMasterVolumeAnimation = useCallback(() => {
+    if (masterAnimationFrameRef.current) {
+      cancelAnimationFrame(masterAnimationFrameRef.current);
+      masterAnimationFrameRef.current = null;
+    }
+  }, []);
+
+  const startMasterVolumeAnimation = useCallback(
+    (fromRaw, toRaw, durationRaw = VALUE_ANIMATION_DURATION_MS) => {
+      const from = toFiniteNumber(fromRaw, masterVolumeRef.current);
+      const to = toFiniteNumber(toRaw, from);
+      const durationMs = Math.max(1, Number(durationRaw) || VALUE_ANIMATION_DURATION_MS);
+
+      stopMasterVolumeAnimation();
+
+      if (Math.abs(from - to) <= 1e-6) {
+        masterVolumeRef.current = to;
+        setMasterVolume(to);
+        return;
+      }
+
+      masterVolumeRef.current = from;
+      setMasterVolume(from);
+
+      const startedAt = performance.now();
+      const step = (now) => {
+        const progress = Math.min(1, (now - startedAt) / durationMs);
+        const eased = easeInOutQuint(progress);
+        const nextValue = from + ((to - from) * eased);
+        masterVolumeRef.current = nextValue;
+        setMasterVolume(nextValue);
+
+        if (progress < 1) {
+          masterAnimationFrameRef.current = requestAnimationFrame(step);
+          return;
+        }
+
+        masterAnimationFrameRef.current = null;
+        masterVolumeRef.current = to;
+        setMasterVolume(to);
+      };
+
+      masterAnimationFrameRef.current = requestAnimationFrame(step);
+    },
+    [stopMasterVolumeAnimation]
+  );
+
+  useLayoutEffect(() => {
+    if (!remoteAnimation?.token) return;
+    const master = remoteAnimation?.masterVolume;
+    if (!master) return;
+
+    const from = masterAnimationFrameRef.current
+      ? masterVolumeRef.current
+      : toFiniteNumber(master?.from, masterVolumeRef.current);
+    const to = toFiniteNumber(master?.to, from);
+    const durationMs = Number(remoteAnimation.durationMs || VALUE_ANIMATION_DURATION_MS);
+    startMasterVolumeAnimation(from, to, durationMs);
+  }, [remoteAnimation?.token, startMasterVolumeAnimation]);
+
+  useEffect(() => {
     if (!project) return;
-    if (typeof project.masterVolume === 'number' && project.masterVolume !== masterVolume) {
-      setMasterVolume(project.masterVolume);
-    }
-  }, [project?.masterVolume, masterVolume, project]);
+    if (masterDragRef.current) return;
+    if (masterAnimationFrameRef.current) return;
+
+    const nextMaster = toFiniteNumber(project.masterVolume, 100);
+    if (Math.abs(nextMaster - masterVolumeRef.current) <= 1e-6) return;
+    masterVolumeRef.current = nextMaster;
+    setMasterVolume(nextMaster);
+  }, [project?.masterVolume]);
+
+  useEffect(
+    () => () => {
+      stopMasterVolumeAnimation();
+    },
+    [stopMasterVolumeAnimation]
+  );
+
+  const headerProjectTitle = useMemo(() => {
+    const projectName = String(
+      remoteSession?.projectName
+      || project?.projectName
+      || 'Untitled Project'
+    ).trim();
+    const musicalNumber = String(
+      remoteSession?.musicalNumber
+      || project?.musicalNumber
+      || '0.0'
+    ).trim();
+    return `${musicalNumber || '0.0'} - ${projectName || 'Untitled Project'}`;
+  }, [remoteSession?.musicalNumber, remoteSession?.projectName, project?.musicalNumber, project?.projectName]);
 
   useEffect(() => {
-    if (project) {
-      setProjectNameDraft(project.projectName);
-    }
-  }, [project?.projectName]);
-
-  useEffect(() => {
-    const saved = localStorage.getItem('choirmaster.settings');
+    const saved = localStorage.getItem('apollo.settings');
     if (!saved) return;
     try {
       const parsed = JSON.parse(saved);
@@ -160,7 +296,7 @@ function Editor({ onBackToDashboard }) {
     } else {
       let existing = {};
       try {
-        existing = JSON.parse(localStorage.getItem('choirmaster.settings') || '{}');
+        existing = JSON.parse(localStorage.getItem('apollo.settings') || '{}');
       } catch (error) {
         reportUserError(
           'Failed to parse existing app settings from local storage. They will be replaced.',
@@ -169,7 +305,7 @@ function Editor({ onBackToDashboard }) {
         );
         existing = {};
       }
-      localStorage.setItem('choirmaster.settings', JSON.stringify({
+      localStorage.setItem('apollo.settings', JSON.stringify({
         ...existing,
         ...audioSettings,
       }));
@@ -221,24 +357,12 @@ function Editor({ onBackToDashboard }) {
     }
   }, [project, selectedTrackId, selectedRowKind, selectedNodeId, selectTrack]);
 
-  // Initialize audio context on mount
-  useEffect(() => {
-    audioManager.init();
-    
-    if (project && project.tracks) {
-      loadProjectAudio();
-    }
-    
-    return () => {
-      audioManager.stop();
-    };
-  }, [project?.projectId]);
-
-  const loadProjectAudio = async () => {
-    if (!project) return;
+  const loadProjectAudio = useCallback(async () => {
+    const currentProject = projectRef.current;
+    if (!currentProject) return;
 
     const blobIds = new Set();
-    for (const track of project.tracks) {
+    for (const track of currentProject.tracks) {
       for (const clip of track.clips) {
         blobIds.add(clip.blobId);
       }
@@ -248,8 +372,29 @@ function Editor({ onBackToDashboard }) {
     for (const blobId of blobIds) {
       if (!audioManager.mediaCache.has(blobId)) {
         try {
-          const media = await getMediaBlob(blobId);
-          const audioBuffer = await audioManager.loadAudioBuffer(blobId, media.blob);
+          let media = null;
+          try {
+            media = await getMediaBlob(blobId);
+          } catch (localError) {
+            if (!isHostedSession || missingRemoteBlobIdsRef.current.has(blobId)) {
+              throw localError;
+            }
+
+            try {
+              const remoteBlob = await downloadMediaBlob(blobId, remoteSession.session);
+              const remoteArrayBuffer = await remoteBlob.arrayBuffer();
+              const decodedBuffer = await audioManager.decodeAudioFile(remoteArrayBuffer);
+              const fallbackFileName = `${blobId}.${remoteBlob.type?.split('/')[1] || 'bin'}`;
+              await storeMediaBlob(fallbackFileName, decodedBuffer, remoteBlob, blobId);
+              media = await getMediaBlob(blobId);
+              missingRemoteBlobIdsRef.current.delete(blobId);
+            } catch (remoteError) {
+              missingRemoteBlobIdsRef.current.add(blobId);
+              throw remoteError;
+            }
+          }
+
+          await audioManager.loadAudioBuffer(blobId, media.blob);
           newMediaMap.set(blobId, media);
           console.log(`Loaded audio buffer for ${blobId}`);
         } catch (error) {
@@ -273,7 +418,39 @@ function Editor({ onBackToDashboard }) {
       }
     }
     setMediaMap(newMediaMap);
-  };
+  }, [isHostedSession, remoteSession?.session]);
+
+  // Initialize audio context on mount
+  useEffect(() => {
+    audioManager.init();
+
+    return () => {
+      audioManager.stop();
+    };
+  }, []);
+
+  const mediaLoadSignature = useMemo(() => {
+    if (!project?.tracks) return '';
+    const ids = [];
+    project.tracks.forEach((track) => {
+      track.clips.forEach((clip) => {
+        if (clip?.blobId) ids.push(clip.blobId);
+      });
+    });
+    ids.sort();
+    return ids.join('|');
+  }, [project?.tracks]);
+
+  useEffect(() => {
+    if (!project || !project.tracks) return;
+    loadProjectAudio().catch((error) => {
+      reportUserError(
+        'Failed to load project audio.',
+        error,
+        { onceKey: `editor:load-project-audio:${project.projectId}` }
+      );
+    });
+  }, [project?.projectId, mediaLoadSignature, loadProjectAudio]);
 
   useEffect(() => {
     audioManager.setMasterVolume(masterVolume);
@@ -289,16 +466,31 @@ function Editor({ onBackToDashboard }) {
       if (!masterDragRef.current) return;
       const { startX, startValue, width, moved } = masterDragRef.current;
       const deltaX = e.clientX - startX;
-      if (!moved && Math.abs(deltaX) < 2) return;
-      masterDragRef.current.moved = true;
-      if (masterEditTooltip) setMasterEditTooltip(null);
+      if (!moved) {
+        if (Math.abs(deltaX) < 2) return;
+        masterDragRef.current.moved = true;
+        setMasterEditTooltip(null);
+      }
       const next = Math.min(100, Math.max(0, startValue + (deltaX / width) * 100));
-      applyMasterVolume(next);
+      if (Math.abs(next - masterDragRef.current.lastValue) < 1e-6) {
+        setMasterDragTooltip(next);
+        return;
+      }
+      masterDragRef.current.lastValue = next;
+      masterVolumeRef.current = next;
+      setMasterVolume(next);
       setMasterDragTooltip(next);
     };
     const handleUp = () => {
+      const dragState = masterDragRef.current;
       masterDragRef.current = null;
       setMasterDragTooltip(null);
+      if (!dragState || !dragState.moved) return;
+      const finalValue = Number.isFinite(dragState.lastValue)
+        ? dragState.lastValue
+        : dragState.startValue;
+      if (Math.abs(finalValue - dragState.startValue) < 1e-6) return;
+      applyMasterVolume(finalValue);
     };
     window.addEventListener('mousemove', handleMove);
     window.addEventListener('mouseup', handleUp);
@@ -312,6 +504,26 @@ function Editor({ onBackToDashboard }) {
     let interval = null;
     let isCancelled = false;
     let loopRestartTimeout = null;
+    const getPlaybackEndMs = (currentProject) => {
+      if (!currentProject?.tracks?.length) return 0;
+      const mix = getEffectiveTrackMix(currentProject);
+      let maxEndMs = 0;
+      currentProject.tracks.forEach((track) => {
+        const trackState = mix.statesByTrackId.get(track.id);
+        if (!trackState?.audible) return;
+        (track.clips || []).forEach((clip) => {
+          if (clip?.muted) return;
+          const clipStart = Number(clip?.timelineStartMs || 0);
+          const clipDuration = Math.max(0, Number(clip?.cropEndMs || 0) - Number(clip?.cropStartMs || 0));
+          if (clipDuration <= 0) return;
+          const clipEnd = clipStart + clipDuration;
+          if (Number.isFinite(clipEnd)) {
+            maxEndMs = Math.max(maxEndMs, clipEnd);
+          }
+        });
+      });
+      return maxEndMs;
+    };
     
     if (isPlaying) {
       // Reset loop wrap flag when starting playback
@@ -338,6 +550,21 @@ function Editor({ onBackToDashboard }) {
         if (newTime !== null) {
           const previousTime = previousTimeRef.current;
           const currentProject = projectRef.current;
+
+          const playbackEndMs = getPlaybackEndMs(currentProject);
+          if (
+            !currentProject.loop.enabled
+            && !isRecording
+            && playbackEndMs > 0
+            && previousTime < playbackEndMs
+            && newTime >= playbackEndMs
+          ) {
+            stop();
+            audioManager.stop();
+            setCurrentTime(0);
+            previousTimeRef.current = 0;
+            return;
+          }
           
           // Only trigger loop wrap if we're crossing the boundary
           if (currentProject.loop.enabled && 
@@ -468,17 +695,60 @@ function Editor({ onBackToDashboard }) {
     return { clip: durationMs > 0 ? nextClip : null, durationMs };
   };
 
-  if (!project) {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <p className="text-gray-500">No project loaded</p>
-      </div>
-    );
-  }
+  const waitForOwnTrackLock = async (trackId, timeoutMs = 2500) => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const lockState = lockByTrackIdRef.current?.[trackId];
+      if (lockState?.ownerUserId === remoteUserId) {
+        return true;
+      }
+      if (lockState?.ownerUserId && lockState.ownerUserId !== remoteUserId) {
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    return false;
+  };
 
-  const treeProject = normalizeTrackTree(project);
-  const timelineRows = getVisibleTimelineRows(treeProject);
+  const releaseRecordingLock = () => {
+    const trackId = recordingLockTrackIdRef.current;
+    if (!isHostedSession || !trackId) return;
+    lockHelpers.release(trackId);
+    recordingLockTrackIdRef.current = null;
+  };
+
+  useEffect(() => {
+    if (!isHostedSession || !isRecording) return undefined;
+    const trackId = recordingLockTrackIdRef.current;
+    if (!trackId) return undefined;
+
+    const intervalId = setInterval(() => {
+      lockHelpers.heartbeat(trackId);
+    }, 10000);
+
+    return () => clearInterval(intervalId);
+  }, [isHostedSession, isRecording, lockHelpers]);
+
+  useEffect(() => {
+    return () => {
+      const trackId = recordingLockTrackIdRef.current;
+      if (isHostedSession && trackId) {
+        lockHelpers.release(trackId);
+      }
+      recordingLockTrackIdRef.current = null;
+    };
+  }, [isHostedSession, lockHelpers]);
+
+  const treeProject = useMemo(
+    () => (project ? normalizeTrackTree(project) : null),
+    [project]
+  );
+  const timelineRows = useMemo(
+    () => (treeProject ? getVisibleTimelineRows(treeProject) : []),
+    [treeProject]
+  );
   const trackEffectiveRoleById = useMemo(() => {
+    if (!treeProject) return {};
     const mix = getEffectiveTrackMix(treeProject);
     const map = {};
     mix.statesByTrackId.forEach((state, trackId) => {
@@ -486,7 +756,25 @@ function Editor({ onBackToDashboard }) {
     });
     return map;
   }, [treeProject]);
+
+  if (!project || !treeProject) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <p className="text-gray-500">No project loaded</p>
+      </div>
+    );
+  }
   const hasNoTracks = !project.tracks || project.tracks.length === 0;
+  const selectedTrackLock = selectedTrackId ? lockByTrackId?.[selectedTrackId] : null;
+  const selectedTrackLockedByOther = Boolean(
+    selectedTrackLock?.ownerUserId
+    && selectedTrackLock.ownerUserId !== remoteUserId
+  );
+  const selectedTrackLockOwnerName = selectedTrackLock?.ownerName || 'another user';
+  const recordButtonDisabled = hasNoTracks
+    || !selectedTrackId
+    || selectedRowKind !== 'track'
+    || (isHostedSession && !isRecording && (!syncConnected || selectedTrackLockedByOther));
 
   const handleSelectRow = (row) => {
     if (!row) return;
@@ -782,6 +1070,8 @@ function Editor({ onBackToDashboard }) {
       stopRecording();
       setRecordingSegments([]);
       recordingOriginalClipsRef.current = null;
+    } finally {
+      releaseRecordingLock();
     }
   };
 
@@ -799,9 +1089,35 @@ function Editor({ onBackToDashboard }) {
     if (isRecording) {
       // Stop recording
       await finalizeRecording();
+      pause();
+      await audioManager.pause(currentTimeMs);
     } else {
       // Start recording
       try {
+        if (isHostedSession) {
+          if (!syncConnected) {
+            alert('Cannot record while disconnected from server.');
+            return;
+          }
+          if (selectedTrackLockedByOther) {
+            alert(`Track is locked by ${selectedTrackLockOwnerName}.`);
+            return;
+          }
+
+          const lockSent = lockHelpers.acquire(selectedTrackId);
+          if (!lockSent) {
+            alert('Could not request recording lock. Try again.');
+            return;
+          }
+
+          const lockGranted = await waitForOwnTrackLock(selectedTrackId);
+          if (!lockGranted) {
+            alert(`Track is locked by ${selectedTrackLockOwnerName}.`);
+            return;
+          }
+          recordingLockTrackIdRef.current = selectedTrackId;
+        }
+
         const track = project.tracks.find(t => t.id === selectedTrackId);
         const offsetMs = normalizeRecordingOffset(recordingOffsetMs);
         
@@ -824,6 +1140,7 @@ function Editor({ onBackToDashboard }) {
         console.error('Failed to start recording:', error);
         alert('Failed to start recording: ' + error.message);
         setRecordingSegments([]);
+        releaseRecordingLock();
       }
     }
   };
@@ -1429,7 +1746,7 @@ function Editor({ onBackToDashboard }) {
       const sourceParentId = sourceNode.parentId ?? null;
       const movingParentId = movingNode.parentId ?? null;
       const sourceOrder = Number.isFinite(Number(sourceNode.order)) ? Number(sourceNode.order) : 0;
-      const groupNodeId = crypto.randomUUID();
+      const groupNodeId = createId();
       const groupRole = sourceTrack.role || TRACK_ROLES.OTHER;
 
       const nextTree = (normalized.trackTree || [])
@@ -1583,7 +1900,7 @@ function Editor({ onBackToDashboard }) {
       restoredTrack.pan = Number.isFinite(Number(group.pan)) ? Number(group.pan) : restoredTrack.pan;
       nextTracks.push(restoredTrack);
       nextTree.push({
-        id: crypto.randomUUID(),
+        id: createId(),
         kind: 'track',
         parentId: group.parentId ?? null,
         order: Number.isFinite(Number(group.order)) ? Number(group.order) : 0,
@@ -1753,7 +2070,8 @@ function Editor({ onBackToDashboard }) {
   };
 
   const handleMasterVolumeDoubleClick = () => {
-    const display = masterVolume <= 0 ? '-∞' : volumeToDb(masterVolume).toFixed(1);
+    const currentValue = toFiniteNumber(masterVolumeRef.current, masterVolume);
+    const display = currentValue <= 0 ? '-∞' : volumeToDb(currentValue).toFixed(1);
     setMasterEditTooltip({ text: display });
   };
 
@@ -1777,11 +2095,14 @@ function Editor({ onBackToDashboard }) {
       const targetPeak = 0.9999;
       const gainFactor = targetPeak / peak;
 
-      const currentDb = volumeToDb(masterVolume);
+      const currentDb = volumeToDb(toFiniteNumber(masterVolumeRef.current, masterVolume));
       const desiredDb = currentDb + (20 * Math.log10(gainFactor));
       const nextVolume = dbToVolume(Math.max(-60, Math.min(6, desiredDb)));
 
-      applyMasterVolume(nextVolume);
+      applyMasterVolume(nextVolume, {
+        animate: true,
+        durationMs: VALUE_ANIMATION_DURATION_MS,
+      });
 
       if (gainFactor > 1 && nextVolume >= 100) {
         alert('Master volume is already at maximum; could not reach 0 dBFS peak without exceeding limits.');
@@ -1807,39 +2128,72 @@ function Editor({ onBackToDashboard }) {
   const handleMasterVolumeMouseDown = (e) => {
     if (e.button !== 0) return;
     e.preventDefault();
+    stopMasterVolumeAnimation();
     if (masterEditTooltip) setMasterEditTooltip(null);
     const rect = e.currentTarget.getBoundingClientRect();
-    setMasterDragTooltip(masterVolume);
+    const currentValue = toFiniteNumber(masterVolumeRef.current, masterVolume);
+    setMasterDragTooltip(currentValue);
     masterDragRef.current = {
       startX: e.clientX,
-      startValue: masterVolume,
+      startValue: currentValue,
+      lastValue: currentValue,
       width: rect.width,
       moved: false,
     };
   };
 
-  const applyMasterVolume = (value) => {
-    setMasterVolume(value);
-    updateProject((proj) => ({
-      ...proj,
-      masterVolume: value,
-    }), 'Set master volume');
-  };
+  const applyMasterVolume = useCallback(
+    (value, options = {}) => {
+      const nextVolume = Math.min(100, Math.max(0, toFiniteNumber(value, masterVolumeRef.current)));
+      const shouldAnimate = Boolean(options?.animate);
+      const durationMs = Number(options?.durationMs || VALUE_ANIMATION_DURATION_MS);
+      const currentUiMaster = toFiniteNumber(masterVolumeRef.current, nextVolume);
+      const currentProjectMaster = toFiniteNumber(projectRef.current?.masterVolume, currentUiMaster);
+      const projectNeedsUpdate = Math.abs(currentProjectMaster - nextVolume) > 1e-6;
 
-  const commitProjectName = () => {
-    const nextName = normalizeProjectName(projectNameDraft);
-    if (!nextName || nextName === project.projectName) {
-      setProjectNameDraft(project.projectName);
-      setIsEditingProjectName(false);
-      return;
+      if (shouldAnimate) {
+        startMasterVolumeAnimation(currentUiMaster, nextVolume, durationMs);
+      } else {
+        stopMasterVolumeAnimation();
+        masterVolumeRef.current = nextVolume;
+        setMasterVolume(nextVolume);
+      }
+
+      if (!projectNeedsUpdate) return;
+      updateProject((proj) => ({
+        ...proj,
+        masterVolume: nextVolume,
+      }), 'Set master volume');
+    },
+    [startMasterVolumeAnimation, stopMasterVolumeAnimation, updateProject]
+  );
+
+  const parseMasterVolumeInput = useCallback((rawText) => {
+    const text = String(rawText || '').trim();
+    if (!text) return dbToVolume(0);
+
+    const normalized = text.toLowerCase();
+    if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
+      return 0;
     }
 
-    updateProject((proj) => ({
-      ...proj,
-      projectName: nextName,
-    }), 'Rename project');
-    setIsEditingProjectName(false);
-  };
+    const parsed = parseFloat(text);
+    if (Number.isNaN(parsed)) return null;
+    return dbToVolume(Math.min(6, Math.max(-60, parsed)));
+  }, []);
+
+  const commitMasterEditTooltip = useCallback(() => {
+    if (!masterEditTooltip) return;
+
+    const nextVolume = parseMasterVolumeInput(masterEditTooltip.text);
+    if (nextVolume !== null) {
+      applyMasterVolume(nextVolume, {
+        animate: true,
+        durationMs: VALUE_ANIMATION_DURATION_MS,
+      });
+    }
+    setMasterEditTooltip(null);
+  }, [applyMasterVolume, masterEditTooltip, parseMasterVolumeInput]);
 
   const handleAddEmptyTrack = (options = null) => {
     const trackNumber = project.tracks.length + 1;
@@ -2061,8 +2415,8 @@ function Editor({ onBackToDashboard }) {
       const groupOrder = insertOrder >= 0 ? insertOrder : (sourceNode.order ?? siblingNodes.length);
 
       const groupRole = source.role || TRACK_ROLES.OTHER;
-      const groupNodeId = crypto.randomUUID();
-      const childNodeId = crypto.randomUUID();
+      const groupNodeId = createId();
+      const childNodeId = createId();
 
       const nextTracks = [
         ...normalized.tracks.filter((t) => t.id !== source.id),
@@ -2290,32 +2644,9 @@ function Editor({ onBackToDashboard }) {
             >
               <Settings size={18} />
             </button>
-            {isEditingProjectName ? (
-              <input
-                type="text"
-                value={projectNameDraft}
-                autoFocus
-                onChange={(e) => setProjectNameDraft(e.target.value)}
-                onBlur={commitProjectName}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    commitProjectName();
-                  } else if (e.key === 'Escape') {
-                    setProjectNameDraft(project.projectName);
-                    setIsEditingProjectName(false);
-                  }
-                }}
-                className="text-lg font-semibold bg-transparent border-b border-blue-500 px-0 py-0 leading-tight focus:outline-none min-w-0"
-              />
-            ) : (
-              <h1
-                className="text-lg font-semibold truncate cursor-text"
-                onDoubleClick={() => setIsEditingProjectName(true)}
-                title="Double-click to rename project"
-              >
-                {project.projectName}
-              </h1>
-            )}
+            <h1 className="text-lg font-semibold truncate" title={headerProjectTitle}>
+              {headerProjectTitle}
+            </h1>
           </div>
 
           <div className="relative min-w-0">
@@ -2359,20 +2690,46 @@ function Editor({ onBackToDashboard }) {
 
                 <button
                   onClick={handleRecord}
-                  disabled={hasNoTracks || !selectedTrackId}
+                  disabled={recordButtonDisabled}
                   className={`p-2 ${
                     isRecording
                       ? 'bg-red-600 hover:bg-red-700 animate-pulse'
                       : 'bg-red-600 hover:bg-red-700'
                   } disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded transition-colors`}
-                  title={isRecording ? 'Stop Recording' : 'Record'}
+                  title={
+                    isRecording
+                      ? 'Stop Recording'
+                      : selectedTrackLockedByOther
+                        ? `Locked by ${selectedTrackLockOwnerName}`
+                        : (isHostedSession && !syncConnected)
+                          ? 'Disconnected from server'
+                          : 'Record'
+                  }
                 >
-                  <Circle size={18} fill={isRecording ? 'currentColor' : 'none'} />
+                  {!isRecording && selectedTrackLockedByOther ? (
+                    <Lock size={18} />
+                  ) : (
+                    <Circle size={18} fill={isRecording ? 'currentColor' : 'none'} />
+                  )}
                 </button>
+
+                {isHostedSession && showDisconnectedIndicator && !syncConnected && (
+                  <div className="p-1 text-red-500" title="Disconnected from server">
+                    <WifiOff size={18} />
+                  </div>
+                )}
+
+                {isHostedSession && syncError && (
+                  <div className="text-xs text-red-300 max-w-56 truncate" title={syncError}>
+                    Sync error: {syncError}
+                  </div>
+                )}
               </div>
 
-              <div className="flex-shrink-0 text-xl font-mono bg-gray-900 px-3 py-1 rounded">
-                {formatTime(currentTimeMs)}
+              <div className="flex-shrink-0 flex flex-col items-center">
+                <div className="text-xl font-mono bg-gray-900 px-3 py-1 rounded">
+                  {formatTime(currentTimeMs)}
+                </div>
               </div>
 
               <div className="flex items-center gap-4 flex-shrink-0">
@@ -2405,42 +2762,14 @@ function Editor({ onBackToDashboard }) {
                         type="text"
                         value={masterEditTooltip.text}
                         onChange={(e) => setMasterEditTooltip({ text: e.target.value })}
-                      onFocus={(e) => e.target.select()}
-                      onBlur={() => {
-                        const text = masterEditTooltip.text.trim();
-                        if (!text) {
-                          applyMasterVolume(dbToVolume(0));
-                        } else {
-                          const normalized = text.toLowerCase();
-                          if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
-                            applyMasterVolume(0);
-                          } else {
-                            const parsed = parseFloat(text);
-                            if (!Number.isNaN(parsed)) {
-                              applyMasterVolume(dbToVolume(Math.min(6, Math.max(-60, parsed))));
-                            }
-                          }
-                        }
-                        setMasterEditTooltip(null);
-                      }}
+                        onFocus={(e) => e.target.select()}
+                        onBlur={commitMasterEditTooltip}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
-                            const text = masterEditTooltip.text.trim();
-                          if (!text) {
-                            applyMasterVolume(dbToVolume(0));
-                          } else {
-                            const normalized = text.toLowerCase();
-                            if (normalized === '-∞' || normalized === '-inf' || normalized === '-infinity') {
-                              applyMasterVolume(0);
-                            } else {
-                              const parsed = parseFloat(text);
-                              if (!Number.isNaN(parsed)) {
-                                applyMasterVolume(dbToVolume(Math.min(6, Math.max(-60, parsed))));
-                              }
-                            }
-                          }
-                            setMasterEditTooltip(null);
+                            e.preventDefault();
+                            e.currentTarget.blur();
                           } else if (e.key === 'Escape') {
+                            e.preventDefault();
                             setMasterEditTooltip(null);
                           }
                         }}
@@ -2461,7 +2790,20 @@ function Editor({ onBackToDashboard }) {
                 </button>
 
                 <button
-                  onClick={() => setShowExportDialog(true)}
+                  onClick={async () => {
+                    if (isHostedSession) {
+                      try {
+                        await forceCheckpoint(remoteSession.serverProjectId, remoteSession.session);
+                      } catch (error) {
+                        reportUserError(
+                          'Failed to create server checkpoint before export.',
+                          error,
+                          { onceKey: 'editor:force-checkpoint-before-export' }
+                        );
+                      }
+                    }
+                    setShowExportDialog(true);
+                  }}
                   disabled={hasNoTracks}
                   className="flex items-center gap-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-3 py-2 rounded transition-colors"
                 >
@@ -2479,6 +2821,7 @@ function Editor({ onBackToDashboard }) {
         <Timeline
           project={treeProject}
           rows={timelineRows}
+          remoteAnimation={remoteAnimation}
           currentTimeMs={currentTimeMs}
           isPlaying={isPlaying}
           isRecording={isRecording}
@@ -2532,6 +2875,7 @@ function Editor({ onBackToDashboard }) {
                     <TrackList
                       tracks={treeProject.tracks}
                       rows={timelineRows}
+                      remoteAnimation={remoteAnimation}
                       trackEffectiveRoleById={trackEffectiveRoleById}
                       onUpdateTrack={handleUpdateTrack}
                       onUpdateGroup={handleUpdateGroup}

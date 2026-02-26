@@ -1,4 +1,4 @@
-# ChoirMaster Specification Changes
+# Apollo Specification Changes
 
 This document tracks all deviations from the MASTER SYSTEM PROMPT v1.0 specification.
 

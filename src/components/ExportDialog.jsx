@@ -346,7 +346,7 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap, onUpdateExport
   const abortControllerRef = useRef(null);
   const [isExporting, setIsExporting] = useState(false);
   const [selectedLeafNodeIds, setSelectedLeafNodeIds] = useState(new Set(['preset-tutti']));
-  const [exportBaseName, setExportBaseName] = useState(project.projectName || 'project');
+  const [exportBaseName, setExportBaseName] = useState(project.musicalNumber || '0.0');
   const [fileFormat, setFileFormat] = useState('mp3');
   const [transformedPanRange, setTransformedPanRange] = useState(
     Number.isFinite(Number(project?.exportSettings?.transformedPanRange))

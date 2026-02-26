@@ -19,6 +19,20 @@ class RecordingManager {
    * Request microphone permission and initialize
    */
   async init() {
+    if (typeof navigator === 'undefined') {
+      throw new Error('Microphone capture is only available in a browser context.');
+    }
+
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      const insecureReason =
+        typeof window !== 'undefined' && window.isSecureContext === false
+          ? ' This page is not in a secure context. Use https:// or localhost.'
+          : '';
+      throw new Error(
+        `This browser cannot access the microphone because navigator.mediaDevices.getUserMedia is unavailable.${insecureReason}`
+      );
+    }
+
     try {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -33,7 +47,16 @@ class RecordingManager {
       return true;
     } catch (error) {
       console.error('Recording: Failed to access microphone:', error);
-      throw new Error('Microphone access denied. Please grant permission to record.');
+      if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') {
+        throw new Error('Microphone access denied. Please grant permission to record.');
+      }
+      if (error?.name === 'NotFoundError') {
+        throw new Error('No microphone was found on this device.');
+      }
+      if (error?.name === 'NotReadableError') {
+        throw new Error('Microphone is already in use by another application.');
+      }
+      throw new Error(error?.message || 'Failed to access microphone.');
     }
   }
 
@@ -54,9 +77,15 @@ class RecordingManager {
     this.recordingTrackId = trackId;
     this.isRecording = true;
 
-    // Create MediaRecorder
-    const options = { mimeType: 'audio/webm' };
-    this.mediaRecorder = new MediaRecorder(this.mediaStream, options);
+    // Pick a supported mime type when possible to avoid cross-browser failures.
+    const mimeCandidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
+    const supportedMime = mimeCandidates.find((mime) => {
+      return typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported(mime);
+    });
+
+    this.mediaRecorder = supportedMime
+      ? new MediaRecorder(this.mediaStream, { mimeType: supportedMime })
+      : new MediaRecorder(this.mediaStream);
 
     this.mediaRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) {

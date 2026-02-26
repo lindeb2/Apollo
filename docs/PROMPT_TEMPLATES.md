@@ -1,4 +1,4 @@
-# ChoirMaster - Prompt Templates for Development
+# Apollo - Prompt Templates for Development
 
 Quick copy-paste prompts for common development tasks. Always start by pasting `LLM_CONTEXT.md` into your chat first.
 
@@ -10,14 +10,14 @@ Quick copy-paste prompts for common development tasks. Always start by pasting `
 ```
 [Paste entire LLM_CONTEXT.md here]
 
-I need help with ChoirMaster (context above). [Your specific request]
+I need help with Apollo (context above). [Your specific request]
 ```
 
 **Example:**
 ```
 [Paste LLM_CONTEXT.md]
 
-I need help with ChoirMaster (context above). I want to add a 
+I need help with Apollo (context above). I want to add a 
 "duplicate track" feature that copies all clips to a new track.
 ```
 
@@ -27,7 +27,7 @@ I need help with ChoirMaster (context above). I want to add a
 
 ### General Bug
 ```
-In ChoirMaster, I'm experiencing this bug: [describe behavior]
+In Apollo, I'm experiencing this bug: [describe behavior]
 
 Expected: [what should happen]
 Actual: [what actually happens]
@@ -37,7 +37,7 @@ I suspect the issue is in [file/component name]. Please help debug.
 
 ### Playback Issue
 ```
-ChoirMaster playback issue: [describe problem]
+Apollo playback issue: [describe problem]
 
 - Happens when: [specific conditions]
 - Affects: [which tracks/clips]
@@ -172,7 +172,7 @@ Specifically:
 
 ### Code Review
 ```
-Review this code change for ChoirMaster:
+Review this code change for Apollo:
 
 [paste code]
 
@@ -190,7 +190,7 @@ Check for:
 
 ### Create Tests
 ```
-Write unit tests for [function/component] in ChoirMaster.
+Write unit tests for [function/component] in Apollo.
 
 Test file should be: src/__tests__/[name].test.js
 Use Vitest framework (already configured)
@@ -385,7 +385,7 @@ File: src/components/Timeline.jsx
 ```
 [Paste entire LLM_CONTEXT.md]
 
-I need help with ChoirMaster (context above).
+I need help with Apollo (context above).
 ```
 
 ### 2. Request Feature

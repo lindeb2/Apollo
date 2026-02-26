@@ -7,7 +7,7 @@ import { normalizePanLawDb } from '../utils/audio';
 import { reportUserError } from '../utils/errorReporter';
 
 /**
- * ChoirMaster Zustand Store
+ * Apollo Zustand Store
  * 
  * Central state management with:
  * - Project state
@@ -49,7 +49,7 @@ const useStore = create((set, get) => ({
     let exportSettings = normalizeExportSettings();
     let panLawDb = normalizePanLawDb();
     try {
-      const saved = localStorage.getItem('choirmaster.settings');
+      const saved = localStorage.getItem('apollo.settings');
       if (saved) {
         const parsed = JSON.parse(saved);
         const strategy = parsed?.defaultChoirPanning;
@@ -124,8 +124,9 @@ const useStore = create((set, get) => ({
   /**
    * Update project (triggers autosave and undo)
    */
-  updateProject: (updater, actionDescription = 'Update') => {
+  updateProject: (updater, actionDescription = 'Update', options = {}) => {
     const { project, undoStack, undoIndex, selectedTrackId, currentProjectId, selectedTrackByProjectId } = get();
+    const { skipUndo = false, skipAutosave = false, skipDirty = false } = options;
     
     // Save current state to undo
     const undoAction = {
@@ -137,7 +138,9 @@ const useStore = create((set, get) => ({
     const newProject = typeof updater === 'function' ? updater(project) : updater;
     
     // Add to undo stack (circular buffer, max 100)
-    const newUndoStack = [...undoStack.slice(0, undoIndex), undoAction].slice(-100);
+    const newUndoStack = skipUndo
+      ? undoStack
+      : [...undoStack.slice(0, undoIndex), undoAction].slice(-100);
     
     let nextSelectedTrackId = selectedTrackId;
     if (newProject?.tracks?.length) {
@@ -157,12 +160,14 @@ const useStore = create((set, get) => ({
       selectedTrackId: nextSelectedTrackId,
       selectedTrackByProjectId: nextSelectedTrackByProjectId,
       undoStack: newUndoStack,
-      redoStack: [], // Clear redo on new action
-      undoIndex: newUndoStack.length,
-      isDirty: true,
+      redoStack: skipUndo ? get().redoStack : [], // Clear redo on new action
+      undoIndex: skipUndo ? undoIndex : newUndoStack.length,
+      isDirty: skipDirty ? get().isDirty : true,
     });
     
-    get().triggerAutosave();
+    if (!skipAutosave) {
+      get().triggerAutosave();
+    }
   },
   
   /**

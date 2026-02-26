@@ -1,18 +1,21 @@
 import Dexie from 'dexie';
 import { reportUserError } from '../utils/errorReporter';
+import { createId } from '../utils/id';
 
 /**
- * ChoirMaster IndexedDB Database
+ * Apollo IndexedDB Database
  * 
  * Stores:
  * - projects: Full project metadata and state
  * - media: Audio blob storage with metadata
  * - undo: Undo/redo history (last 100 actions per project)
  * - exportDirs: Last-used export directory handles
+ * - remoteProjects: Remote sync metadata by project id
+ * - syncQueue: Pending sync operations for offline replay
  */
-class ChoirMasterDB extends Dexie {
+class ApolloDB extends Dexie {
   constructor() {
-    super('ChoirMasterDB');
+    super('ApolloDB');
     
     this.version(1).stores({
       // Projects table
@@ -37,15 +40,26 @@ class ChoirMasterDB extends Dexie {
       exportDirs: 'id, updatedAt',
     });
 
+    this.version(3).stores({
+      projects: 'projectId, projectName, lastModified',
+      media: 'blobId, fileName, sampleRate, durationMs, channels, createdAt',
+      undo: '[projectId+actionIndex], projectId, actionIndex, timestamp',
+      exportDirs: 'id, updatedAt',
+      remoteProjects: 'projectId, serverProjectId, updatedAt',
+      syncQueue: 'id, projectId, status, updatedAt',
+    });
+
     this.projects = this.table('projects');
     this.media = this.table('media');
     this.undo = this.table('undo');
     this.exportDirs = this.table('exportDirs');
+    this.remoteProjects = this.table('remoteProjects');
+    this.syncQueue = this.table('syncQueue');
   }
 }
 
 // Singleton instance
-export const db = new ChoirMasterDB();
+export const db = new ApolloDB();
 
 /**
  * Save a project to IndexedDB
@@ -79,14 +93,17 @@ export async function loadProject(projectId) {
  * Delete a project and its undo history
  */
 export async function deleteProject(projectId) {
-  await db.transaction('rw', [db.projects, db.undo], async () => {
+  await db.transaction('rw', [db.projects, db.undo, db.remoteProjects, db.syncQueue], async () => {
     await db.projects.delete(projectId);
     await db.undo.where('projectId').equals(projectId).delete();
+    await db.remoteProjects.delete(projectId);
+    await db.syncQueue.where('projectId').equals(projectId).delete();
+    await db.syncQueue.delete(`${projectId}:pending`);
   });
   
   // Update recent projects
   const recent = getRecentProjects().filter(p => p.id !== projectId);
-  localStorage.setItem('choirmaster_recent_projects', JSON.stringify(recent));
+  localStorage.setItem('apollo_recent_projects', JSON.stringify(recent));
 }
 
 /**
@@ -100,7 +117,7 @@ export async function listProjects() {
  * Store audio blob in media table
  */
 export async function storeMediaBlob(fileName, audioBuffer, blob, blobId = null) {
-  const id = blobId || crypto.randomUUID();
+  const id = blobId || createId();
   
   const mediaData = {
     blobId: id,
@@ -190,12 +207,12 @@ function updateRecentProjects(projectId, projectName) {
   // Keep only last 10
   const limited = filtered.slice(0, 10);
   
-  localStorage.setItem('choirmaster_recent_projects', JSON.stringify(limited));
+  localStorage.setItem('apollo_recent_projects', JSON.stringify(limited));
 }
 
 export function getRecentProjects() {
   try {
-    const data = localStorage.getItem('choirmaster_recent_projects');
+    const data = localStorage.getItem('apollo_recent_projects');
     return data ? JSON.parse(data) : [];
   } catch (error) {
     reportUserError(
@@ -245,11 +262,6 @@ export function exportProjectJSON(project) {
 export async function importProjectJSON(jsonString) {
   const project = JSON.parse(jsonString);
   
-  // Validate version
-  if (project.version !== '1.0.0') {
-    throw new Error(`Unsupported project version: ${project.version}`);
-  }
-  
   // Collect all referenced blob IDs
   const blobIds = new Set();
   for (const track of project.tracks) {
@@ -278,4 +290,44 @@ export async function importProjectJSON(jsonString) {
   await saveProject(project);
   
   return project;
+}
+
+/**
+ * Save remote project metadata (for hybrid local/server sync)
+ */
+export async function saveRemoteProjectMeta(meta) {
+  if (!meta?.projectId) return;
+  await db.remoteProjects.put({
+    ...meta,
+    updatedAt: Date.now(),
+  });
+}
+
+export async function loadRemoteProjectMeta(projectId) {
+  return await db.remoteProjects.get(projectId);
+}
+
+/**
+ * Queue or replace pending sync operation for a project.
+ * Uses one snapshot-style pending item per project id.
+ */
+export async function upsertPendingSyncOp(projectId, payload) {
+  const id = `${projectId}:pending`;
+  await db.syncQueue.put({
+    id,
+    projectId,
+    payload,
+    status: 'pending',
+    updatedAt: Date.now(),
+  });
+}
+
+export async function getPendingSyncOp(projectId) {
+  const id = `${projectId}:pending`;
+  return await db.syncQueue.get(id);
+}
+
+export async function clearPendingSyncOp(projectId) {
+  const id = `${projectId}:pending`;
+  await db.syncQueue.delete(id);
 }

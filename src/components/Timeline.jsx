@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { VolumeX } from 'lucide-react';
 import {
   formatTime,
@@ -20,6 +20,7 @@ import {
 } from '../utils/clipCollision';
 import { isPrimaryModifierPressed } from '../utils/keyboard';
 import { reportUserError } from '../utils/errorReporter';
+import { createId } from '../utils/id';
 
 const TIMELINE_VIEWPORT_WIDTH = 1920; // Default viewport width (updated dynamically)
 const MIN_VISIBLE_DURATION_MS = 8000; // Minimum duration to show when zoomed out
@@ -27,6 +28,7 @@ const MAX_ZOOM_VISIBLE_MS = 500; // At max zoom, show 500ms across viewport
 const MIN_CLIP_DURATION_MS = 100;
 const MIN_CLIP_GAIN_DB = -24;
 const MAX_CLIP_GAIN_DB = 24;
+const REMOTE_CLIP_ANIMATION_MS = 800;
 const RULER_INTERVALS_MS = [
   100, 200, 500,
   1000, 2000, 5000,
@@ -34,6 +36,13 @@ const RULER_INTERVALS_MS = [
   60000, 120000,
   300000, 600000, 1800000, 3600000,
 ];
+
+function easeInOutQuint(t) {
+  if (t < 0.5) {
+    return 16 * t * t * t * t * t;
+  }
+  return 1 - Math.pow(-2 * t + 2, 5) / 2;
+}
 
 // Helper to calculate cumulative Y position for a row index
 const getTrackYPosition = (rows, rowIndex) => {
@@ -51,6 +60,7 @@ const getTrackYPosition = (rows, rowIndex) => {
 function Timeline({ 
   project, 
   rows = [],
+  remoteAnimation = null,
   currentTimeMs, 
   isPlaying,
   isRecording,
@@ -99,7 +109,10 @@ function Timeline({
   const [containerWidth, setContainerWidth] = useState(TIMELINE_VIEWPORT_WIDTH);
   const [globalPeakAmplitude, setGlobalPeakAmplitude] = useState(1.0);
   const [loadedClipIds, setLoadedClipIds] = useState(new Set());
+  const [animatedClipLayoutById, setAnimatedClipLayoutById] = useState({});
   const errorBeepContextRef = useRef(null);
+  const animatedClipLayoutByIdRef = useRef({});
+  const clipAnimationFrameRef = useRef(null);
   const selectedClipIdSet = useMemo(() => new Set(selectedClipIds), [selectedClipIds]);
 
   const playErrorBeep = () => {
@@ -617,6 +630,128 @@ function Timeline({
     
     prevProjectDurationRef.current = projectDurationMs;
   }, [projectDurationMs, visibleDurationMs]);
+
+  useEffect(() => {
+    animatedClipLayoutByIdRef.current = animatedClipLayoutById;
+  }, [animatedClipLayoutById]);
+
+  const startClipLayoutAnimation = useCallback((entries, durationMs = REMOTE_CLIP_ANIMATION_MS) => {
+    const normalizedEntries = (entries || [])
+      .map((entry) => ({
+        clipId: entry?.clipId,
+        fromLeft: Number(entry?.fromLeft),
+        toLeft: Number(entry?.toLeft),
+        fromWidth: Number(entry?.fromWidth),
+        toWidth: Number(entry?.toWidth),
+      }))
+      .filter((entry) => (
+        typeof entry.clipId === 'string'
+        && Number.isFinite(entry.fromLeft)
+        && Number.isFinite(entry.toLeft)
+        && Number.isFinite(entry.fromWidth)
+        && Number.isFinite(entry.toWidth)
+        && (Math.abs(entry.fromLeft - entry.toLeft) > 0.01 || Math.abs(entry.fromWidth - entry.toWidth) > 0.01)
+      ));
+
+    if (!normalizedEntries.length) return undefined;
+
+    if (clipAnimationFrameRef.current) {
+      cancelAnimationFrame(clipAnimationFrameRef.current);
+      clipAnimationFrameRef.current = null;
+    }
+
+    setAnimatedClipLayoutById((previous) => {
+      const next = { ...previous };
+      normalizedEntries.forEach((entry) => {
+        next[entry.clipId] = {
+          left: entry.fromLeft,
+          width: entry.fromWidth,
+        };
+      });
+      return next;
+    });
+
+    const startAt = performance.now();
+    const step = (now) => {
+      const progress = Math.min(1, (now - startAt) / durationMs);
+      const eased = easeInOutQuint(progress);
+
+      setAnimatedClipLayoutById((previous) => {
+        const next = { ...previous };
+        normalizedEntries.forEach((entry) => {
+          next[entry.clipId] = {
+            left: entry.fromLeft + ((entry.toLeft - entry.fromLeft) * eased),
+            width: entry.fromWidth + ((entry.toWidth - entry.fromWidth) * eased),
+          };
+        });
+        return next;
+      });
+
+      if (progress < 1) {
+        clipAnimationFrameRef.current = requestAnimationFrame(step);
+        return;
+      }
+
+      clipAnimationFrameRef.current = null;
+      setAnimatedClipLayoutById((previous) => {
+        const next = { ...previous };
+        normalizedEntries.forEach((entry) => {
+          delete next[entry.clipId];
+        });
+        return next;
+      });
+    };
+
+    clipAnimationFrameRef.current = requestAnimationFrame(step);
+    return () => {
+      if (clipAnimationFrameRef.current) {
+        cancelAnimationFrame(clipAnimationFrameRef.current);
+        clipAnimationFrameRef.current = null;
+      }
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!remoteAnimation?.token) return;
+
+    const clipValueById = remoteAnimation?.clipValueById || {};
+    const durationMs = Number(remoteAnimation.durationMs || REMOTE_CLIP_ANIMATION_MS);
+    const entries = [];
+
+    Object.entries(clipValueById).forEach(([clipId, values]) => {
+      const fromWidthMs = Math.max(0, Number(values?.fromCropEndMs || 0) - Number(values?.fromCropStartMs || 0));
+      const toWidthMs = Math.max(0, Number(values?.toCropEndMs || 0) - Number(values?.toCropStartMs || 0));
+      const inFlight = animatedClipLayoutByIdRef.current[clipId];
+      const fromLeft = Number.isFinite(inFlight?.left)
+        ? inFlight.left
+        : (Number(values?.fromTimelineStartMs || 0) * pixelsPerMs);
+      const fromWidth = Number.isFinite(inFlight?.width)
+        ? inFlight.width
+        : (fromWidthMs * pixelsPerMs);
+      const toLeft = Number(values?.toTimelineStartMs || 0) * pixelsPerMs;
+      const toWidth = toWidthMs * pixelsPerMs;
+      if (Math.abs(fromLeft - toLeft) <= 0.01 && Math.abs(fromWidth - toWidth) <= 0.01) {
+        return;
+      }
+      entries.push({
+        clipId,
+        fromLeft,
+        toLeft,
+        fromWidth,
+        toWidth,
+      });
+    });
+
+    if (!entries.length) return;
+    return startClipLayoutAnimation(entries, durationMs);
+  }, [remoteAnimation?.token, pixelsPerMs, startClipLayoutAnimation]);
+
+  useEffect(() => () => {
+    if (clipAnimationFrameRef.current) {
+      cancelAnimationFrame(clipAnimationFrameRef.current);
+      clipAnimationFrameRef.current = null;
+    }
+  }, []);
 
   const getTimelineContentPoint = (clientX, clientY) => {
     const scrollElement = tracksScrollRef.current;
@@ -1233,6 +1368,8 @@ function Timeline({
               )),
             })),
           }), shouldMute ? 'Mute clips' : 'Unmute clips');
+        } else {
+          commitDragPreview(dragState, dragPreviewRef.current);
         }
         rightClickDragRef.current = false;
       } else {
@@ -1456,14 +1593,14 @@ function Timeline({
               const splitCropMs = candidateClip.cropStartMs + splitOffsetMs;
               const leftClip = {
                 ...candidateClip,
-                id: crypto.randomUUID(),
+                id: createId(),
                 timelineStartMs: clipStartMs,
                 cropStartMs: candidateClip.cropStartMs,
                 cropEndMs: splitCropMs,
               };
               const rightClip = {
                 ...candidateClip,
-                id: crypto.randomUUID(),
+                id: createId(),
                 timelineStartMs: currentTimeMs,
                 cropStartMs: splitCropMs,
                 cropEndMs: candidateClip.cropEndMs,
@@ -1574,7 +1711,7 @@ function Timeline({
           const singleClip = clipboardClip.type === 'single' ? clipboardClip.clip : clipboardClip;
           const newClip = {
             ...singleClip,
-            id: crypto.randomUUID(),
+            id: createId(),
             timelineStartMs: currentTimeMs,
           };
           const safePosition = findSafePosition(newClip, track.clips, currentTimeMs);
@@ -1615,7 +1752,7 @@ function Timeline({
           }
           const newClip = {
             ...item.clip,
-            id: crypto.randomUUID(),
+            id: createId(),
             timelineStartMs,
           };
           pastedIds.push(newClip.id);
@@ -1683,7 +1820,7 @@ function Timeline({
           const durationMs = getClipDurationMs(entry.clip);
           const duplicate = {
             ...entry.clip,
-            id: crypto.randomUUID(),
+            id: createId(),
             timelineStartMs: entry.clip.timelineStartMs + durationMs,
           };
           duplicateIds.push(duplicate.id);
@@ -2403,8 +2540,15 @@ function Timeline({
                   >
                     {trackClips.map(clip => {
                       const clipDurationMs = clip.cropEndMs - clip.cropStartMs;
-                      const clipWidthPx = clipDurationMs * pixelsPerMs;
-                      const clipLeftPx = clip.timelineStartMs * pixelsPerMs;
+                      const animatedClipLayout = (!dragState && !dragPreview)
+                        ? animatedClipLayoutById[clip.id]
+                        : null;
+                      const clipWidthPx = Number.isFinite(animatedClipLayout?.width)
+                        ? animatedClipLayout.width
+                        : (clipDurationMs * pixelsPerMs);
+                      const clipLeftPx = Number.isFinite(animatedClipLayout?.left)
+                        ? animatedClipLayout.left
+                        : (clip.timelineStartMs * pixelsPerMs);
                       const audioBuffer = audioManager.mediaCache.get(clip.blobId);
                       const clipPadding = 8;
                       const clipInternalHeight = trackHeight - (clipPadding * 2);

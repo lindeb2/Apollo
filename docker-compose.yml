@@ -1,0 +1,63 @@
+name: apollo
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: apollo
+      POSTGRES_USER: apollo
+      POSTGRES_PASSWORD: apollo
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 8787
+      DATABASE_URL: postgres://apollo:apollo@db:5432/apollo
+      JWT_ACCESS_SECRET: change-this-access-secret
+      JWT_REFRESH_SECRET: change-this-refresh-secret
+      ACCESS_TOKEN_TTL: 15m
+      REFRESH_TOKEN_TTL_DAYS: 7
+      DEFAULT_ADMIN_USERNAME: admin
+      DEFAULT_ADMIN_PASSWORD: changemechangeme
+      CORS_ORIGIN: http://localhost:3000
+      MEDIA_ROOT: /data/media
+      MAX_UPLOAD_BYTES: 524288000
+      RECORD_LOCK_TIMEOUT_SECONDS: 30
+      CHECKPOINT_EVERY_OPS: 100
+      CHECKPOINT_EVERY_SECONDS: 30
+    ports:
+      - "8787:8787"
+    depends_on:
+      - db
+    volumes:
+      - media:/data/media
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+      args:
+        VITE_SERVER_API_BASE: /api
+        VITE_SERVER_WS_BASE: /ws
+    restart: unless-stopped
+    ports:
+      - "3000:443"
+    volumes:
+      - ./certs/dev.crt:/etc/nginx/certs/dev.crt:ro
+      - ./certs/dev.key:/etc/nginx/certs/dev.key:ro
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+    name: apollo_pgdata
+  media:
+    name: apollo_media
