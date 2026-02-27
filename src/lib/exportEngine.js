@@ -66,6 +66,37 @@ const SINGLE_OUTPUT_PRESETS = new Set([
   EXPORT_PRESETS.CHOIR_ONLY,
 ]);
 
+export const PRACTICE_NORMAL_PRESETS = new Set([
+  EXPORT_PRESETS.INSTRUMENT_PARTS,
+  EXPORT_PRESETS.LEAD_PARTS,
+  EXPORT_PRESETS.CHOIR_PARTS,
+]);
+
+export const PRACTICE_OMITTED_PRESETS = new Set([
+  EXPORT_PRESETS.INSTRUMENT_PARTS_OMITTED,
+  EXPORT_PRESETS.LEAD_PARTS_OMITTED,
+  EXPORT_PRESETS.CHOIR_PARTS_OMITTED,
+]);
+
+const PRACTICE_PRESETS = new Set([
+  ...PRACTICE_NORMAL_PRESETS,
+  ...PRACTICE_OMITTED_PRESETS,
+]);
+
+export const PRACTICE_REALTIME_MODES = {
+  NORMAL: 'normal',
+  OMITTED: 'omitted',
+  SOLO: 'solo',
+};
+
+export function isPracticePresetId(presetId) {
+  return PRACTICE_PRESETS.has(presetId);
+}
+
+export function isPracticeOmittedPresetId(presetId) {
+  return PRACTICE_OMITTED_PRESETS.has(presetId);
+}
+
 function clampPan(pan) {
   return Math.max(-100, Math.min(100, Number(pan) || 0));
 }
@@ -363,6 +394,161 @@ export function resolvePresetVariantPlaybackPlan(project, presetId, presetVarian
     selectedUnitIdsByPreset: {
       [presetId]: [resolved.key],
     },
+  };
+}
+
+function getPracticePresetMeta(presetId) {
+  if (presetId === EXPORT_PRESETS.INSTRUMENT_PARTS || presetId === EXPORT_PRESETS.INSTRUMENT_PARTS_OMITTED) {
+    return {
+      role: TRACK_ROLE_INSTRUMENT,
+      normalPresetId: EXPORT_PRESETS.INSTRUMENT_PARTS,
+      omittedPresetId: EXPORT_PRESETS.INSTRUMENT_PARTS_OMITTED,
+    };
+  }
+  if (presetId === EXPORT_PRESETS.LEAD_PARTS || presetId === EXPORT_PRESETS.LEAD_PARTS_OMITTED) {
+    return {
+      role: TRACK_ROLE_LEAD,
+      normalPresetId: EXPORT_PRESETS.LEAD_PARTS,
+      omittedPresetId: EXPORT_PRESETS.LEAD_PARTS_OMITTED,
+    };
+  }
+  if (presetId === EXPORT_PRESETS.CHOIR_PARTS || presetId === EXPORT_PRESETS.CHOIR_PARTS_OMITTED) {
+    return {
+      role: TRACK_ROLE_CHOIR,
+      normalPresetId: EXPORT_PRESETS.CHOIR_PARTS,
+      omittedPresetId: EXPORT_PRESETS.CHOIR_PARTS_OMITTED,
+    };
+  }
+  return null;
+}
+
+function buildRealtimePracticeGainMap(tracks, targetTrackIds, practiceFocusDiffDb) {
+  const targetSet = new Set(targetTrackIds || []);
+  const diffDb = Math.max(-6, Math.min(6, Number(practiceFocusDiffDb) || 0));
+  const focusScale = diffDb < 0 ? dbToGain(diffDb) : 1;
+  const backingScale = diffDb > 0 ? dbToGain(-diffDb) : 1;
+  const gainMap = {};
+  for (const track of tracks) {
+    gainMap[track.id] = targetSet.has(track.id) ? focusScale : backingScale;
+  }
+  return gainMap;
+}
+
+/**
+ * Resolve per-track gain/pan values for realtime practice playback.
+ * Returns `{ mode, targetTrackIds, trackMixByTrackId }` where each track entry
+ * has shape `{ gain, pan }` in effective (post-group) units.
+ */
+export function resolvePracticeRealtimeTrackMix(
+  project,
+  presetId,
+  presetVariantKey,
+  exportSettingsOverride = null,
+  mode = PRACTICE_REALTIME_MODES.NORMAL
+) {
+  const meta = getPracticePresetMeta(presetId);
+  if (!meta) return null;
+
+  const context = getExportContext(project);
+  const {
+    trackStateById,
+    activeTracks,
+    choirTracks,
+  } = context;
+  const normalizedKey = presetVariantKey == null ? null : String(presetVariantKey);
+  if (!normalizedKey) {
+    throw new Error('Preset variant is required for this preset.');
+  }
+  const units = getUnitsForPresetFromContext(context, meta.normalPresetId);
+  const selectedUnit = units.find((unit) => String(unit.unitId) === normalizedKey);
+  if (!selectedUnit) {
+    throw new Error('Preset variant is required for this preset.');
+  }
+
+  const exportSettings = normalizeExportSettings({
+    ...DEFAULT_EXPORT_SETTINGS,
+    ...(project.exportSettings || {}),
+    ...(exportSettingsOverride || {}),
+  });
+  const targetTrackIds = [...selectedUnit.trackIds];
+  const targetSet = new Set(targetTrackIds);
+  const basePanByTrackId = {};
+  const baseGainByTrackId = {};
+  for (const track of activeTracks) {
+    const state = trackStateById.get(track.id);
+    basePanByTrackId[track.id] = clampPan(Number.isFinite(state?.effectivePan) ? state.effectivePan : track.pan);
+    baseGainByTrackId[track.id] = Number.isFinite(state?.effectiveGain)
+      ? state.effectiveGain
+      : volumeToGain(track.volume);
+  }
+
+  const normalizedMode = mode === PRACTICE_REALTIME_MODES.OMITTED
+    ? PRACTICE_REALTIME_MODES.OMITTED
+    : (mode === PRACTICE_REALTIME_MODES.SOLO ? PRACTICE_REALTIME_MODES.SOLO : PRACTICE_REALTIME_MODES.NORMAL);
+  const trackMixByTrackId = {};
+
+  if (normalizedMode === PRACTICE_REALTIME_MODES.OMITTED) {
+    let panAdjustments = {};
+    if (meta.role === TRACK_ROLE_CHOIR) {
+      const remainingChoirTracks = choirTracks.filter((track) => !targetSet.has(track.id));
+      panAdjustments = getAutoPannedChoirPanMap(project, remainingChoirTracks);
+    }
+    for (const track of activeTracks) {
+      trackMixByTrackId[track.id] = {
+        gain: targetSet.has(track.id) ? 0 : baseGainByTrackId[track.id],
+        pan: panAdjustments[track.id] !== undefined
+          ? panAdjustments[track.id]
+          : basePanByTrackId[track.id],
+      };
+    }
+    return {
+      mode: normalizedMode,
+      targetTrackIds,
+      trackMixByTrackId,
+    };
+  }
+
+  const panAdjustments = buildPracticePanMap({
+    tracks: activeTracks,
+    targetTrackIds,
+    basePanByTrackId,
+    transformedPanRange: exportSettings.transformedPanRange,
+  });
+  const gainAdjustments = buildRealtimePracticeGainMap(
+    activeTracks,
+    targetTrackIds,
+    exportSettings.practiceFocusDiffDb
+  );
+
+  if (normalizedMode === PRACTICE_REALTIME_MODES.SOLO) {
+    for (const track of activeTracks) {
+      trackMixByTrackId[track.id] = {
+        gain: targetSet.has(track.id)
+          ? baseGainByTrackId[track.id] * (gainAdjustments[track.id] || 1)
+          : 0,
+        pan: targetSet.has(track.id) ? 0 : basePanByTrackId[track.id],
+      };
+    }
+    return {
+      mode: normalizedMode,
+      targetTrackIds,
+      trackMixByTrackId,
+    };
+  }
+
+  for (const track of activeTracks) {
+    trackMixByTrackId[track.id] = {
+      gain: baseGainByTrackId[track.id] * (gainAdjustments[track.id] || 1),
+      pan: panAdjustments[track.id] !== undefined
+        ? panAdjustments[track.id]
+        : basePanByTrackId[track.id],
+    };
+  }
+
+  return {
+    mode: normalizedMode,
+    targetTrackIds,
+    trackMixByTrackId,
   };
 }
 

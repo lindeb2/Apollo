@@ -476,6 +476,7 @@ async function loadPlaylistById(playlistId) {
     `SELECT id,
             owner_user_id AS "ownerUserId",
             name,
+            folder_id AS "folderId",
             created_at AS "createdAt",
             updated_at AS "updatedAt"
      FROM player_playlists
@@ -1183,6 +1184,7 @@ app.get('/api/player/my-device', requireAuth, async (req, res) => {
         `SELECT id,
                 owner_user_id AS "ownerUserId",
                 name,
+                folder_id AS "folderId",
                 created_at AS "createdAt",
                 updated_at AS "updatedAt"
          FROM player_playlists
@@ -1790,19 +1792,28 @@ app.post('/api/player/mixes/:id/unpublish', requireAuth, async (req, res) => {
 app.post('/api/player/playlists', requireAuth, async (req, res) => {
   try {
     const name = normalizeText(req.body?.name);
+    const folderId = normalizeOptionalText(req.body?.folderId);
     if (!name) {
       res.status(400).json({ error: 'Playlist name is required' });
       return;
     }
+    if (folderId) {
+      const folder = await loadPlayerFolderById(folderId);
+      if (!folder || folder.ownerUserId !== req.user.id) {
+        res.status(400).json({ error: 'Folder not found' });
+        return;
+      }
+    }
     const result = await pool.query(
-      `INSERT INTO player_playlists(id, owner_user_id, name)
-       VALUES($1, $2, $3)
+      `INSERT INTO player_playlists(id, owner_user_id, name, folder_id)
+       VALUES($1, $2, $3, $4)
        RETURNING id,
                  owner_user_id AS "ownerUserId",
                  name,
+                 folder_id AS "folderId",
                  created_at AS "createdAt",
                  updated_at AS "updatedAt"`,
-      [randomUUID(), req.user.id, name]
+      [randomUUID(), req.user.id, name, folderId]
     );
     res.status(201).json({ playlist: result.rows[0] });
   } catch (error) {
@@ -1822,22 +1833,52 @@ app.patch('/api/player/playlists/:id', requireAuth, async (req, res) => {
       res.status(403).json({ error: 'No permission to edit this playlist' });
       return;
     }
-    const name = normalizeText(req.body?.name);
-    if (!name) {
-      res.status(400).json({ error: 'Playlist name is required' });
+    const hasName = Object.prototype.hasOwnProperty.call(req.body || {}, 'name');
+    const hasFolderId = Object.prototype.hasOwnProperty.call(req.body || {}, 'folderId');
+    if (!hasName && !hasFolderId) {
+      res.status(400).json({ error: 'At least one field is required' });
       return;
     }
+
+    const updates = [];
+    const values = [playlist.id];
+    let idx = 2;
+
+    if (hasName) {
+      const name = normalizeText(req.body?.name);
+      if (!name) {
+        res.status(400).json({ error: 'Playlist name is required' });
+        return;
+      }
+      updates.push(`name = $${idx++}`);
+      values.push(name);
+    }
+
+    if (hasFolderId) {
+      const folderId = normalizeOptionalText(req.body?.folderId);
+      if (folderId) {
+        const folder = await loadPlayerFolderById(folderId);
+        if (!folder || folder.ownerUserId !== playlist.ownerUserId) {
+          res.status(400).json({ error: 'Folder not found' });
+          return;
+        }
+      }
+      updates.push(`folder_id = $${idx++}`);
+      values.push(folderId);
+    }
+
     const result = await pool.query(
       `UPDATE player_playlists
-       SET name = $2,
+       SET ${updates.join(', ')},
            updated_at = NOW()
        WHERE id = $1
        RETURNING id,
                  owner_user_id AS "ownerUserId",
                  name,
+                 folder_id AS "folderId",
                  created_at AS "createdAt",
                  updated_at AS "updatedAt"`,
-      [playlist.id, name]
+      values
     );
     res.json({ playlist: result.rows[0] });
   } catch (error) {

@@ -5,10 +5,9 @@ import {
   ChevronRight,
   Folder,
   Home,
-  Library,
   ListMusic,
+  Loader2,
   MoreHorizontal,
-  Music2,
   Pause,
   Play,
   Plus,
@@ -27,20 +26,27 @@ import {
   createPlayerFolder,
   createPlayerPlaylist,
   createVirtualMix,
+  deletePlayerPlaylistItem,
   deletePlayerFolder,
   deletePlayerPlaylist,
-  deletePlayerPlaylistItem,
   deleteVirtualMix,
   downloadMediaBlob,
   fetchPlayerGlobalMixes,
   fetchPlayerMyDevice,
   fetchPlayerTuttiMixes,
-  publishVirtualMix,
-  unpublishVirtualMix,
   updatePlayerFolder,
   updatePlayerPlaylist,
+  updateVirtualMix,
 } from '../lib/serverApi';
-import { EXPORT_PRESET_DEFINITIONS, listPresetVariants, renderPresetVariant } from '../lib/exportEngine';
+import {
+  EXPORT_PRESET_DEFINITIONS,
+  PRACTICE_REALTIME_MODES,
+  isPracticeOmittedPresetId,
+  isPracticePresetId,
+  listPresetVariants,
+  renderPresetVariant,
+  resolvePracticeRealtimeTrackMix,
+} from '../lib/exportEngine';
 import { audioManager } from '../lib/audioManager';
 import { getMediaBlob, storeMediaBlob } from '../lib/db';
 import {
@@ -58,6 +64,9 @@ const SINGLE_OUTPUT_PRESETS = new Set([
   'lead_only',
   'choir_only',
 ]);
+
+const PRACTICE_FOCUS_MIN = -7;
+const PRACTICE_FOCUS_MAX = 7;
 
 function formatClock(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
@@ -80,6 +89,22 @@ function pickRandomQueueIndex(currentIndex, totalCount) {
   return candidate;
 }
 
+function computeSnapshotDurationMs(snapshot) {
+  let maxDurationMs = 0;
+  (snapshot?.tracks || []).forEach((track) => {
+    (track?.clips || []).forEach((clip) => {
+      if (clip?.muted) return;
+      const clipStartMs = Number(clip?.timelineStartMs || 0);
+      const clipDurationMs = Math.max(0, Number(clip?.cropEndMs || 0) - Number(clip?.cropStartMs || 0));
+      const clipEndMs = clipStartMs + clipDurationMs;
+      if (Number.isFinite(clipEndMs)) {
+        maxDurationMs = Math.max(maxDurationMs, clipEndMs);
+      }
+    });
+  });
+  return maxDurationMs;
+}
+
 function selectFromPrompt(label, options) {
   if (!Array.isArray(options) || options.length === 0) return null;
   const lines = options.map((option, idx) => `${idx + 1}. ${option.label} (${option.value})`).join('\n');
@@ -98,7 +123,6 @@ function PlayerDashboard({
   session,
   onLogout,
   onSwitchToDawDashboard,
-  onOpenDawProject,
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -123,8 +147,14 @@ function PlayerDashboard({
   const [shuffleEnabled, setShuffleEnabled] = useState(false);
   const [loopMode, setLoopMode] = useState(PLAYER_LOOP_MODES.OFF);
   const [nowPlayingLabel, setNowPlayingLabel] = useState('');
+  const [playbackEngine, setPlaybackEngine] = useState('html');
+  const [practicePanRange, setPracticePanRange] = useState(100);
+  const [practiceFocusControl, setPracticeFocusControl] = useState(0);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [isLibraryCollapsed, setIsLibraryCollapsed] = useState(false);
+  const [libraryScopeFolderId, setLibraryScopeFolderId] = useState(null);
+  const [libraryCreateMenuOpen, setLibraryCreateMenuOpen] = useState(false);
+  const [libraryContextMenu, setLibraryContextMenu] = useState(null);
   const [projectContextMenu, setProjectContextMenu] = useState(null);
 
   const audioRef = useRef(null);
@@ -133,9 +163,18 @@ function PlayerDashboard({
   const activeIndexRef = useRef(-1);
   const loopModeRef = useRef(loopMode);
   const shuffleEnabledRef = useRef(shuffleEnabled);
+  const playbackEngineRef = useRef('html');
+  const realtimePlaybackRef = useRef({
+    project: null,
+    item: null,
+    durationMs: 0,
+  });
+  const realtimeEndInFlightRef = useRef(false);
   const lastNonZeroVolumeRef = useRef(Math.max(5, volume));
   const playQueueItemRef = useRef(null);
   const profileMenuRef = useRef(null);
+  const libraryCreateMenuRef = useRef(null);
+  const libraryContextMenuRef = useRef(null);
   const projectContextMenuRef = useRef(null);
 
   const refreshPlayerData = useCallback(async () => {
@@ -165,6 +204,74 @@ function PlayerDashboard({
     refreshPlayerData();
   }, [refreshPlayerData]);
 
+  const resolvePracticePlaybackMode = useCallback((presetId) => {
+    if (practiceFocusControl < -6) return PRACTICE_REALTIME_MODES.OMITTED;
+    if (practiceFocusControl > 6) return PRACTICE_REALTIME_MODES.SOLO;
+    return isPracticeOmittedPresetId(presetId)
+      ? PRACTICE_REALTIME_MODES.OMITTED
+      : PRACTICE_REALTIME_MODES.NORMAL;
+  }, [practiceFocusControl]);
+
+  const applyRealtimePracticeSettings = useCallback((snapshot, item) => {
+    if (!snapshot || !item || !isPracticePresetId(item.presetId)) return false;
+    const focusDb = Math.max(-6, Math.min(6, Number(practiceFocusControl) || 0));
+    const mixState = resolvePracticeRealtimeTrackMix(
+      snapshot,
+      item.presetId,
+      item.presetVariantKey,
+      {
+        transformedPanRange: practicePanRange,
+        practiceFocusDiffDb: focusDb,
+      },
+      resolvePracticePlaybackMode(item.presetId)
+    );
+    if (!mixState?.trackMixByTrackId) return false;
+    Object.entries(mixState.trackMixByTrackId).forEach(([trackId, trackMix]) => {
+      audioManager.updateTrackMix(trackId, trackMix.gain, trackMix.pan);
+    });
+    return true;
+  }, [practiceFocusControl, practicePanRange, resolvePracticePlaybackMode]);
+
+  const handlePlaybackEnded = useCallback(async () => {
+    const queue = activeQueueRef.current || [];
+    const currentIdx = activeIndexRef.current;
+    const mode = loopModeRef.current;
+    const shuffle = shuffleEnabledRef.current;
+    if (!queue.length || currentIdx < 0) {
+      setIsPlaying(false);
+      return;
+    }
+
+    if (mode === PLAYER_LOOP_MODES.ONE) {
+      if (typeof playQueueItemRef.current === 'function') {
+        await playQueueItemRef.current(currentIdx);
+      }
+      return;
+    }
+
+    if (shuffle && queue.length > 1) {
+      const randomIndex = pickRandomQueueIndex(currentIdx, queue.length);
+      if (typeof playQueueItemRef.current === 'function') {
+        await playQueueItemRef.current(randomIndex);
+      }
+      return;
+    }
+
+    let nextIndex = currentIdx + 1;
+    if (nextIndex >= queue.length) {
+      if (mode === PLAYER_LOOP_MODES.ALL) {
+        nextIndex = 0;
+      } else {
+        setIsPlaying(false);
+        return;
+      }
+    }
+
+    if (typeof playQueueItemRef.current === 'function') {
+      await playQueueItemRef.current(nextIndex);
+    }
+  }, []);
+
   useEffect(() => {
     const audio = new Audio();
     audio.preload = 'auto';
@@ -172,55 +279,24 @@ function PlayerDashboard({
     audioRef.current = audio;
 
     const handleTimeUpdate = () => {
+      if (playbackEngineRef.current !== 'html') return;
       setCurrentTimeSec(Number(audio.currentTime || 0));
     };
     const handleLoadedMetadata = () => {
+      if (playbackEngineRef.current !== 'html') return;
       setDurationSec(Number.isFinite(audio.duration) ? audio.duration : 0);
     };
     const handlePause = () => {
+      if (playbackEngineRef.current !== 'html') return;
       setIsPlaying(false);
     };
     const handlePlay = () => {
+      if (playbackEngineRef.current !== 'html') return;
       setIsPlaying(true);
     };
     const handleEnded = async () => {
-      const queue = activeQueueRef.current || [];
-      const currentIdx = activeIndexRef.current;
-      const mode = loopModeRef.current;
-      const shuffle = shuffleEnabledRef.current;
-      if (!queue.length || currentIdx < 0) {
-        setIsPlaying(false);
-        return;
-      }
-
-      if (mode === PLAYER_LOOP_MODES.ONE) {
-        if (typeof playQueueItemRef.current === 'function') {
-          await playQueueItemRef.current(currentIdx);
-        }
-        return;
-      }
-
-      if (shuffle && queue.length > 1) {
-        const randomIndex = pickRandomQueueIndex(currentIdx, queue.length);
-        if (typeof playQueueItemRef.current === 'function') {
-          await playQueueItemRef.current(randomIndex);
-        }
-        return;
-      }
-
-      let nextIndex = currentIdx + 1;
-      if (nextIndex >= queue.length) {
-        if (mode === PLAYER_LOOP_MODES.ALL) {
-          nextIndex = 0;
-        } else {
-          setIsPlaying(false);
-          return;
-        }
-      }
-
-      if (typeof playQueueItemRef.current === 'function') {
-        await playQueueItemRef.current(nextIndex);
-      }
+      if (playbackEngineRef.current !== 'html') return;
+      await handlePlaybackEnded();
     };
 
     audio.addEventListener('timeupdate', handleTimeUpdate);
@@ -231,28 +307,37 @@ function PlayerDashboard({
 
     return () => {
       audio.pause();
+      audioManager.stop();
       audio.removeEventListener('timeupdate', handleTimeUpdate);
       audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
       audio.removeEventListener('pause', handlePause);
       audio.removeEventListener('play', handlePlay);
       audio.removeEventListener('ended', handleEnded);
+      realtimePlaybackRef.current = { project: null, item: null, durationMs: 0 };
       audioRef.current = null;
       if (objectUrlRef.current) {
         URL.revokeObjectURL(objectUrlRef.current);
         objectUrlRef.current = null;
       }
     };
-  }, []);
+  }, [handlePlaybackEnded]);
 
   useEffect(() => {
     if (!audioRef.current) return;
     audioRef.current.volume = Math.max(0, Math.min(1, volume / 100));
+    audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
   }, [volume]);
 
   useEffect(() => {
     const handleDocumentClick = (event) => {
       if (!profileMenuRef.current?.contains(event.target)) {
         setProfileMenuOpen(false);
+      }
+      if (!libraryCreateMenuRef.current?.contains(event.target)) {
+        setLibraryCreateMenuOpen(false);
+      }
+      if (!libraryContextMenuRef.current?.contains(event.target)) {
+        setLibraryContextMenu(null);
       }
       if (!projectContextMenuRef.current?.contains(event.target)) {
         setProjectContextMenu(null);
@@ -345,6 +430,10 @@ function PlayerDashboard({
   }, [shuffleEnabled]);
 
   useEffect(() => {
+    playbackEngineRef.current = playbackEngine;
+  }, [playbackEngine]);
+
+  useEffect(() => {
     if (!activeQueueItems.length) {
       setActiveIndex(-1);
       return;
@@ -386,11 +475,9 @@ function PlayerDashboard({
     return audioBuffers;
   }, [session]);
 
-  const playQueueItem = useCallback(async (index) => {
+  const playMixItem = useCallback(async (item, indexForState = null) => {
     if (!session) return;
     if (!audioRef.current) return;
-    if (index < 0 || index >= activeQueueItems.length) return;
-    const item = activeQueueItems[index];
     if (!item?.projectId || !item?.presetId) return;
 
     setIsRendering(true);
@@ -402,6 +489,40 @@ function PlayerDashboard({
         throw new Error('Project snapshot missing');
       }
       const audioBuffers = await ensureSnapshotAudioBuffers(snapshot);
+      const audio = audioRef.current;
+      audio.pause();
+      audioManager.stop();
+      realtimePlaybackRef.current = { project: null, item: null, durationMs: 0 };
+      realtimeEndInFlightRef.current = false;
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+
+      setCurrentTimeSec(0);
+      setDurationSec(0);
+      if (typeof indexForState === 'number' && indexForState >= 0) {
+        setActiveIndex(indexForState);
+      }
+      setNowPlayingLabel(item.name || item.projectName || 'Mix');
+
+      if (isPracticePresetId(item.presetId)) {
+        const durationMs = computeSnapshotDurationMs(snapshot);
+        audioManager.setPanLawDb(snapshot.panLawDb);
+        await audioManager.play(snapshot, 0);
+        applyRealtimePracticeSettings(snapshot, item);
+        realtimePlaybackRef.current = {
+          project: snapshot,
+          item,
+          durationMs,
+        };
+        playbackEngineRef.current = 'realtime';
+        setPlaybackEngine('realtime');
+        setDurationSec(Math.max(0, durationMs / 1000));
+        setIsPlaying(true);
+        return;
+      }
+
       const rendered = await renderPresetVariant(
         snapshot,
         item.presetId,
@@ -414,34 +535,69 @@ function PlayerDashboard({
       if (!rendered?.blob) {
         throw new Error('Failed to build playback mix');
       }
-
-      if (objectUrlRef.current) {
-        URL.revokeObjectURL(objectUrlRef.current);
-        objectUrlRef.current = null;
-      }
       const url = URL.createObjectURL(rendered.blob);
       objectUrlRef.current = url;
-
-      const audio = audioRef.current;
-      audio.pause();
+      playbackEngineRef.current = 'html';
+      setPlaybackEngine('html');
       audio.src = url;
       audio.currentTime = 0;
-      setCurrentTimeSec(0);
-      setDurationSec(0);
-      setActiveIndex(index);
-      setNowPlayingLabel(item.name || item.projectName || 'Mix');
       await audio.play();
     } catch (playError) {
+      audioManager.stop();
+      realtimePlaybackRef.current = { project: null, item: null, durationMs: 0 };
+      playbackEngineRef.current = 'html';
+      setPlaybackEngine('html');
       setIsPlaying(false);
       setError(playError.message || 'Playback failed');
     } finally {
       setIsRendering(false);
     }
-  }, [activeQueueItems, ensureSnapshotAudioBuffers, session]);
+  }, [applyRealtimePracticeSettings, ensureSnapshotAudioBuffers, session]);
+
+  const playQueueItem = useCallback(async (index) => {
+    if (index < 0 || index >= activeQueueItems.length) return;
+    const item = activeQueueItems[index];
+    await playMixItem(item, index);
+  }, [activeQueueItems, playMixItem]);
 
   useEffect(() => {
     playQueueItemRef.current = playQueueItem;
   }, [playQueueItem]);
+
+  useEffect(() => {
+    if (playbackEngine !== 'realtime' || !isPlaying) return undefined;
+    const interval = setInterval(() => {
+      const currentMs = Math.max(0, Number(audioManager.getCurrentTime() || 0));
+      setCurrentTimeSec(currentMs / 1000);
+
+      const durationMs = Number(realtimePlaybackRef.current?.durationMs || 0);
+      if (durationMs <= 0 || currentMs < durationMs) {
+        return;
+      }
+      if (realtimeEndInFlightRef.current) {
+        return;
+      }
+      realtimeEndInFlightRef.current = true;
+      audioManager.stop();
+      setCurrentTimeSec(durationMs / 1000);
+      setIsPlaying(false);
+      void handlePlaybackEnded().finally(() => {
+        realtimeEndInFlightRef.current = false;
+      });
+    }, 50);
+    return () => clearInterval(interval);
+  }, [handlePlaybackEnded, isPlaying, playbackEngine]);
+
+  useEffect(() => {
+    if (playbackEngine !== 'realtime') return;
+    const current = realtimePlaybackRef.current;
+    if (!current?.project || !current?.item) return;
+    try {
+      applyRealtimePracticeSettings(current.project, current.item);
+    } catch (applyError) {
+      setError(applyError.message || 'Failed to apply practice mix settings');
+    }
+  }, [applyRealtimePracticeSettings, playbackEngine]);
 
   const handleSelectCollection = useCallback((type, id = null) => {
     setActiveCollectionType(type);
@@ -455,15 +611,38 @@ function PlayerDashboard({
   }, []);
 
   const handleTogglePlay = useCallback(async () => {
-    if (!audioRef.current) return;
     if (!activeQueueItems.length) return;
     if (isPlaying) {
-      audioRef.current.pause();
+      if (playbackEngineRef.current === 'realtime') {
+        const currentMs = Math.max(0, Math.round((Number(currentTimeSec) || 0) * 1000));
+        await audioManager.pause(currentMs);
+        setIsPlaying(false);
+        return;
+      }
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
       return;
     }
+
+    if (
+      playbackEngineRef.current === 'realtime'
+      && realtimePlaybackRef.current?.project
+      && realtimePlaybackRef.current?.item
+      && currentTimeSec < Math.max(0, durationSec - 0.01)
+    ) {
+      const resumeMs = Math.max(0, Math.round((Number(currentTimeSec) || 0) * 1000));
+      const current = realtimePlaybackRef.current;
+      audioManager.setPanLawDb(current.project.panLawDb);
+      await audioManager.play(current.project, resumeMs);
+      applyRealtimePracticeSettings(current.project, current.item);
+      setIsPlaying(true);
+      return;
+    }
+
     const startIndex = activeIndex >= 0 ? activeIndex : 0;
     await playQueueItem(startIndex);
-  }, [activeIndex, activeQueueItems.length, isPlaying, playQueueItem]);
+  }, [activeIndex, activeQueueItems.length, applyRealtimePracticeSettings, currentTimeSec, durationSec, isPlaying, playQueueItem]);
 
   const handleNext = useCallback(async () => {
     if (!activeQueueItems.length) return;
@@ -484,8 +663,23 @@ function PlayerDashboard({
   }, [activeIndex, activeQueueItems.length, loopMode, playQueueItem, shuffleEnabled]);
 
   const handlePrevious = useCallback(async () => {
-    if (!audioRef.current || !activeQueueItems.length) return;
-    if (audioRef.current.currentTime > 3) {
+    if (!activeQueueItems.length) return;
+    if (playbackEngineRef.current === 'realtime') {
+      if (currentTimeSec > 3 && realtimePlaybackRef.current?.project && realtimePlaybackRef.current?.item) {
+        const current = realtimePlaybackRef.current;
+        if (isPlaying) {
+          await audioManager.pause(0);
+          audioManager.setPanLawDb(current.project.panLawDb);
+          await audioManager.play(current.project, 0);
+          applyRealtimePracticeSettings(current.project, current.item);
+          setIsPlaying(true);
+        } else {
+          await audioManager.pause(0);
+        }
+        setCurrentTimeSec(0);
+        return;
+      }
+    } else if (audioRef.current && audioRef.current.currentTime > 3) {
       audioRef.current.currentTime = 0;
       setCurrentTimeSec(0);
       return;
@@ -497,14 +691,33 @@ function PlayerDashboard({
         : 0;
     }
     await playQueueItem(previousIndex);
-  }, [activeIndex, activeQueueItems.length, loopMode, playQueueItem]);
+  }, [activeIndex, activeQueueItems.length, applyRealtimePracticeSettings, currentTimeSec, isPlaying, loopMode, playQueueItem]);
 
-  const handleSeek = useCallback((nextTimeSec) => {
-    if (!audioRef.current) return;
+  const handleSeek = useCallback(async (nextTimeSec) => {
     const safe = Math.max(0, Math.min(Number(nextTimeSec || 0), Number(durationSec || 0)));
+    if (playbackEngineRef.current === 'realtime' && realtimePlaybackRef.current?.project && realtimePlaybackRef.current?.item) {
+      try {
+        const seekMs = Math.max(0, Math.round(safe * 1000));
+        const current = realtimePlaybackRef.current;
+        if (isPlaying) {
+          await audioManager.pause(seekMs);
+          audioManager.setPanLawDb(current.project.panLawDb);
+          await audioManager.play(current.project, seekMs);
+          applyRealtimePracticeSettings(current.project, current.item);
+          setIsPlaying(true);
+        } else {
+          await audioManager.pause(seekMs);
+        }
+      } catch (seekError) {
+        setError(seekError.message || 'Seek failed');
+      }
+      setCurrentTimeSec(safe);
+      return;
+    }
+    if (!audioRef.current) return;
     audioRef.current.currentTime = safe;
     setCurrentTimeSec(safe);
-  }, [durationSec]);
+  }, [applyRealtimePracticeSettings, durationSec, isPlaying]);
 
   const handleVolumeChange = useCallback((nextValue) => {
     const numeric = Number(nextValue);
@@ -528,12 +741,12 @@ function PlayerDashboard({
     const normalized = String(name || '').trim();
     if (!normalized) return;
     try {
-      await createPlayerFolder({ name: normalized, parentFolderId: null }, session);
+      await createPlayerFolder({ name: normalized, parentFolderId: libraryScopeFolderId || null }, session);
       await refreshPlayerData();
     } catch (createError) {
       setError(createError.message || 'Failed to create folder');
     }
-  }, [refreshPlayerData, session]);
+  }, [libraryScopeFolderId, refreshPlayerData, session]);
 
   const handleRenameFolder = useCallback(async (folder) => {
     const name = window.prompt('Rename folder', folder?.name || '');
@@ -565,13 +778,13 @@ function PlayerDashboard({
     const normalized = String(name || '').trim();
     if (!normalized) return;
     try {
-      const playlist = await createPlayerPlaylist({ name: normalized }, session);
+      const playlist = await createPlayerPlaylist({ name: normalized, folderId: libraryScopeFolderId || null }, session);
       setSelectedPlaylistId(playlist?.id || null);
       await refreshPlayerData();
     } catch (createError) {
       setError(createError.message || 'Failed to create playlist');
     }
-  }, [refreshPlayerData, session]);
+  }, [libraryScopeFolderId, refreshPlayerData, session]);
 
   const handleRenamePlaylist = useCallback(async (playlist) => {
     const name = window.prompt('Rename playlist', playlist?.name || '');
@@ -597,24 +810,6 @@ function PlayerDashboard({
       setError(deleteError.message || 'Failed to delete playlist');
     }
   }, [refreshPlayerData, selectedPlaylistId, session]);
-
-  const handleAddMixToPlaylist = useCallback(async (mix) => {
-    if (!playlists.length) {
-      setError('Create a playlist first.');
-      return;
-    }
-    const playlistId = selectFromPrompt(
-      'Select playlist',
-      playlists.map((playlist) => ({ value: playlist.id, label: playlist.name }))
-    );
-    if (!playlistId) return;
-    try {
-      await addPlayerPlaylistItem(playlistId, mix.id, session);
-      await refreshPlayerData();
-    } catch (addError) {
-      setError(addError.message || 'Failed to add mix to playlist');
-    }
-  }, [playlists, refreshPlayerData, session]);
 
   const promptCreateMixFromProject = useCallback(async (projectLike) => {
     const projectId = String(projectLike?.projectId || projectLike?.id || '').trim();
@@ -652,28 +847,30 @@ function PlayerDashboard({
       presetVariantKey = variantValue;
     }
 
-    await createVirtualMix({
+    const placement = selectFromPrompt(
+      'Place mix in',
+      [
+        { value: '__root__', label: 'My Library (Root)' },
+        ...playlists.map((playlist) => ({ value: `playlist:${playlist.id}`, label: `Playlist: ${playlist.name}` })),
+      ]
+    );
+    if (!placement) return;
+
+    const createdMix = await createVirtualMix({
       projectId,
       name: normalizedMixName,
       presetId,
       presetVariantKey,
-      folderId: selectedFolderId,
+      folderId: null,
     }, session);
-    await refreshPlayerData();
-  }, [refreshPlayerData, selectedFolderId, session]);
-
-  const handleTogglePublish = useCallback(async (mix) => {
-    try {
-      if (mix.visibility === 'global') {
-        await unpublishVirtualMix(mix.id, session);
-      } else {
-        await publishVirtualMix(mix.id, session);
+    if (String(placement).startsWith('playlist:')) {
+      const playlistId = String(placement).slice('playlist:'.length);
+      if (playlistId) {
+        await addPlayerPlaylistItem(playlistId, createdMix.id, session);
       }
-      await refreshPlayerData();
-    } catch (toggleError) {
-      setError(toggleError.message || 'Failed to update mix visibility');
     }
-  }, [refreshPlayerData, session]);
+    await refreshPlayerData();
+  }, [playlists, refreshPlayerData, session]);
 
   const handleDeleteMix = useCallback(async (mix) => {
     if (!window.confirm(`Delete mix "${mix?.name}"?`)) return;
@@ -685,31 +882,71 @@ function PlayerDashboard({
     }
   }, [refreshPlayerData, session]);
 
+  const handleRenameMix = useCallback(async (mix) => {
+    const name = window.prompt('Rename mix', mix?.name || '');
+    const normalized = String(name || '').trim();
+    if (!normalized || normalized === mix?.name) return;
+    try {
+      await updateVirtualMix(mix.id, { name: normalized }, session);
+      await refreshPlayerData();
+    } catch (renameError) {
+      setError(renameError.message || 'Failed to rename mix');
+    }
+  }, [refreshPlayerData, session]);
+
   const activeQueueItem = activeQueueItems[activeIndex] || null;
-  const libraryItems = useMemo(() => {
-    const folderEntries = [
-      { id: 'folder:root', kind: 'folder', name: 'Root', folderId: null },
-      ...folders.map((folder) => ({
-        id: `folder:${folder.id}`,
-        kind: 'folder',
-        name: folder.name,
-        folderId: folder.id,
-      })),
-    ];
-    const mixEntries = myMixes.map((mix) => ({
-      id: `mix:${mix.id}`,
-      kind: 'mix',
-      name: mix.name || mix.projectName || 'Untitled mix',
-      mix,
+  const selectedPlaylist = playlists.find((playlist) => playlist.id === selectedPlaylistId) || null;
+  const currentLibraryFolder = folders.find((folder) => folder.id === libraryScopeFolderId) || null;
+  const libraryVisibleItems = useMemo(() => {
+    if (libraryScopeFolderId) {
+      const scopedFolders = folders
+        .filter((folder) => (folder.parentFolderId || null) === libraryScopeFolderId)
+        .map((folder) => ({
+          id: `folder:${folder.id}`,
+          kind: 'folder',
+          name: folder.name,
+          folder,
+        }));
+      const scopedPlaylists = playlists
+        .filter((playlist) => (playlist.folderId || null) === libraryScopeFolderId)
+        .map((playlist) => ({
+          id: `playlist:${playlist.id}`,
+          kind: 'playlist',
+          name: playlist.name,
+          playlist,
+        }));
+      return [...scopedFolders, ...scopedPlaylists];
+    }
+    const playlistMixIds = new Set(
+      Object.values(playlistItemsByPlaylistId || {})
+        .flat()
+        .map((item) => item?.mixId)
+        .filter(Boolean)
+        .map((mixId) => String(mixId))
+    );
+    const rootMixes = myMixes
+      .filter((mix) => (mix.folderId || null) === null)
+      .filter((mix) => !playlistMixIds.has(String(mix.id)))
+      .map((mix) => ({
+        id: `mix:${mix.id}`,
+        kind: 'mix',
+        name: mix.name || mix.projectName || 'Untitled mix',
+        mix,
+      }));
+    const foldersFlat = folders.map((folder) => ({
+      id: `folder:${folder.id}`,
+      kind: 'folder',
+      name: folder.name,
+      folder,
     }));
-    const playlistEntries = playlists.map((playlist) => ({
+    const playlistsFlat = playlists.map((playlist) => ({
       id: `playlist:${playlist.id}`,
       kind: 'playlist',
       name: playlist.name,
       playlist,
     }));
-    return [...folderEntries, ...mixEntries, ...playlistEntries];
-  }, [folders, myMixes, playlists]);
+    return [...foldersFlat, ...playlistsFlat, ...rootMixes];
+  }, [folders, libraryScopeFolderId, myMixes, playlistItemsByPlaylistId, playlists]);
   const loopLabel = loopMode === PLAYER_LOOP_MODES.OFF
     ? 'Loop off'
     : (loopMode === PLAYER_LOOP_MODES.ALL ? 'Loop all' : 'Loop one');
@@ -720,6 +957,15 @@ function PlayerDashboard({
   const shuffleButtonClass = shuffleEnabled ? 'text-blue-300' : 'text-gray-400';
   const isMuted = volume <= 0;
   const VolumeIcon = isMuted ? VolumeX : Volume2;
+  const practiceControlItem = playbackEngine === 'realtime'
+    ? realtimePlaybackRef.current?.item
+    : activeQueueItem;
+  const practiceControlsEnabled = isPracticePresetId(practiceControlItem?.presetId);
+  const practiceFocusLabel = practiceFocusControl < -6
+    ? 'Omitted'
+    : (practiceFocusControl > 6
+      ? 'Solo'
+      : `${practiceFocusControl > 0 ? '+' : ''}${practiceFocusControl} dB`);
 
   const handleCycleLoopMode = useCallback(() => {
     setLoopMode((previous) => {
@@ -732,33 +978,165 @@ function PlayerDashboard({
   const handleSelectLibraryEntry = useCallback((entry) => {
     if (!entry) return;
     if (entry.kind === 'folder') {
-      const folderId = entry.folderId || null;
+      const folderId = entry.folder?.id || null;
+      setLibraryScopeFolderId(folderId);
       setSelectedFolderId(folderId);
       setSelectedPlaylistId(null);
       handleSelectCollection(PLAYER_COLLECTION_TYPES.MY_DEVICE_MIXES, folderId || 'root');
-      return;
-    }
-    if (entry.kind === 'mix' && entry.mix) {
-      const folderId = entry.mix.folderId || null;
-      const collectionId = folderId || 'root';
-      const queueIndex = myMixes
-        .filter((candidate) => (candidate.folderId || null) === folderId)
-        .findIndex((candidate) => candidate.id === entry.mix.id);
-      setSelectedFolderId(folderId);
-      setSelectedPlaylistId(null);
-      if (queueIndex >= 0) {
-        handleSelectItem(PLAYER_COLLECTION_TYPES.MY_DEVICE_MIXES, collectionId, queueIndex);
-      } else {
-        handleSelectCollection(PLAYER_COLLECTION_TYPES.MY_DEVICE_MIXES, collectionId);
-      }
       return;
     }
     if (entry.kind === 'playlist' && entry.playlist?.id) {
       setSelectedPlaylistId(entry.playlist.id);
       setSelectedFolderId(null);
       handleSelectCollection(PLAYER_COLLECTION_TYPES.PLAYLIST, entry.playlist.id);
+      return;
     }
-  }, [handleSelectCollection, handleSelectItem, myMixes]);
+    if (entry.kind === 'mix' && entry.mix) {
+      const queue = myDeviceQueue;
+      const queueIndex = queue.findIndex((candidate) => String(candidate.mixId || '') === String(entry.mix.id));
+      setSelectedFolderId(null);
+      setSelectedPlaylistId(null);
+      if (queueIndex >= 0) {
+        handleSelectItem(PLAYER_COLLECTION_TYPES.MY_DEVICE_MIXES, 'root', queueIndex);
+      } else {
+        handleSelectCollection(PLAYER_COLLECTION_TYPES.MY_DEVICE_MIXES, 'root');
+      }
+    }
+  }, [handleSelectCollection, handleSelectItem, myDeviceQueue]);
+
+  const handleLibraryContextAction = useCallback(async (action) => {
+    const entry = libraryContextMenu?.entry;
+    setLibraryContextMenu(null);
+    if (!entry) return;
+    try {
+      if (entry.kind === 'folder' && entry.folder) {
+        if (action === 'rename') {
+          await handleRenameFolder(entry.folder);
+          return;
+        }
+        if (action === 'delete') {
+          await handleDeleteFolder(entry.folder);
+          return;
+        }
+        if (action === 'move') {
+          const destination = selectFromPrompt(
+            `Move folder "${entry.folder.name}" to`,
+            [
+              { value: '__root__', label: 'Root' },
+              ...folders
+                .filter((folder) => folder.id !== entry.folder.id)
+                .map((folder) => ({ value: folder.id, label: folder.name })),
+            ]
+          );
+          if (destination == null) return;
+          await updatePlayerFolder(entry.folder.id, { parentFolderId: destination === '__root__' ? null : destination }, session);
+          await refreshPlayerData();
+        }
+        return;
+      }
+
+      if (entry.kind === 'playlist' && entry.playlist) {
+        if (action === 'rename') {
+          await handleRenamePlaylist(entry.playlist);
+          return;
+        }
+        if (action === 'delete') {
+          await handleDeletePlaylist(entry.playlist);
+          return;
+        }
+        if (action === 'move') {
+          const destination = selectFromPrompt(
+            `Move playlist "${entry.playlist.name}" to`,
+            [
+              { value: '__root__', label: 'Root' },
+              ...folders.map((folder) => ({ value: folder.id, label: folder.name })),
+            ]
+          );
+          if (destination == null) return;
+          await updatePlayerPlaylist(entry.playlist.id, { folderId: destination === '__root__' ? null : destination }, session);
+          await refreshPlayerData();
+        }
+      }
+
+      if (entry.kind === 'mix' && entry.mix) {
+        if (action === 'rename') {
+          await handleRenameMix(entry.mix);
+          return;
+        }
+        if (action === 'delete') {
+          await handleDeleteMix(entry.mix);
+          return;
+        }
+        if (action === 'move') {
+          const destination = selectFromPrompt(
+            `Move mix "${entry.mix.name}" to`,
+            [
+              { value: '__root__', label: 'My Library (Root)' },
+              ...playlists.map((playlist) => ({ value: `playlist:${playlist.id}`, label: `Playlist: ${playlist.name}` })),
+            ]
+          );
+          if (destination == null) return;
+          const sourcePlaylistId = entry.sourcePlaylistId || null;
+          const sourcePlaylistItemId = entry.sourcePlaylistItemId || null;
+          const destinationPlaylistId = String(destination).startsWith('playlist:')
+            ? String(destination).slice('playlist:'.length)
+            : null;
+          if (sourcePlaylistId && destinationPlaylistId === sourcePlaylistId) {
+            return;
+          }
+          if (sourcePlaylistId && sourcePlaylistItemId) {
+            await deletePlayerPlaylistItem(sourcePlaylistId, sourcePlaylistItemId, session);
+          }
+          if (String(destination).startsWith('playlist:')) {
+            const playlistId = destinationPlaylistId;
+            if (!playlistId) return;
+            const existingItems = playlistItemsByPlaylistId?.[playlistId] || [];
+            const alreadyExists = existingItems.some((item) => String(item?.mixId || '') === String(entry.mix.id));
+            if (alreadyExists) {
+              setError('Mix already exists in selected playlist.');
+              return;
+            }
+            await addPlayerPlaylistItem(playlistId, entry.mix.id, session);
+          }
+          await refreshPlayerData();
+          return;
+        }
+        if (action === 'duplicate') {
+          const duplicated = await createVirtualMix({
+            projectId: entry.mix.projectId,
+            name: `${entry.mix.name || 'Mix'} (Copy)`,
+            presetId: entry.mix.presetId,
+            presetVariantKey: entry.mix.presetVariantKey ?? null,
+            folderId: null,
+          }, session);
+          if (entry.sourcePlaylistId) {
+            await addPlayerPlaylistItem(entry.sourcePlaylistId, duplicated.id, session);
+          }
+          await refreshPlayerData();
+          return;
+        }
+        if (action === 'new_from_project') {
+          await promptCreateMixFromProject(entry.mix);
+        }
+      }
+    } catch (contextError) {
+      setError(contextError.message || 'Library action failed');
+    }
+  }, [
+    folders,
+    handleDeleteFolder,
+    handleDeleteMix,
+    handleDeletePlaylist,
+    handleRenameFolder,
+    handleRenameMix,
+    handleRenamePlaylist,
+    libraryContextMenu,
+    playlistItemsByPlaylistId,
+    playlists,
+    promptCreateMixFromProject,
+    refreshPlayerData,
+    session,
+  ]);
 
   const projectContextMenuStyle = useMemo(() => {
     if (!projectContextMenu) return null;
@@ -768,6 +1146,15 @@ function PlayerDashboard({
     const y = Math.max(8, Math.min(projectContextMenu.y, viewportHeight - 56));
     return { left: `${x}px`, top: `${y}px` };
   }, [projectContextMenu]);
+
+  const libraryContextMenuStyle = useMemo(() => {
+    if (!libraryContextMenu) return null;
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
+    const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 720;
+    const x = Math.max(8, Math.min(libraryContextMenu.x, viewportWidth - 172));
+    const y = Math.max(8, Math.min(libraryContextMenu.y, viewportHeight - 240));
+    return { left: `${x}px`, top: `${y}px` };
+  }, [libraryContextMenu]);
 
   const handleCreateMixFromContextMenu = useCallback(async () => {
     const target = projectContextMenu?.mix;
@@ -779,6 +1166,29 @@ function PlayerDashboard({
       setError(saveError.message || 'Failed to create mix');
     }
   }, [projectContextMenu, promptCreateMixFromProject]);
+
+  const activePlaylistRows = useMemo(() => {
+    if (!selectedPlaylist) return [];
+    const playableItems = selectedPlaylistItems.filter((candidate) => !candidate.unavailable && candidate.mix);
+    return selectedPlaylistItems.map((item) => ({
+      id: item.id,
+      unavailable: Boolean(item.unavailable || !item.mix),
+      mix: item.mix || null,
+      queueIndex: playableItems.findIndex((candidate) => candidate.id === item.id),
+    }));
+  }, [selectedPlaylist, selectedPlaylistItems]);
+
+  const handlePlayPlaylistRow = useCallback(async (row) => {
+    if (!selectedPlaylist || !row || row.unavailable || row.queueIndex < 0 || !row.mix) return;
+    setSelectedPlaylistId(selectedPlaylist.id);
+    setSelectedFolderId(null);
+    setActiveCollectionType(PLAYER_COLLECTION_TYPES.PLAYLIST);
+    setActiveCollectionId(selectedPlaylist.id);
+    setActiveIndex(row.queueIndex);
+    const queueItem = createQueueItemFromMix(row.mix, PLAYER_COLLECTION_TYPES.PLAYLIST, selectedPlaylist.id);
+    if (!queueItem) return;
+    await playMixItem(queueItem, row.queueIndex);
+  }, [playMixItem, selectedPlaylist]);
 
   return (
     <div className="h-full flex flex-col bg-gray-900 text-white">
@@ -833,6 +1243,14 @@ function PlayerDashboard({
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={() => {
+                setSelectedPlaylistId(null);
+                setActiveCollectionType(PLAYER_COLLECTION_TYPES.TUTTI);
+                setActiveCollectionId('tutti');
+                if (activeIndex < 0 && tuttiQueue.length) {
+                  setActiveIndex(0);
+                }
+              }}
               className="rounded-md bg-gray-800 border border-gray-700 p-2 text-gray-200 hover:bg-gray-700 transition-colors"
               title="Home"
             >
@@ -852,31 +1270,54 @@ function PlayerDashboard({
             <div className={`${isLibraryCollapsed ? 'w-14' : 'w-80'} shrink-0 rounded-lg border border-gray-700 bg-gray-800/80 flex flex-col transition-all duration-200`}>
               <div className="flex items-center justify-between border-b border-gray-700 px-3 py-2">
                 {!isLibraryCollapsed ? (
-                  <div className="flex items-center gap-2">
-                    <Library size={14} />
+                  libraryScopeFolderId ? (
+                    <button
+                      onClick={() => setLibraryScopeFolderId(null)}
+                      className="inline-flex items-center gap-1 rounded px-2 py-1 text-sm font-semibold hover:bg-gray-700"
+                      title="Back to full library"
+                    >
+                      <ChevronLeft size={13} />
+                      {currentLibraryFolder?.name || 'My Library'}
+                    </button>
+                  ) : (
                     <h2 className="text-sm font-semibold">My Library</h2>
-                  </div>
+                  )
                 ) : (
-                  <Library size={14} className="text-gray-300" />
+                  <span className="text-sm font-semibold">L</span>
                 )}
                 <div className="flex items-center gap-1">
                   {!isLibraryCollapsed ? (
-                    <>
+                    <div className="relative" ref={libraryCreateMenuRef}>
                       <button
-                        onClick={handleCreateFolder}
+                        onClick={() => setLibraryCreateMenuOpen((previous) => !previous)}
                         className="rounded bg-gray-700 hover:bg-gray-600 p-1.5"
-                        title="Create folder"
+                        title="Create"
                       >
                         <Plus size={13} />
                       </button>
-                      <button
-                        onClick={handleCreatePlaylist}
-                        className="rounded bg-gray-700 hover:bg-gray-600 p-1.5"
-                        title="Create playlist"
-                      >
-                        <ListMusic size={13} />
-                      </button>
-                    </>
+                      {libraryCreateMenuOpen ? (
+                        <div className="absolute right-0 top-full mt-1 min-w-36 rounded-md border border-gray-700 bg-gray-800 shadow-xl overflow-hidden z-30">
+                          <button
+                            onClick={async () => {
+                              setLibraryCreateMenuOpen(false);
+                              await handleCreateFolder();
+                            }}
+                            className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+                          >
+                            Create Folder
+                          </button>
+                          <button
+                            onClick={async () => {
+                              setLibraryCreateMenuOpen(false);
+                              await handleCreatePlaylist();
+                            }}
+                            className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+                          >
+                            Create Playlist
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
                   ) : null}
                   <button
                     onClick={() => setIsLibraryCollapsed((previous) => !previous)}
@@ -890,49 +1331,72 @@ function PlayerDashboard({
 
               {!isLibraryCollapsed ? (
                 <div className="flex-1 overflow-auto p-2 space-y-1">
-                  {libraryItems.map((entry) => {
+                  {libraryVisibleItems.map((entry) => {
                     const isActive = entry.kind === 'folder'
                       ? (
                         activeCollectionType === PLAYER_COLLECTION_TYPES.MY_DEVICE_MIXES
-                        && activeCollectionId === (entry.folderId || 'root')
+                        && activeCollectionId === (entry.folder?.id || 'root')
                       )
                       : (
-                        entry.kind === 'mix'
+                        entry.kind === 'playlist'
                           ? (
-                            activeCollectionType === PLAYER_COLLECTION_TYPES.MY_DEVICE_MIXES
-                            && String(activeQueueItem?.mixId || '') === String(entry.mix?.id || '')
-                          )
-                          : (
                             activeCollectionType === PLAYER_COLLECTION_TYPES.PLAYLIST
                             && activeCollectionId === entry.playlist?.id
+                          )
+                          : (
+                            activeCollectionType === PLAYER_COLLECTION_TYPES.MY_DEVICE_MIXES
+                            && activeCollectionId === 'root'
+                            && String(activeQueueItem?.mixId || '') === String(entry.mix?.id || '')
                           )
                       );
                     const EntryIcon = entry.kind === 'folder'
                       ? Folder
-                      : (entry.kind === 'mix' ? Music2 : ListMusic);
-                    const subtitle = entry.kind === 'mix'
-                      ? `${entry.mix?.musicalNumber || '0.0'} - ${entry.mix?.projectName || 'Project'}`
-                      : (entry.kind === 'playlist' ? 'Playlist' : 'Folder');
+                      : (entry.kind === 'playlist' ? ListMusic : Play);
+                    const subtitle = entry.kind === 'playlist'
+                      ? 'Playlist'
+                      : (entry.kind === 'mix' ? `${entry.mix?.musicalNumber || '0.0'} - Mix` : 'Folder');
                     return (
-                      <button
+                      <div
                         key={entry.id}
-                        onClick={() => handleSelectLibraryEntry(entry)}
-                        className={`w-full rounded-md px-2 py-1.5 text-left transition-colors ${
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          setLibraryContextMenu({ entry, x: event.clientX, y: event.clientY });
+                        }}
+                        className={`group flex items-center gap-1 rounded-md pr-1 transition-colors ${
                           isActive ? 'bg-blue-700/30' : 'hover:bg-gray-700'
                         }`}
                       >
-                        <div className="flex items-center gap-2">
-                          <EntryIcon size={13} className="text-gray-400 shrink-0" />
-                          <div className="min-w-0">
-                            <div className="text-sm truncate">{entry.name}</div>
-                            <div className="text-[11px] text-gray-500 truncate">{subtitle}</div>
+                        <button
+                          onClick={() => handleSelectLibraryEntry(entry)}
+                          onDoubleClick={async () => {
+                            if (entry.kind === 'mix' && entry.mix) {
+                              const queue = myDeviceQueue;
+                              const queueIndex = queue.findIndex((candidate) => String(candidate.mixId || '') === String(entry.mix.id));
+                              if (queueIndex >= 0) {
+                                setSelectedFolderId(null);
+                                setSelectedPlaylistId(null);
+                                setActiveCollectionType(PLAYER_COLLECTION_TYPES.MY_DEVICE_MIXES);
+                                setActiveCollectionId('root');
+                                setActiveIndex(queueIndex);
+                                await playQueueItem(queueIndex);
+                              }
+                            }
+                          }}
+                          className="flex-1 min-w-0 text-left px-2 py-1.5"
+                        >
+                          <div className="flex items-center gap-2">
+                            <EntryIcon size={13} className="text-gray-400 shrink-0" />
+                            <div className="min-w-0">
+                              <div className="text-sm truncate">{entry.name}</div>
+                              <div className="text-[11px] text-gray-500 truncate">{subtitle}</div>
+                            </div>
                           </div>
-                        </div>
-                      </button>
+                        </button>
+                      </div>
                     );
                   })}
-                  {!libraryItems.length ? (
-                    <div className="text-xs text-gray-500 px-2 py-2">No library items yet.</div>
+                  {!libraryVisibleItems.length ? (
+                    <div className="text-xs text-gray-500 px-2 py-2">No library items here.</div>
                   ) : null}
                 </div>
               ) : null}
@@ -940,7 +1404,11 @@ function PlayerDashboard({
 
             <div className="flex-1 min-w-0 rounded-lg border border-gray-700 bg-gray-800/80 flex flex-col overflow-hidden">
               <div className="px-4 py-3 border-b border-gray-700">
-                <h2 className="text-sm font-semibold">This Year&apos;s Musical Numbers</h2>
+                <h2 className="text-sm font-semibold">
+                  {selectedPlaylist && activeCollectionType === PLAYER_COLLECTION_TYPES.PLAYLIST
+                    ? selectedPlaylist.name
+                    : "This Year's Musical Numbers"}
+                </h2>
               </div>
               <div className="grid grid-cols-[56px_minmax(0,1fr)_96px_34px] px-4 py-2 text-xs uppercase tracking-wide text-gray-400 border-b border-gray-700">
                 <div>#</div>
@@ -949,56 +1417,201 @@ function PlayerDashboard({
                 <div />
               </div>
               <div className="flex-1 overflow-auto">
-                {(tuttiMixes || []).map((mix, index) => {
-                  const isActive = (
-                    activeCollectionType === PLAYER_COLLECTION_TYPES.TUTTI
-                    && activeCollectionId === 'tutti'
-                    && activeIndex === index
-                  );
-                  const listTitle = `${mix.musicalNumber || '0.0'} - ${mix.name || 'Untitled Project'}`;
-                  return (
-                    <div
-                      key={mix.id}
-                      onClick={() => handleSelectItem(PLAYER_COLLECTION_TYPES.TUTTI, 'tutti', index)}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        handleSelectItem(PLAYER_COLLECTION_TYPES.TUTTI, 'tutti', index);
-                        setProjectContextMenu({ mix, x: event.clientX, y: event.clientY });
-                      }}
-                      className={`group grid grid-cols-[56px_minmax(0,1fr)_96px_34px] items-center px-4 py-2.5 text-sm cursor-pointer transition-colors ${
-                        isActive ? 'bg-blue-700/20' : 'hover:bg-gray-700/60'
-                      }`}
-                    >
-                      <div className="flex items-center text-gray-300">
-                        <span className="group-hover:hidden">{index + 1}</span>
-                        <Play size={14} className="hidden group-hover:block" />
-                      </div>
-                      <div className="truncate text-gray-100">{listTitle}</div>
-                      <div className="text-right text-gray-400">--:--</div>
-                      <div className="flex justify-end">
-                        <button
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            const rect = event.currentTarget.getBoundingClientRect();
-                            setProjectContextMenu({ mix, x: rect.right, y: rect.bottom + 4 });
+                {selectedPlaylist && activeCollectionType === PLAYER_COLLECTION_TYPES.PLAYLIST ? (
+                  <>
+                    {activePlaylistRows.map((row, index) => {
+                      const rowTitle = row.unavailable
+                        ? '[Unavailable]'
+                        : `${row.mix?.name || row.mix?.projectName || 'Mix'}`;
+                      const isActive = !row.unavailable && row.queueIndex >= 0 && activeIndex === row.queueIndex;
+                      return (
+                        <div
+                          key={row.id}
+                          onContextMenu={(event) => {
+                            if (row.unavailable || !row.mix) return;
+                            event.preventDefault();
+                            setLibraryContextMenu({
+                              entry: {
+                                kind: 'mix',
+                                mix: row.mix,
+                                sourcePlaylistId: selectedPlaylist.id,
+                                sourcePlaylistItemId: row.id,
+                              },
+                              x: event.clientX,
+                              y: event.clientY,
+                            });
                           }}
-                          className="rounded p-1 text-gray-400 hover:text-white hover:bg-gray-700 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
-                          title="Options"
+                          onClick={() => {
+                            if (row.unavailable || row.queueIndex < 0) return;
+                            handleSelectItem(PLAYER_COLLECTION_TYPES.PLAYLIST, selectedPlaylist.id, row.queueIndex);
+                          }}
+                          onDoubleClick={async () => {
+                            await handlePlayPlaylistRow(row);
+                          }}
+                          className={`group grid grid-cols-[56px_minmax(0,1fr)_96px_34px] items-center px-4 py-2.5 text-sm transition-colors ${
+                            row.unavailable
+                              ? 'text-gray-500'
+                              : (isActive ? 'bg-blue-700/20 cursor-pointer' : 'hover:bg-gray-700/60 cursor-pointer')
+                          }`}
                         >
-                          <MoreHorizontal size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-                {!tuttiMixes.length ? (
-                  <div className="text-xs text-gray-500 px-4 py-3">No readable projects found.</div>
-                ) : null}
+                          <div className="flex items-center pl-0.5 text-gray-300">
+                            <span className="group-hover:hidden">{index + 1}</span>
+                            {!row.unavailable ? <Play size={14} className="hidden group-hover:block" /> : null}
+                          </div>
+                          <div className="truncate">{rowTitle}</div>
+                          <div className="text-right text-gray-400">--:--</div>
+                          <div className="flex justify-end">
+                            {!row.unavailable && row.mix ? (
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  const rect = event.currentTarget.getBoundingClientRect();
+                                  setLibraryContextMenu({
+                                    entry: {
+                                      kind: 'mix',
+                                      mix: row.mix,
+                                      sourcePlaylistId: selectedPlaylist.id,
+                                      sourcePlaylistItemId: row.id,
+                                    },
+                                    x: rect.right,
+                                    y: rect.bottom + 4,
+                                  });
+                                }}
+                                className="rounded p-1 text-gray-400 hover:text-white hover:bg-gray-700 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                                title="Options"
+                              >
+                                <MoreHorizontal size={14} />
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {!activePlaylistRows.length ? (
+                      <div className="text-xs text-gray-500 px-4 py-3">No playlist items.</div>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    {(tuttiMixes || []).map((mix, index) => {
+                      const isActive = (
+                        activeCollectionType === PLAYER_COLLECTION_TYPES.TUTTI
+                        && activeCollectionId === 'tutti'
+                        && activeIndex === index
+                      );
+                      const listTitle = `${mix.musicalNumber || '0.0'} - ${mix.projectName || mix.name || 'Untitled Project'}`;
+                      return (
+                        <div
+                          key={mix.id}
+                          onClick={() => handleSelectItem(PLAYER_COLLECTION_TYPES.TUTTI, 'tutti', index)}
+                          onDoubleClick={async () => {
+                            await playQueueItem(index);
+                          }}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            handleSelectItem(PLAYER_COLLECTION_TYPES.TUTTI, 'tutti', index);
+                            setProjectContextMenu({ mix, x: event.clientX, y: event.clientY });
+                          }}
+                          className={`group grid grid-cols-[56px_minmax(0,1fr)_96px_34px] items-center px-4 py-2.5 text-sm cursor-pointer transition-colors ${
+                            isActive ? 'bg-blue-700/20' : 'hover:bg-gray-700/60'
+                          }`}
+                        >
+                          <div className="flex items-center pl-0.5 text-gray-300">
+                            <span className="group-hover:hidden">{index + 1}</span>
+                            <Play size={14} className="hidden group-hover:block" />
+                          </div>
+                          <div className="truncate text-gray-100">{listTitle}</div>
+                          <div className="text-right text-gray-400">--:--</div>
+                          <div className="flex justify-end">
+                            <button
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                const rect = event.currentTarget.getBoundingClientRect();
+                                setProjectContextMenu({ mix, x: rect.right, y: rect.bottom + 4 });
+                              }}
+                              className="rounded p-1 text-gray-400 hover:text-white hover:bg-gray-700 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                              title="Options"
+                            >
+                              <MoreHorizontal size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {!tuttiMixes.length ? (
+                      <div className="text-xs text-gray-500 px-4 py-3">No readable projects found.</div>
+                    ) : null}
+                  </>
+                )}
               </div>
             </div>
           </div>
         </div>
       </div>
+
+      {libraryContextMenu ? (
+        <div
+          ref={libraryContextMenuRef}
+          className="fixed z-50 min-w-[160px] rounded-md border border-gray-700 bg-gray-800 shadow-xl overflow-hidden"
+          style={libraryContextMenuStyle || undefined}
+        >
+          {libraryContextMenu.entry?.kind === 'mix' ? (
+            <>
+              <button
+                onClick={async () => handleLibraryContextAction('rename')}
+                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+              >
+                Rename
+              </button>
+              <button
+                onClick={async () => handleLibraryContextAction('move')}
+                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+              >
+                Move
+              </button>
+              <button
+                onClick={async () => handleLibraryContextAction('duplicate')}
+                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+              >
+                Create duplicate
+              </button>
+              <button
+                onClick={async () => handleLibraryContextAction('delete')}
+                className="w-full px-3 py-2 text-left text-sm text-red-300 hover:bg-gray-700"
+              >
+                Delete
+              </button>
+              <button
+                onClick={async () => handleLibraryContextAction('new_from_project')}
+                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+              >
+                Create new mix from this project
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={async () => handleLibraryContextAction('rename')}
+                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+              >
+                Rename
+              </button>
+              <button
+                onClick={async () => handleLibraryContextAction('move')}
+                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+              >
+                Move
+              </button>
+              <button
+                onClick={async () => handleLibraryContextAction('delete')}
+                className="w-full px-3 py-2 text-left text-sm text-red-300 hover:bg-gray-700"
+              >
+                Delete
+              </button>
+            </>
+          )}
+        </div>
+      ) : null}
 
       {projectContextMenu ? (
         <div
@@ -1023,49 +1636,89 @@ function PlayerDashboard({
             </div>
           </div>
 
-          <div className="w-full">
-            <div className="flex items-center justify-center gap-2">
-              <button
-                onClick={() => setShuffleEnabled((previous) => !previous)}
-                className={`rounded bg-gray-700 hover:bg-gray-600 p-2 disabled:opacity-50 ${shuffleButtonClass}`}
-                disabled={!activeQueueItems.length || isRendering}
-                title={shuffleEnabled ? 'Shuffle on' : 'Shuffle off'}
-              >
-                <Shuffle size={16} />
-              </button>
-              <button
-                onClick={handlePrevious}
-                className="rounded bg-gray-700 hover:bg-gray-600 p-2 disabled:opacity-50"
-                disabled={!activeQueueItems.length || isRendering}
-                title="Previous"
-              >
-                <SkipBack size={16} />
-              </button>
-              <button
-                onClick={handleTogglePlay}
-                className="rounded bg-blue-600 hover:bg-blue-700 p-2 disabled:opacity-50"
-                disabled={!activeQueueItems.length || isRendering}
-                title={isPlaying ? 'Pause' : 'Play'}
-              >
-                {isPlaying ? <Pause size={16} /> : <Play size={16} />}
-              </button>
-              <button
-                onClick={handleNext}
-                className="rounded bg-gray-700 hover:bg-gray-600 p-2 disabled:opacity-50"
-                disabled={!activeQueueItems.length || isRendering}
-                title="Next"
-              >
-                <SkipForward size={16} />
-              </button>
-              <button
-                onClick={handleCycleLoopMode}
-                className={`rounded bg-gray-700 hover:bg-gray-600 p-2 disabled:opacity-50 ${loopButtonClass}`}
-                title={`${loopLabel} (click to cycle off -> all -> one)`}
-                disabled={!activeQueueItems.length || isRendering}
-              >
-                <LoopIcon size={16} />
-              </button>
-            </div>
+	          <div className="w-full">
+	            <div className="flex items-center justify-center gap-3 flex-wrap">
+	              <div className="flex items-center gap-2 min-w-[180px]">
+	                <span className="text-[10px] uppercase tracking-wide text-gray-400 whitespace-nowrap">
+	                  Pan {practicePanRange}
+	                </span>
+	                <input
+	                  type="range"
+	                  min="0"
+	                  max="200"
+	                  step="1"
+	                  value={practicePanRange}
+	                  onChange={(event) => setPracticePanRange(Math.max(0, Math.min(200, Number(event.target.value) || 0)))}
+	                  disabled={!practiceControlsEnabled || isRendering}
+	                  className="w-28 disabled:opacity-40"
+	                  title="Transformed pan range"
+	                />
+	              </div>
+	              <div className="flex items-center justify-center gap-2">
+	                <button
+	                  onClick={() => setShuffleEnabled((previous) => !previous)}
+	                  className={`rounded bg-gray-700 hover:bg-gray-600 p-2 disabled:opacity-50 ${shuffleButtonClass}`}
+	                  disabled={!activeQueueItems.length || isRendering}
+	                  title={shuffleEnabled ? 'Shuffle on' : 'Shuffle off'}
+	                >
+	                  <Shuffle size={16} />
+	                </button>
+	                <button
+	                  onClick={handlePrevious}
+	                  className="rounded bg-gray-700 hover:bg-gray-600 p-2 disabled:opacity-50"
+	                  disabled={!activeQueueItems.length || isRendering}
+	                  title="Previous"
+	                >
+	                  <SkipBack size={16} />
+	                </button>
+	                <button
+	                  onClick={handleTogglePlay}
+	                  className="rounded bg-blue-600 hover:bg-blue-700 p-2 disabled:opacity-50"
+	                  disabled={!activeQueueItems.length || isRendering}
+	                  title={isRendering ? 'Loading mix...' : (isPlaying ? 'Pause' : 'Play')}
+	                >
+	                  {isRendering ? <Loader2 size={16} className="animate-spin" /> : (isPlaying ? <Pause size={16} /> : <Play size={16} />)}
+	                </button>
+	                <button
+	                  onClick={handleNext}
+	                  className="rounded bg-gray-700 hover:bg-gray-600 p-2 disabled:opacity-50"
+	                  disabled={!activeQueueItems.length || isRendering}
+	                  title="Next"
+	                >
+	                  <SkipForward size={16} />
+	                </button>
+	                <button
+	                  onClick={handleCycleLoopMode}
+	                  className={`rounded bg-gray-700 hover:bg-gray-600 p-2 disabled:opacity-50 ${loopButtonClass}`}
+	                  title={`${loopLabel} (click to cycle off -> all -> one)`}
+	                  disabled={!activeQueueItems.length || isRendering}
+	                >
+	                  <LoopIcon size={16} />
+	                </button>
+	              </div>
+	              <div className="flex items-center gap-2 min-w-[190px]">
+	                <span className="text-[10px] uppercase tracking-wide text-gray-400 whitespace-nowrap">
+	                  Focus {practiceFocusLabel}
+	                </span>
+	                <input
+	                  type="range"
+	                  min={PRACTICE_FOCUS_MIN}
+	                  max={PRACTICE_FOCUS_MAX}
+	                  step="1"
+	                  value={practiceFocusControl}
+	                  onChange={(event) => {
+	                    const value = Number(event.target.value);
+	                    const clamped = Number.isFinite(value)
+	                      ? Math.max(PRACTICE_FOCUS_MIN, Math.min(PRACTICE_FOCUS_MAX, Math.round(value)))
+	                      : 0;
+	                    setPracticeFocusControl(clamped);
+	                  }}
+	                  disabled={!practiceControlsEnabled || isRendering}
+	                  className="w-28 disabled:opacity-40"
+	                  title="Practice focus difference (dB)"
+	                />
+	              </div>
+	            </div>
 
             <div className="mt-2 flex items-center gap-2 w-full">
               <span className="text-xs text-gray-300">{formatClock(currentTimeSec)}</span>
