@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Plus, Download, FileAudio, LogOut } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Plus, Download, FileAudio, CircleUserRound } from 'lucide-react';
 import { isValidMusicalNumber, normalizeMusicalNumber, normalizeProjectName } from '../utils/naming';
 
 function HostedDashboard({
@@ -14,6 +14,7 @@ function HostedDashboard({
   onUpdateMusicalNumber,
   loading = false,
   error = '',
+  onSwitchToPlayerMode = null,
 }) {
   const [newProjectName, setNewProjectName] = useState('');
   const [newMusicalNumber, setNewMusicalNumber] = useState('0.0');
@@ -22,6 +23,8 @@ function HostedDashboard({
   const [contextMenu, setContextMenu] = useState(null);
   const [editingProjectId, setEditingProjectId] = useState(null);
   const [editingProjectName, setEditingProjectName] = useState('');
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const profileMenuRef = useRef(null);
 
   const formatRelativeTime = (timestamp) => {
     const numeric = Number(timestamp);
@@ -65,6 +68,16 @@ function HostedDashboard({
     return () => window.removeEventListener('click', closeMenu);
   }, []);
 
+  useEffect(() => {
+    const handleDocumentClick = (event) => {
+      if (!profileMenuRef.current?.contains(event.target)) {
+        setProfileMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleDocumentClick);
+    return () => document.removeEventListener('mousedown', handleDocumentClick);
+  }, []);
+
   const beginProjectRename = (project) => {
     setEditingProjectId(project.id);
     setEditingProjectName(project.name || '');
@@ -93,25 +106,25 @@ function HostedDashboard({
 
   return (
     <div className="h-full flex flex-col bg-gray-900 text-white">
-      <div className="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between gap-4">
+      <div className="bg-gray-800 border-b border-gray-700 px-4 py-3 flex items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">Apollo</h1>
         </div>
         <div className="flex items-center gap-3">
           <button
             onClick={() => setShowNewProjectDialog(true)}
-            className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 py-2 flex items-center justify-center gap-2 transition-colors disabled:bg-gray-700"
+            className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg p-2 flex items-center justify-center transition-colors disabled:bg-gray-700"
             disabled={loading}
+            title="New Project"
           >
             <Plus size={18} />
-            <span className="text-sm font-semibold">New Project</span>
           </button>
 
-          <label className={`bg-green-600 hover:bg-green-700 text-white rounded-lg px-4 py-2 flex items-center justify-center gap-2 transition-colors cursor-pointer ${loading ? 'opacity-60 pointer-events-none' : ''}`}>
+          <label
+            className={`bg-green-600 hover:bg-green-700 text-white rounded-lg p-2 flex items-center justify-center transition-colors cursor-pointer ${loading ? 'opacity-60 pointer-events-none' : ''}`}
+            title={isImporting ? 'Importing project...' : 'Import Project'}
+          >
             <Download size={18} />
-            <span className="text-sm font-semibold">
-              {isImporting ? 'Importing...' : 'Import Project'}
-            </span>
             <input
               type="file"
               accept=".zip"
@@ -130,13 +143,48 @@ function HostedDashboard({
             />
           </label>
 
-          <button
-            onClick={onLogout}
-            className="bg-gray-700 hover:bg-gray-600 text-white rounded-lg px-4 py-2 flex items-center justify-center gap-2 transition-colors"
-          >
-            <LogOut size={18} />
-            <span className="text-sm font-semibold">Logout</span>
-          </button>
+          <div className="flex items-center rounded-lg bg-gray-700 p-0.5">
+            {onSwitchToPlayerMode ? (
+              <button
+                onClick={onSwitchToPlayerMode}
+                className="rounded-md px-3 py-1.5 text-xs font-semibold text-gray-300 hover:bg-gray-600 hover:text-white transition-colors"
+                title="Switch to Player mode"
+              >Player</button>
+            ) : (
+              <span className="rounded-md px-3 py-1.5 text-xs font-semibold text-gray-300">Player</span>
+            )}
+            <button
+              type="button"
+              disabled
+              className="rounded-md px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white cursor-default"
+              title="Current mode"
+            >
+              DAW
+            </button>
+          </div>
+
+          <div className="relative" ref={profileMenuRef}>
+            <button
+              onClick={() => setProfileMenuOpen((previous) => !previous)}
+              className="bg-gray-700 hover:bg-gray-600 text-white rounded-lg p-2 flex items-center justify-center transition-colors"
+              title="User menu"
+            >
+              <CircleUserRound size={18} />
+            </button>
+            {profileMenuOpen ? (
+              <div className="absolute right-0 top-full mt-2 min-w-32 rounded-md border border-gray-700 bg-gray-800 shadow-lg z-30 overflow-hidden">
+                <button
+                  onClick={() => {
+                    setProfileMenuOpen(false);
+                    onLogout();
+                  }}
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+                >
+                  Log out
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
 

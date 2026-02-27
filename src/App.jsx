@@ -3,6 +3,7 @@ import useStore from './store/useStore';
 import Editor from './components/Editor';
 import HostedLogin from './components/HostedLogin';
 import HostedDashboard from './components/HostedDashboard';
+import PlayerDashboard from './components/PlayerDashboard';
 import { audioManager } from './lib/audioManager';
 import { importFromZIP } from './lib/projectPortability';
 import { deleteProject as deleteCachedProject, getMediaBlob, saveRemoteProjectMeta, storeMediaBlob } from './lib/db';
@@ -53,7 +54,7 @@ async function hashBlob(blob) {
 }
 
 function App() {
-  const [view, setView] = useState('dashboard'); // 'dashboard' | 'editor'
+  const [view, setView] = useState('player'); // 'player' | 'daw' | 'editor'
   const [serverSession, setServerSession] = useState(loadServerSession());
   const [serverProjects, setServerProjects] = useState([]);
   const [serverError, setServerError] = useState('');
@@ -100,6 +101,7 @@ function App() {
       saveServerSession(session);
       setServerSession(session);
       await refreshServerData(session);
+      setView('player');
     } catch (error) {
       setServerError(error.message || 'Login failed');
     } finally {
@@ -119,7 +121,7 @@ function App() {
     setServerSession(null);
     setServerProjects([]);
     setRemoteEditorSession(null);
-    setView('dashboard');
+    setView('player');
   };
 
   const handleOpenServerProject = async (projectMeta) => {
@@ -265,7 +267,17 @@ function App() {
 
   const handleBackToDashboard = () => {
     setRemoteEditorSession(null);
-    setView('dashboard');
+    setView('daw');
+  };
+
+  const handleSwitchToPlayerMode = () => {
+    setRemoteEditorSession(null);
+    setView('player');
+  };
+
+  const handleSwitchToDawMode = () => {
+    setRemoteEditorSession(null);
+    setView('daw');
   };
 
   if (!isServerModeEnabled()) {
@@ -286,8 +298,26 @@ function App() {
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-gray-900 text-white">
-      {view === 'dashboard' ? (
-        serverSession ? (
+      {!serverSession ? (
+        <HostedLogin
+          onLogin={handleServerLogin}
+          loading={serverLoading}
+          error={serverError}
+        />
+      ) : view === 'editor' ? (
+        <Editor
+          onBackToDashboard={handleBackToDashboard}
+          onSwitchToPlayerMode={handleSwitchToPlayerMode}
+          remoteSession={
+            remoteEditorSession
+              ? {
+                ...remoteEditorSession,
+                session: serverSession || null,
+              }
+              : null
+          }
+        />
+      ) : view === 'daw' ? (
           <HostedDashboard
             session={serverSession}
             projects={serverProjects}
@@ -300,25 +330,14 @@ function App() {
             onUpdateMusicalNumber={handleUpdateServerProjectMusicalNumber}
             loading={serverLoading}
             error={serverError}
+            onSwitchToPlayerMode={handleSwitchToPlayerMode}
           />
-        ) : (
-          <HostedLogin
-            onLogin={handleServerLogin}
-            loading={serverLoading}
-            error={serverError}
-          />
-        )
       ) : (
-          <Editor
-            onBackToDashboard={handleBackToDashboard}
-            remoteSession={
-              remoteEditorSession
-                ? {
-                ...remoteEditorSession,
-                session: serverSession || null,
-              }
-              : null
-          }
+        <PlayerDashboard
+          session={serverSession}
+          onLogout={handleServerLogout}
+          onSwitchToDawDashboard={handleSwitchToDawMode}
+          onOpenDawProject={handleOpenServerProject}
         />
       )}
     </div>

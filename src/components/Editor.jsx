@@ -71,7 +71,7 @@ const getSupportedAudioFiles = (dataTransfer) => {
   });
 };
 
-function Editor({ onBackToDashboard, remoteSession = null }) {
+function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession = null }) {
   const {
     project,
     updateProject,
@@ -2634,6 +2634,16 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
             >
               <ArrowLeft size={20} />
             </button>
+            {onSwitchToPlayerMode ? (
+              <button
+                onClick={onSwitchToPlayerMode}
+                className="text-gray-300 hover:text-white transition-colors flex-shrink-0 rounded bg-gray-700 hover:bg-gray-600 px-2 py-1 text-xs font-semibold disabled:opacity-50"
+                title={isRecording ? 'Cannot switch mode while recording' : 'Switch to Player Mode'}
+                disabled={isRecording}
+              >
+                Player
+              </button>
+            ) : null}
             <button
               onClick={() => {
                 setSettingsOpen(true);
