@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ChevronsLeftRightEllipsis,
   CircleUserRound,
   ChevronLeft,
   ChevronRight,
   Folder,
+  HeadphoneOff,
+  Headphones,
   Home,
   ListMusic,
   Loader2,
@@ -13,6 +16,7 @@ import {
   Plus,
   Repeat1,
   Repeat,
+  Scale,
   Search,
   Shuffle,
   SkipBack,
@@ -65,8 +69,38 @@ const SINGLE_OUTPUT_PRESETS = new Set([
   'choir_only',
 ]);
 
-const PRACTICE_FOCUS_MIN = -7;
-const PRACTICE_FOCUS_MAX = 7;
+const PRACTICE_FOCUS_STEPS = [
+  'omitted',
+  -10,
+  -8,
+  -6,
+  -2,
+  0,
+  2,
+  4,
+  6,
+  8,
+  10,
+  'solo',
+];
+const PRACTICE_FOCUS_SLIDER_POSITIONS = [
+  0,
+  10,
+  20,
+  30,
+  40,
+  50,
+  60,
+  70,
+  80,
+  90,
+  95,
+  100,
+];
+const PRACTICE_FOCUS_MIN_INDEX = 0;
+const PRACTICE_FOCUS_MAX_INDEX = PRACTICE_FOCUS_STEPS.length - 1;
+const PRACTICE_FOCUS_DEFAULT_INDEX = PRACTICE_FOCUS_STEPS.findIndex((step) => step === 0);
+const PRACTICE_FOCUS_NUMERIC_STEPS = PRACTICE_FOCUS_STEPS.filter((step) => typeof step === 'number');
 
 function formatClock(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
@@ -149,13 +183,15 @@ function PlayerDashboard({
   const [nowPlayingLabel, setNowPlayingLabel] = useState('');
   const [playbackEngine, setPlaybackEngine] = useState('html');
   const [practicePanRange, setPracticePanRange] = useState(100);
-  const [practiceFocusControl, setPracticeFocusControl] = useState(0);
+  const [practiceFocusControl, setPracticeFocusControl] = useState(PRACTICE_FOCUS_DEFAULT_INDEX);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [isLibraryCollapsed, setIsLibraryCollapsed] = useState(false);
   const [libraryScopeFolderId, setLibraryScopeFolderId] = useState(null);
   const [libraryCreateMenuOpen, setLibraryCreateMenuOpen] = useState(false);
   const [libraryContextMenu, setLibraryContextMenu] = useState(null);
   const [projectContextMenu, setProjectContextMenu] = useState(null);
+  const [sliderDragTooltip, setSliderDragTooltip] = useState(null);
+  const [sliderEditTooltip, setSliderEditTooltip] = useState(null);
 
   const audioRef = useRef(null);
   const objectUrlRef = useRef(null);
@@ -176,6 +212,7 @@ function PlayerDashboard({
   const libraryCreateMenuRef = useRef(null);
   const libraryContextMenuRef = useRef(null);
   const projectContextMenuRef = useRef(null);
+  const sliderDragRef = useRef(null);
 
   const refreshPlayerData = useCallback(async () => {
     if (!session) return;
@@ -204,17 +241,50 @@ function PlayerDashboard({
     refreshPlayerData();
   }, [refreshPlayerData]);
 
+  const getPracticeFocusStep = useCallback(
+    (index) => PRACTICE_FOCUS_STEPS[Math.max(PRACTICE_FOCUS_MIN_INDEX, Math.min(PRACTICE_FOCUS_MAX_INDEX, Math.round(Number(index) || 0)))],
+    []
+  );
+
+  const getPracticeFocusSliderPosition = useCallback(
+    (index) => PRACTICE_FOCUS_SLIDER_POSITIONS[
+      Math.max(PRACTICE_FOCUS_MIN_INDEX, Math.min(PRACTICE_FOCUS_MAX_INDEX, Math.round(Number(index) || 0)))
+    ],
+    []
+  );
+
+  const resolvePracticeFocusIndexFromSlider = useCallback((sliderValue) => {
+    const numeric = Number(sliderValue);
+    if (!Number.isFinite(numeric)) return PRACTICE_FOCUS_DEFAULT_INDEX;
+    let nearestIndex = 0;
+    let nearestDistance = Math.abs(numeric - PRACTICE_FOCUS_SLIDER_POSITIONS[0]);
+    PRACTICE_FOCUS_SLIDER_POSITIONS.forEach((position, index) => {
+      const distance = Math.abs(numeric - position);
+      if (distance < nearestDistance) {
+        nearestIndex = index;
+        nearestDistance = distance;
+      }
+    });
+    return nearestIndex;
+  }, []);
+
+  const resolvePracticeFocusDb = useCallback((index) => {
+    const step = getPracticeFocusStep(index);
+    return typeof step === 'number' ? step : 0;
+  }, [getPracticeFocusStep]);
+
   const resolvePracticePlaybackMode = useCallback((presetId) => {
-    if (practiceFocusControl < -6) return PRACTICE_REALTIME_MODES.OMITTED;
-    if (practiceFocusControl > 6) return PRACTICE_REALTIME_MODES.SOLO;
+    const step = getPracticeFocusStep(practiceFocusControl);
+    if (step === 'omitted') return PRACTICE_REALTIME_MODES.OMITTED;
+    if (step === 'solo') return PRACTICE_REALTIME_MODES.SOLO;
     return isPracticeOmittedPresetId(presetId)
       ? PRACTICE_REALTIME_MODES.OMITTED
       : PRACTICE_REALTIME_MODES.NORMAL;
-  }, [practiceFocusControl]);
+  }, [getPracticeFocusStep, practiceFocusControl]);
 
   const applyRealtimePracticeSettings = useCallback((snapshot, item) => {
     if (!snapshot || !item || !isPracticePresetId(item.presetId)) return false;
-    const focusDb = Math.max(-6, Math.min(6, Number(practiceFocusControl) || 0));
+    const focusDb = resolvePracticeFocusDb(practiceFocusControl);
     const mixState = resolvePracticeRealtimeTrackMix(
       snapshot,
       item.presetId,
@@ -230,7 +300,7 @@ function PlayerDashboard({
       audioManager.updateTrackMix(trackId, trackMix.gain, trackMix.pan);
     });
     return true;
-  }, [practiceFocusControl, practicePanRange, resolvePracticePlaybackMode]);
+  }, [practiceFocusControl, practicePanRange, resolvePracticeFocusDb, resolvePracticePlaybackMode]);
 
   const handlePlaybackEnded = useCallback(async () => {
     const queue = activeQueueRef.current || [];
@@ -353,6 +423,65 @@ function PlayerDashboard({
     }
   }, [volume]);
 
+  useEffect(() => {
+    const handleMove = (event) => {
+      if (!sliderDragRef.current) return;
+      const {
+        startX,
+        startValue,
+        width,
+        moved,
+        min,
+        max,
+        step,
+        kind,
+      } = sliderDragRef.current;
+      const deltaX = event.clientX - startX;
+      if (!moved) {
+        if (Math.abs(deltaX) < 2) return;
+        sliderDragRef.current.moved = true;
+        setSliderEditTooltip(null);
+      }
+      let next = startValue + (deltaX / Math.max(1, width)) * (max - min);
+      next = Math.max(min, Math.min(max, next));
+      if (step >= 1) {
+        next = Math.round(next);
+      }
+      if (Math.abs(next - sliderDragRef.current.lastValue) < 1e-6) {
+        if (kind === 'focus') {
+          setSliderDragTooltip({ kind, value: resolvePracticeFocusIndexFromSlider(next) });
+        } else {
+          setSliderDragTooltip({ kind, value: next });
+        }
+        return;
+      }
+      sliderDragRef.current.lastValue = next;
+      if (kind === 'master') {
+        setVolume(next);
+      } else if (kind === 'focus') {
+        const nextFocusIndex = resolvePracticeFocusIndexFromSlider(next);
+        setPracticeFocusControl(nextFocusIndex);
+        setSliderDragTooltip({ kind, value: nextFocusIndex });
+        return;
+      } else if (kind === 'pan') {
+        setPracticePanRange(next);
+      }
+      setSliderDragTooltip({ kind, value: next });
+    };
+
+    const handleUp = () => {
+      sliderDragRef.current = null;
+      setSliderDragTooltip(null);
+    };
+
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+  }, [resolvePracticeFocusIndexFromSlider]);
+
   const myDeviceMixesInFolder = useMemo(() => (
     myMixes.filter((mix) => {
       const folderId = mix.folderId || null;
@@ -438,8 +567,8 @@ function PlayerDashboard({
       setActiveIndex(-1);
       return;
     }
-    if (activeIndex < 0 || activeIndex >= activeQueueItems.length) {
-      setActiveIndex(0);
+    if (activeIndex >= activeQueueItems.length) {
+      setActiveIndex(-1);
     }
   }, [activeQueueItems, activeIndex]);
 
@@ -719,12 +848,6 @@ function PlayerDashboard({
     setCurrentTimeSec(safe);
   }, [applyRealtimePracticeSettings, durationSec, isPlaying]);
 
-  const handleVolumeChange = useCallback((nextValue) => {
-    const numeric = Number(nextValue);
-    const clamped = Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : 0;
-    setVolume(clamped);
-  }, []);
-
   const handleToggleMute = useCallback(() => {
     setVolume((previous) => {
       const numeric = Number(previous) || 0;
@@ -735,6 +858,101 @@ function PlayerDashboard({
       return 0;
     });
   }, []);
+
+  const beginSliderDrag = useCallback((event, config) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const {
+      kind,
+      value,
+      min,
+      max,
+      step,
+      disabled,
+    } = config;
+    if (disabled) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    sliderDragRef.current = {
+      startX: event.clientX,
+      startValue: Number(value),
+      lastValue: Number(value),
+      width: rect.width,
+      moved: false,
+      min: Number(min),
+      max: Number(max),
+      step: Number(step || 1),
+      kind,
+    };
+    if (kind === 'focus') {
+      setSliderDragTooltip({ kind, value: resolvePracticeFocusIndexFromSlider(Number(value)) });
+    } else {
+      setSliderDragTooltip({ kind, value: Number(value) });
+    }
+    setSliderEditTooltip(null);
+  }, [resolvePracticeFocusIndexFromSlider]);
+
+  const formatSliderValue = useCallback((kind, value) => {
+    if (kind === 'master') {
+      return `${Math.round(Math.max(0, Math.min(100, value)))}`;
+    }
+    if (kind === 'focus') {
+      const step = getPracticeFocusStep(value);
+      if (step === 'omitted') return 'Omitted';
+      if (step === 'solo') return 'Solo';
+      return `${step > 0 ? '+' : ''}${step}`;
+    }
+    return `${Math.round(value)}`;
+  }, [getPracticeFocusStep]);
+
+  const parseSliderInput = useCallback((kind, rawText) => {
+    const text = String(rawText || '').trim();
+    if (kind === 'master') {
+      if (!text) return null;
+      const parsed = Number.parseFloat(text);
+      if (!Number.isFinite(parsed)) return null;
+      return Math.max(0, Math.min(100, Math.round(parsed)));
+    }
+    if (!text) return null;
+    if (kind === 'focus') {
+      const normalized = text.toLowerCase();
+      if (normalized === 'omitted') return PRACTICE_FOCUS_MIN_INDEX;
+      if (normalized === 'solo') return PRACTICE_FOCUS_MAX_INDEX;
+      const parsed = Number.parseFloat(text);
+      if (!Number.isFinite(parsed)) return null;
+      let nearest = PRACTICE_FOCUS_NUMERIC_STEPS[0];
+      let nearestDistance = Math.abs(parsed - nearest);
+      PRACTICE_FOCUS_NUMERIC_STEPS.forEach((candidate) => {
+        const distance = Math.abs(parsed - candidate);
+        if (distance < nearestDistance) {
+          nearest = candidate;
+          nearestDistance = distance;
+        }
+      });
+      return PRACTICE_FOCUS_STEPS.findIndex((step) => step === nearest);
+    }
+    const parsed = Number.parseFloat(text);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.max(0, Math.min(200, Math.round(parsed)));
+  }, []);
+
+  const openSliderEdit = useCallback((kind, value, disabled) => {
+    if (disabled) return;
+    setSliderEditTooltip({
+      kind,
+      text: formatSliderValue(kind, value),
+    });
+  }, [formatSliderValue]);
+
+  const commitSliderEdit = useCallback(() => {
+    if (!sliderEditTooltip) return;
+    const nextValue = parseSliderInput(sliderEditTooltip.kind, sliderEditTooltip.text);
+    if (nextValue !== null) {
+      if (sliderEditTooltip.kind === 'master') setVolume(nextValue);
+      if (sliderEditTooltip.kind === 'focus') setPracticeFocusControl(nextValue);
+      if (sliderEditTooltip.kind === 'pan') setPracticePanRange(nextValue);
+    }
+    setSliderEditTooltip(null);
+  }, [parseSliderInput, sliderEditTooltip]);
 
   const handleCreateFolder = useCallback(async () => {
     const name = window.prompt('Folder name');
@@ -939,7 +1157,9 @@ function PlayerDashboard({
       name: folder.name,
       folder,
     }));
-    const playlistsFlat = playlists.map((playlist) => ({
+    const playlistsFlat = playlists
+      .filter((playlist) => (playlist.folderId || null) === null)
+      .map((playlist) => ({
       id: `playlist:${playlist.id}`,
       kind: 'playlist',
       name: playlist.name,
@@ -959,13 +1179,16 @@ function PlayerDashboard({
   const VolumeIcon = isMuted ? VolumeX : Volume2;
   const practiceControlItem = playbackEngine === 'realtime'
     ? realtimePlaybackRef.current?.item
-    : activeQueueItem;
+    : null;
   const practiceControlsEnabled = isPracticePresetId(practiceControlItem?.presetId);
-  const practiceFocusLabel = practiceFocusControl < -6
-    ? 'Omitted'
-    : (practiceFocusControl > 6
-      ? 'Solo'
-      : `${practiceFocusControl > 0 ? '+' : ''}${practiceFocusControl} dB`);
+  const focusStep = getPracticeFocusStep(practiceFocusControl);
+  const panControlDisabled = !practiceControlsEnabled
+    || isRendering
+    || focusStep === 'omitted'
+    || focusStep === 'solo';
+  const FocusIcon = focusStep === 'omitted'
+    ? HeadphoneOff
+    : (focusStep === 'solo' ? Headphones : Scale);
 
   const handleCycleLoopMode = useCallback(() => {
     setLoopMode((previous) => {
@@ -982,12 +1205,14 @@ function PlayerDashboard({
       setLibraryScopeFolderId(folderId);
       setSelectedFolderId(folderId);
       setSelectedPlaylistId(null);
+      setActiveIndex(-1);
       handleSelectCollection(PLAYER_COLLECTION_TYPES.MY_DEVICE_MIXES, folderId || 'root');
       return;
     }
     if (entry.kind === 'playlist' && entry.playlist?.id) {
       setSelectedPlaylistId(entry.playlist.id);
       setSelectedFolderId(null);
+      setActiveIndex(-1);
       handleSelectCollection(PLAYER_COLLECTION_TYPES.PLAYLIST, entry.playlist.id);
       return;
     }
@@ -1244,12 +1469,12 @@ function PlayerDashboard({
             <button
               type="button"
               onClick={() => {
+                setLibraryScopeFolderId(null);
                 setSelectedPlaylistId(null);
+                setSelectedFolderId(null);
                 setActiveCollectionType(PLAYER_COLLECTION_TYPES.TUTTI);
                 setActiveCollectionId('tutti');
-                if (activeIndex < 0 && tuttiQueue.length) {
-                  setActiveIndex(0);
-                }
+                setActiveIndex(-1);
               }}
               className="rounded-md bg-gray-800 border border-gray-700 p-2 text-gray-200 hover:bg-gray-700 transition-colors"
               title="Home"
@@ -1628,100 +1853,62 @@ function PlayerDashboard({
         </div>
       ) : null}
 
-      <div className="bg-gray-850 border-t border-gray-800 px-4 py-3">
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(320px,680px)_minmax(0,1fr)] items-center gap-3">
-          <div className="min-w-0 text-xs text-gray-300">
+      <div className="bg-gray-850 border-t border-gray-800 px-6 py-4">
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(380px,760px)_minmax(0,1fr)] items-center gap-4">
+          <div className="min-w-0 text-lg font-semibold text-gray-200">
             <div className="truncate" title={nowPlayingLabel || activeQueueItem?.name || ''}>
               {nowPlayingLabel || activeQueueItem?.name || 'No mix playing'}
             </div>
           </div>
 
 	          <div className="w-full">
-	            <div className="flex items-center justify-center gap-3 flex-wrap">
-	              <div className="flex items-center gap-2 min-w-[180px]">
-	                <span className="text-[10px] uppercase tracking-wide text-gray-400 whitespace-nowrap">
-	                  Pan {practicePanRange}
-	                </span>
-	                <input
-	                  type="range"
-	                  min="0"
-	                  max="200"
-	                  step="1"
-	                  value={practicePanRange}
-	                  onChange={(event) => setPracticePanRange(Math.max(0, Math.min(200, Number(event.target.value) || 0)))}
-	                  disabled={!practiceControlsEnabled || isRendering}
-	                  className="w-28 disabled:opacity-40"
-	                  title="Transformed pan range"
-	                />
-	              </div>
-	              <div className="flex items-center justify-center gap-2">
+	            <div className="flex items-center justify-center gap-4 flex-wrap">
+	              <div className="flex items-center justify-center gap-3">
 	                <button
 	                  onClick={() => setShuffleEnabled((previous) => !previous)}
-	                  className={`rounded bg-gray-700 hover:bg-gray-600 p-2 disabled:opacity-50 ${shuffleButtonClass}`}
+	                  className={`rounded bg-gray-700 hover:bg-gray-600 p-3 disabled:opacity-50 ${shuffleButtonClass}`}
 	                  disabled={!activeQueueItems.length || isRendering}
 	                  title={shuffleEnabled ? 'Shuffle on' : 'Shuffle off'}
 	                >
-	                  <Shuffle size={16} />
+	                  <Shuffle size={20} />
 	                </button>
 	                <button
 	                  onClick={handlePrevious}
-	                  className="rounded bg-gray-700 hover:bg-gray-600 p-2 disabled:opacity-50"
+	                  className="rounded bg-gray-700 hover:bg-gray-600 p-3 disabled:opacity-50"
 	                  disabled={!activeQueueItems.length || isRendering}
 	                  title="Previous"
 	                >
-	                  <SkipBack size={16} />
+	                  <SkipBack size={20} />
 	                </button>
 	                <button
 	                  onClick={handleTogglePlay}
-	                  className="rounded bg-blue-600 hover:bg-blue-700 p-2 disabled:opacity-50"
+	                  className="rounded bg-blue-600 hover:bg-blue-700 p-3 disabled:opacity-50"
 	                  disabled={!activeQueueItems.length || isRendering}
 	                  title={isRendering ? 'Loading mix...' : (isPlaying ? 'Pause' : 'Play')}
 	                >
-	                  {isRendering ? <Loader2 size={16} className="animate-spin" /> : (isPlaying ? <Pause size={16} /> : <Play size={16} />)}
+	                  {isRendering ? <Loader2 size={20} className="animate-spin" /> : (isPlaying ? <Pause size={20} /> : <Play size={20} />)}
 	                </button>
 	                <button
 	                  onClick={handleNext}
-	                  className="rounded bg-gray-700 hover:bg-gray-600 p-2 disabled:opacity-50"
+	                  className="rounded bg-gray-700 hover:bg-gray-600 p-3 disabled:opacity-50"
 	                  disabled={!activeQueueItems.length || isRendering}
 	                  title="Next"
 	                >
-	                  <SkipForward size={16} />
+	                  <SkipForward size={20} />
 	                </button>
 	                <button
 	                  onClick={handleCycleLoopMode}
-	                  className={`rounded bg-gray-700 hover:bg-gray-600 p-2 disabled:opacity-50 ${loopButtonClass}`}
+	                  className={`rounded bg-gray-700 hover:bg-gray-600 p-3 disabled:opacity-50 ${loopButtonClass}`}
 	                  title={`${loopLabel} (click to cycle off -> all -> one)`}
 	                  disabled={!activeQueueItems.length || isRendering}
 	                >
-	                  <LoopIcon size={16} />
+	                  <LoopIcon size={20} />
 	                </button>
-	              </div>
-	              <div className="flex items-center gap-2 min-w-[190px]">
-	                <span className="text-[10px] uppercase tracking-wide text-gray-400 whitespace-nowrap">
-	                  Focus {practiceFocusLabel}
-	                </span>
-	                <input
-	                  type="range"
-	                  min={PRACTICE_FOCUS_MIN}
-	                  max={PRACTICE_FOCUS_MAX}
-	                  step="1"
-	                  value={practiceFocusControl}
-	                  onChange={(event) => {
-	                    const value = Number(event.target.value);
-	                    const clamped = Number.isFinite(value)
-	                      ? Math.max(PRACTICE_FOCUS_MIN, Math.min(PRACTICE_FOCUS_MAX, Math.round(value)))
-	                      : 0;
-	                    setPracticeFocusControl(clamped);
-	                  }}
-	                  disabled={!practiceControlsEnabled || isRendering}
-	                  className="w-28 disabled:opacity-40"
-	                  title="Practice focus difference (dB)"
-	                />
 	              </div>
 	            </div>
 
-            <div className="mt-2 flex items-center gap-2 w-full">
-              <span className="text-xs text-gray-300">{formatClock(currentTimeSec)}</span>
+            <div className="mt-3 flex items-center gap-3 w-full">
+              <span className="text-sm text-gray-300">{formatClock(currentTimeSec)}</span>
               <input
                 type="range"
                 min="0"
@@ -1729,29 +1916,195 @@ function PlayerDashboard({
                 step="0.01"
                 value={Math.min(currentTimeSec, durationSec || 0)}
                 onChange={(e) => handleSeek(Number(e.target.value))}
-                className="flex-1"
+                className="flex-1 volume-slider volume-slider-lg cursor-pointer block"
               />
-              <span className="text-xs text-gray-300">{formatClock(durationSec)}</span>
+              <span className="text-sm text-gray-300">{formatClock(durationSec)}</span>
             </div>
           </div>
 
           <div className="flex items-center justify-end gap-2">
-            <button
-              onClick={handleToggleMute}
-              className={`rounded bg-gray-700 hover:bg-gray-600 p-2 ${isMuted ? 'text-gray-300' : 'text-blue-300'}`}
-              title={isMuted ? 'Unmute' : 'Mute'}
-            >
-              <VolumeIcon size={16} />
-            </button>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="1"
-              value={volume}
-              onChange={(e) => handleVolumeChange(e.target.value)}
-              className="w-28"
-            />
+            {practiceControlsEnabled ? (
+              <div className="flex flex-col gap-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-400" title="Practice focus">
+                    <FocusIcon size={20} />
+                  </span>
+                  <div className="relative">
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={getPracticeFocusSliderPosition(practiceFocusControl)}
+                      readOnly
+                      onMouseDown={(event) => beginSliderDrag(event, {
+                        kind: 'focus',
+                        value: getPracticeFocusSliderPosition(practiceFocusControl),
+                        min: 0,
+                        max: 100,
+                        step: 1,
+                        disabled: !practiceControlsEnabled || isRendering,
+                      })}
+                      onDoubleClick={() => openSliderEdit('focus', practiceFocusControl, !practiceControlsEnabled || isRendering)}
+                      disabled={!practiceControlsEnabled || isRendering}
+                      className="w-32 volume-slider volume-slider-lg cursor-pointer block disabled:opacity-40"
+                      title="Practice focus"
+                    />
+                    {sliderDragTooltip?.kind === 'focus' && (
+                      <div
+                        className="absolute bottom-full left-1/2 -translate-x-1/2 w-14 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
+                        style={{ marginBottom: '1px' }}
+                      >
+                        {formatSliderValue('focus', Number(sliderDragTooltip.value))}
+                      </div>
+                    )}
+                    {sliderEditTooltip?.kind === 'focus' && (
+                      <input
+                        type="text"
+                        value={sliderEditTooltip.text}
+                        onChange={(event) => setSliderEditTooltip((previous) => (
+                          previous ? { ...previous, text: event.target.value } : previous
+                        ))}
+                        onFocus={(event) => event.target.select()}
+                        onBlur={commitSliderEdit}
+                        onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          event.currentTarget.blur();
+                          } else if (event.key === 'Escape') {
+                            event.preventDefault();
+                          setSliderEditTooltip(null);
+                        }
+                      }}
+                        className="absolute bottom-full left-1/2 -translate-x-1/2 w-14 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
+                        style={{ marginBottom: '1px' }}
+                        autoFocus
+                      />
+                    )}
+                  </div>
+                </div>
+
+                <div className={`flex items-center gap-2 ${panControlDisabled ? 'opacity-40' : ''}`}>
+                  <span className="text-gray-400" title="Transformed pan range">
+                    <ChevronsLeftRightEllipsis size={20} />
+                  </span>
+                  <div className="relative">
+                    <input
+                      type="range"
+                      min="0"
+                      max="200"
+                      step="1"
+                      value={practicePanRange}
+                      readOnly
+                      onMouseDown={(event) => beginSliderDrag(event, {
+                        kind: 'pan',
+                        value: practicePanRange,
+                        min: 0,
+                        max: 200,
+                        step: 1,
+                        disabled: panControlDisabled,
+                      })}
+                      onDoubleClick={() => openSliderEdit('pan', practicePanRange, panControlDisabled)}
+                      disabled={panControlDisabled}
+                      className="w-32 volume-slider volume-slider-lg cursor-pointer block disabled:opacity-40"
+                      title={panControlDisabled ? 'Transformed pan range disabled for Omitted/Solo focus' : 'Transformed pan range'}
+                    />
+                    {sliderDragTooltip?.kind === 'pan' && (
+                      <div
+                        className="absolute bottom-full left-1/2 -translate-x-1/2 w-10 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
+                        style={{ marginBottom: '1px' }}
+                      >
+                        {formatSliderValue('pan', Number(sliderDragTooltip.value))}
+                      </div>
+                    )}
+                    {sliderEditTooltip?.kind === 'pan' && (
+                      <input
+                        type="text"
+                        value={sliderEditTooltip.text}
+                        onChange={(event) => setSliderEditTooltip((previous) => (
+                          previous ? { ...previous, text: event.target.value } : previous
+                        ))}
+                        onFocus={(event) => event.target.select()}
+                        onBlur={commitSliderEdit}
+                        onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          event.currentTarget.blur();
+                          } else if (event.key === 'Escape') {
+                            event.preventDefault();
+                          setSliderEditTooltip(null);
+                        }
+                      }}
+                        className="absolute bottom-full left-1/2 -translate-x-1/2 w-10 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
+                        style={{ marginBottom: '1px' }}
+                        autoFocus
+                      />
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+            <div className="flex items-center gap-0">
+              <button
+                onClick={handleToggleMute}
+                className="p-1 text-gray-400 hover:text-gray-200 transition-colors"
+                title={isMuted ? 'Unmute' : 'Mute'}
+              >
+                <VolumeIcon size={20} />
+              </button>
+              <div className="relative">
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value={volume}
+                  readOnly
+                  onMouseDown={(event) => beginSliderDrag(event, {
+                    kind: 'master',
+                    value: volume,
+                    min: 0,
+                    max: 100,
+                    step: 1,
+                    disabled: isRendering,
+                  })}
+                  onDoubleClick={() => openSliderEdit('master', volume, isRendering)}
+                  className="w-32 volume-slider volume-slider-lg cursor-pointer block"
+                  title="Master Volume (double-click for numeric input)"
+                />
+                {sliderDragTooltip?.kind === 'master' && (
+                  <div
+                    className="absolute bottom-full left-1/2 -translate-x-1/2 w-10 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
+                    style={{ marginBottom: '1px' }}
+                  >
+                    {formatSliderValue('master', Number(sliderDragTooltip.value))}
+                  </div>
+                )}
+                {sliderEditTooltip?.kind === 'master' && (
+                  <input
+                    type="text"
+                    value={sliderEditTooltip.text}
+                    onChange={(event) => setSliderEditTooltip((previous) => (
+                      previous ? { ...previous, text: event.target.value } : previous
+                    ))}
+                    onFocus={(event) => event.target.select()}
+                    onBlur={commitSliderEdit}
+                    onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      event.currentTarget.blur();
+                      } else if (event.key === 'Escape') {
+                        event.preventDefault();
+                      setSliderEditTooltip(null);
+                    }
+                  }}
+                    className="absolute bottom-full left-1/2 -translate-x-1/2 w-10 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
+                    style={{ marginBottom: '1px' }}
+                    autoFocus
+                  />
+                )}
+              </div>
+            </div>
           </div>
         </div>
         {error ? (
