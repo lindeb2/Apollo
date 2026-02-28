@@ -83,20 +83,16 @@ const PRACTICE_FOCUS_STEPS = [
   10,
   'solo',
 ];
-const PRACTICE_FOCUS_SLIDER_POSITIONS = [
-  0,
-  10,
-  20,
-  30,
-  40,
-  50,
-  60,
-  70,
-  80,
-  90,
-  95,
-  100,
-];
+const PRACTICE_FOCUS_INNER_MIN = 10;
+const PRACTICE_FOCUS_INNER_MAX = 90;
+const PRACTICE_FOCUS_EXTREME_MIN = 0;
+const PRACTICE_FOCUS_EXTREME_MAX = 100;
+const PRACTICE_FOCUS_SLIDER_POSITIONS = PRACTICE_FOCUS_STEPS.map((step) => {
+  if (step === 'omitted') return PRACTICE_FOCUS_EXTREME_MIN;
+  if (step === 'solo') return PRACTICE_FOCUS_EXTREME_MAX;
+  const normalized = (Number(step) + 10) / 20;
+  return PRACTICE_FOCUS_INNER_MIN + (normalized * (PRACTICE_FOCUS_INNER_MAX - PRACTICE_FOCUS_INNER_MIN));
+});
 const PRACTICE_FOCUS_MIN_INDEX = 0;
 const PRACTICE_FOCUS_MAX_INDEX = PRACTICE_FOCUS_STEPS.length - 1;
 const PRACTICE_FOCUS_DEFAULT_INDEX = PRACTICE_FOCUS_STEPS.findIndex((step) => step === 0);
@@ -1181,7 +1177,9 @@ function PlayerDashboard({
     ? realtimePlaybackRef.current?.item
     : null;
   const practiceControlsEnabled = isPracticePresetId(practiceControlItem?.presetId);
+  const focusControlDisabled = !practiceControlsEnabled || isRendering;
   const focusStep = getPracticeFocusStep(practiceFocusControl);
+  const focusSliderPosition = getPracticeFocusSliderPosition(practiceFocusControl);
   const panControlDisabled = !practiceControlsEnabled
     || isRendering
     || focusStep === 'omitted'
@@ -1929,27 +1927,45 @@ function PlayerDashboard({
                   <span className="text-gray-400" title="Practice focus">
                     <FocusIcon size={20} />
                   </span>
-                  <div className="relative">
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      step="1"
-                      value={getPracticeFocusSliderPosition(practiceFocusControl)}
-                      readOnly
-                      onMouseDown={(event) => beginSliderDrag(event, {
+                  <div
+                    className={`relative w-44 h-7 ${focusControlDisabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
+                    onMouseDown={(event) => {
+                      if (event.detail > 1) return;
+                      if (focusControlDisabled) return;
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      const relative = ((event.clientX - rect.left) / Math.max(1, rect.width)) * 100;
+                      const clamped = Math.max(0, Math.min(100, relative));
+                      const nextFocusIndex = resolvePracticeFocusIndexFromSlider(clamped);
+                      setPracticeFocusControl(nextFocusIndex);
+                      beginSliderDrag(event, {
                         kind: 'focus',
-                        value: getPracticeFocusSliderPosition(practiceFocusControl),
+                        value: getPracticeFocusSliderPosition(nextFocusIndex),
                         min: 0,
                         max: 100,
                         step: 1,
-                        disabled: !practiceControlsEnabled || isRendering,
-                      })}
-                      onDoubleClick={() => openSliderEdit('focus', practiceFocusControl, !practiceControlsEnabled || isRendering)}
-                      disabled={!practiceControlsEnabled || isRendering}
-                      className="w-32 volume-slider volume-slider-lg cursor-pointer block disabled:opacity-40"
-                      title="Practice focus"
+                        disabled: false,
+                      });
+                    }}
+                    onDoubleClick={() => openSliderEdit('focus', practiceFocusControl, focusControlDisabled)}
+                    title="Practice focus"
+                  >
+                    <div className="absolute left-5 right-5 top-1/2 -translate-y-1/2 h-[26px] rounded-full bg-gray-800 border border-gray-600 pointer-events-none" />
+                    <div
+                      className={`absolute left-1 top-1/2 -translate-y-1/2 h-[26px] w-[26px] rounded-full bg-gray-800 border pointer-events-none ${
+                        focusStep === 'omitted' ? 'border-blue-400' : 'border-gray-600'
+                      }`}
                     />
+                    <div
+                      className={`absolute right-1 top-1/2 -translate-y-1/2 h-[26px] w-[26px] rounded-full bg-gray-800 border pointer-events-none ${
+                        focusStep === 'solo' ? 'border-blue-400' : 'border-gray-600'
+                      }`}
+                    />
+                    <div className="absolute top-0 bottom-0 left-[17px] right-[17px] pointer-events-none">
+                      <div
+                        className="absolute top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full bg-gray-600"
+                        style={{ left: `${focusSliderPosition}%` }}
+                      />
+                    </div>
                     {sliderDragTooltip?.kind === 'focus' && (
                       <div
                         className="absolute bottom-full left-1/2 -translate-x-1/2 w-14 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
@@ -1968,14 +1984,14 @@ function PlayerDashboard({
                         onFocus={(event) => event.target.select()}
                         onBlur={commitSliderEdit}
                         onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault();
-                          event.currentTarget.blur();
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            event.currentTarget.blur();
                           } else if (event.key === 'Escape') {
                             event.preventDefault();
-                          setSliderEditTooltip(null);
-                        }
-                      }}
+                            setSliderEditTooltip(null);
+                          }
+                        }}
                         className="absolute bottom-full left-1/2 -translate-x-1/2 w-14 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
                         style={{ marginBottom: '1px' }}
                         autoFocus
