@@ -83,8 +83,8 @@ const PRACTICE_FOCUS_STEPS = [
   10,
   'solo',
 ];
-const PRACTICE_FOCUS_INNER_MIN = 10;
-const PRACTICE_FOCUS_INNER_MAX = 90;
+const PRACTICE_FOCUS_INNER_MIN = 8;
+const PRACTICE_FOCUS_INNER_MAX = 92;
 const PRACTICE_FOCUS_EXTREME_MIN = 0;
 const PRACTICE_FOCUS_EXTREME_MAX = 100;
 const PRACTICE_FOCUS_SLIDER_POSITIONS = PRACTICE_FOCUS_STEPS.map((step) => {
@@ -97,6 +97,7 @@ const PRACTICE_FOCUS_MIN_INDEX = 0;
 const PRACTICE_FOCUS_MAX_INDEX = PRACTICE_FOCUS_STEPS.length - 1;
 const PRACTICE_FOCUS_DEFAULT_INDEX = PRACTICE_FOCUS_STEPS.findIndex((step) => step === 0);
 const PRACTICE_FOCUS_NUMERIC_STEPS = PRACTICE_FOCUS_STEPS.filter((step) => typeof step === 'number');
+const PAN_INNER_TRACK_WIDTH_PX = 134;
 
 function formatClock(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
@@ -188,6 +189,7 @@ function PlayerDashboard({
   const [projectContextMenu, setProjectContextMenu] = useState(null);
   const [sliderDragTooltip, setSliderDragTooltip] = useState(null);
   const [sliderEditTooltip, setSliderEditTooltip] = useState(null);
+  const [isPanPointerDown, setIsPanPointerDown] = useState(false);
 
   const audioRef = useRef(null);
   const objectUrlRef = useRef(null);
@@ -466,8 +468,12 @@ function PlayerDashboard({
     };
 
     const handleUp = () => {
+      const endedKind = sliderDragRef.current?.kind || null;
       sliderDragRef.current = null;
       setSliderDragTooltip(null);
+      if (endedKind === 'pan') {
+        setIsPanPointerDown(false);
+      }
     };
 
     window.addEventListener('mousemove', handleMove);
@@ -1184,9 +1190,37 @@ function PlayerDashboard({
     || isRendering
     || focusStep === 'omitted'
     || focusStep === 'solo';
+  const visualPanRangeValue = sliderDragTooltip?.kind === 'pan'
+    ? Math.max(0, Math.min(200, Number(sliderDragTooltip.value) || 0))
+    : Math.max(0, Math.min(200, Number(practicePanRange) || 0));
+  const practicePanRangePercent = (visualPanRangeValue / 200) * 100;
+  const practicePanFocusAxisValue = 200 - (visualPanRangeValue / 2);
+  const practicePanFocusAxisPercent = (practicePanFocusAxisValue / 200) * 100;
+  const practicePanFocusAxisPixel = Math.max(
+    0,
+    Math.min(PAN_INNER_TRACK_WIDTH_PX, Math.round((practicePanFocusAxisPercent / 100) * PAN_INNER_TRACK_WIDTH_PX))
+  );
+  const PAN_HIGHLIGHT_LEFT_OFFSET_PERCENT = 8.125;
+  const PAN_HIGHLIGHT_INNER_SPAN_PERCENT = 100 - (2 * PAN_HIGHLIGHT_LEFT_OFFSET_PERCENT);
+  const practicePanHighlightPercent = Math.max(
+    0,
+    Math.min(
+      100,
+      PAN_HIGHLIGHT_LEFT_OFFSET_PERCENT
+        + (practicePanRangePercent * (PAN_HIGHLIGHT_INNER_SPAN_PERCENT / 100))
+    )
+  );
+  const showPanRangeHighlight = isPanPointerDown && !panControlDisabled;
+  const showPanFocusAxisMarker = isPanPointerDown && !panControlDisabled;
   const FocusIcon = focusStep === 'omitted'
     ? HeadphoneOff
     : (focusStep === 'solo' ? Headphones : Scale);
+
+  useEffect(() => {
+    if (panControlDisabled) {
+      setIsPanPointerDown(false);
+    }
+  }, [panControlDisabled]);
 
   const handleCycleLoopMode = useCallback(() => {
     setLoopMode((previous) => {
@@ -1928,7 +1962,7 @@ function PlayerDashboard({
                     <FocusIcon size={20} />
                   </span>
                   <div
-                    className={`relative w-44 h-7 ${focusControlDisabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
+                    className={`relative w-40 h-7 ${focusControlDisabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
                     onMouseDown={(event) => {
                       if (event.detail > 1) return;
                       if (focusControlDisabled) return;
@@ -1949,18 +1983,18 @@ function PlayerDashboard({
                     onDoubleClick={() => openSliderEdit('focus', practiceFocusControl, focusControlDisabled)}
                     title="Practice focus"
                   >
-                    <div className="absolute left-5 right-5 top-1/2 -translate-y-1/2 h-[26px] rounded-full bg-gray-800 border border-gray-600 pointer-events-none" />
+                    <div className="absolute left-[13px] right-[13px] top-1/2 -translate-y-1/2 h-[26px] rounded-full bg-gray-800 border border-gray-600 pointer-events-none" />
                     <div
-                      className={`absolute left-1 top-1/2 -translate-y-1/2 h-[26px] w-[26px] rounded-full bg-gray-800 border pointer-events-none ${
+                      className={`absolute left-0 top-1/2 -translate-y-1/2 h-[26px] w-[26px] rounded-full bg-gray-800 border pointer-events-none ${
                         focusStep === 'omitted' ? 'border-blue-400' : 'border-gray-600'
                       }`}
                     />
                     <div
-                      className={`absolute right-1 top-1/2 -translate-y-1/2 h-[26px] w-[26px] rounded-full bg-gray-800 border pointer-events-none ${
+                      className={`absolute right-0 top-1/2 -translate-y-1/2 h-[26px] w-[26px] rounded-full bg-gray-800 border pointer-events-none ${
                         focusStep === 'solo' ? 'border-blue-400' : 'border-gray-600'
                       }`}
                     />
-                    <div className="absolute top-0 bottom-0 left-[17px] right-[17px] pointer-events-none">
+                    <div className="absolute top-0 bottom-0 left-[13px] right-[13px] pointer-events-none">
                       <div
                         className="absolute top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full bg-gray-600"
                         style={{ left: `${focusSliderPosition}%` }}
@@ -2004,27 +2038,44 @@ function PlayerDashboard({
                   <span className="text-gray-400" title="Transformed pan range">
                     <ChevronsLeftRightEllipsis size={20} />
                   </span>
-                  <div className="relative">
-                    <input
-                      type="range"
-                      min="0"
-                      max="200"
-                      step="1"
-                      value={practicePanRange}
-                      readOnly
-                      onMouseDown={(event) => beginSliderDrag(event, {
+                  <div
+                    className={`relative w-40 h-7 ${panControlDisabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+                    onMouseDown={(event) => {
+                      if (event.detail > 1) return;
+                      if (panControlDisabled) return;
+                      setIsPanPointerDown(true);
+                      beginSliderDrag(event, {
                         kind: 'pan',
                         value: practicePanRange,
                         min: 0,
                         max: 200,
                         step: 1,
-                        disabled: panControlDisabled,
-                      })}
-                      onDoubleClick={() => openSliderEdit('pan', practicePanRange, panControlDisabled)}
-                      disabled={panControlDisabled}
-                      className="w-32 volume-slider volume-slider-lg cursor-pointer block disabled:opacity-40"
-                      title={panControlDisabled ? 'Transformed pan range disabled for Omitted/Solo focus' : 'Transformed pan range'}
-                    />
+                        disabled: false,
+                      });
+                    }}
+                    onDoubleClick={() => openSliderEdit('pan', practicePanRange, panControlDisabled)}
+                    title={panControlDisabled ? 'Transformed pan range disabled for Omitted/Solo focus' : 'Transformed pan range'}
+                  >
+                    <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[26px] rounded-full bg-gray-800 border border-gray-600 overflow-hidden pointer-events-none">
+                    </div>
+                    <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[26px] rounded-full overflow-hidden pointer-events-none">
+                      <div
+                        className={`absolute left-0 top-0 bottom-0 bg-gray-600 ${showPanRangeHighlight ? 'opacity-70' : 'opacity-0'}`}
+                        style={{ width: `${practicePanHighlightPercent}%` }}
+                      />
+                    </div>
+                    <div className="absolute top-0 bottom-0 left-[13px] right-[13px] pointer-events-none">
+                      <div
+                        className="absolute top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full bg-gray-600 z-20"
+                        style={{ left: `${practicePanRangePercent}%` }}
+                      />
+                      {showPanFocusAxisMarker ? (
+                        <div
+                          className="absolute top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-gray-300 z-30"
+                          style={{ left: `${practicePanFocusAxisPixel - 6}px` }}
+                        />
+                      ) : null}
+                    </div>
                     {sliderDragTooltip?.kind === 'pan' && (
                       <div
                         className="absolute bottom-full left-1/2 -translate-x-1/2 w-10 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
