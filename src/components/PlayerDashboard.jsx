@@ -391,6 +391,15 @@ function PlayerDashboard({
   }, [handlePlaybackEnded]);
 
   useEffect(() => {
+    audioManager.setMasterVolumeCurve('unity');
+    audioManager.setMasterHeadroomEnabled(false);
+    return () => {
+      audioManager.setMasterHeadroomEnabled(true);
+      audioManager.setMasterVolumeCurve('legacy');
+    };
+  }, []);
+
+  useEffect(() => {
     if (!audioRef.current) return;
     audioRef.current.volume = Math.max(0, Math.min(1, volume / 100));
     audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
@@ -636,7 +645,8 @@ function PlayerDashboard({
       if (isPracticePresetId(item.presetId)) {
         const durationMs = computeSnapshotDurationMs(snapshot);
         audioManager.setPanLawDb(snapshot.panLawDb);
-        await audioManager.play(snapshot, 0);
+        audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
+        await audioManager.play(snapshot, 0, { useProjectMasterVolume: false });
         applyRealtimePracticeSettings(snapshot, item);
         realtimePlaybackRef.current = {
           project: snapshot,
@@ -679,7 +689,7 @@ function PlayerDashboard({
     } finally {
       setIsRendering(false);
     }
-  }, [applyRealtimePracticeSettings, ensureSnapshotAudioBuffers, session]);
+  }, [applyRealtimePracticeSettings, ensureSnapshotAudioBuffers, session, volume]);
 
   const playQueueItem = useCallback(async (index) => {
     if (index < 0 || index >= activeQueueItems.length) return;
@@ -761,7 +771,8 @@ function PlayerDashboard({
       const resumeMs = Math.max(0, Math.round((Number(currentTimeSec) || 0) * 1000));
       const current = realtimePlaybackRef.current;
       audioManager.setPanLawDb(current.project.panLawDb);
-      await audioManager.play(current.project, resumeMs);
+      audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
+      await audioManager.play(current.project, resumeMs, { useProjectMasterVolume: false });
       applyRealtimePracticeSettings(current.project, current.item);
       setIsPlaying(true);
       return;
@@ -769,7 +780,7 @@ function PlayerDashboard({
 
     const startIndex = activeIndex >= 0 ? activeIndex : 0;
     await playQueueItem(startIndex);
-  }, [activeIndex, activeQueueItems.length, applyRealtimePracticeSettings, currentTimeSec, durationSec, isPlaying, playQueueItem]);
+  }, [activeIndex, activeQueueItems.length, applyRealtimePracticeSettings, currentTimeSec, durationSec, isPlaying, playQueueItem, volume]);
 
   const handleNext = useCallback(async () => {
     if (!activeQueueItems.length) return;
@@ -797,7 +808,8 @@ function PlayerDashboard({
         if (isPlaying) {
           await audioManager.pause(0);
           audioManager.setPanLawDb(current.project.panLawDb);
-          await audioManager.play(current.project, 0);
+          audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
+          await audioManager.play(current.project, 0, { useProjectMasterVolume: false });
           applyRealtimePracticeSettings(current.project, current.item);
           setIsPlaying(true);
         } else {
@@ -818,7 +830,7 @@ function PlayerDashboard({
         : 0;
     }
     await playQueueItem(previousIndex);
-  }, [activeIndex, activeQueueItems.length, applyRealtimePracticeSettings, currentTimeSec, isPlaying, loopMode, playQueueItem]);
+  }, [activeIndex, activeQueueItems.length, applyRealtimePracticeSettings, currentTimeSec, isPlaying, loopMode, playQueueItem, volume]);
 
   const handleSeek = useCallback(async (nextTimeSec) => {
     const safe = Math.max(0, Math.min(Number(nextTimeSec || 0), Number(durationSec || 0)));
@@ -829,7 +841,8 @@ function PlayerDashboard({
         if (isPlaying) {
           await audioManager.pause(seekMs);
           audioManager.setPanLawDb(current.project.panLawDb);
-          await audioManager.play(current.project, seekMs);
+          audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
+          await audioManager.play(current.project, seekMs, { useProjectMasterVolume: false });
           applyRealtimePracticeSettings(current.project, current.item);
           setIsPlaying(true);
         } else {
@@ -844,7 +857,7 @@ function PlayerDashboard({
     if (!audioRef.current) return;
     audioRef.current.currentTime = safe;
     setCurrentTimeSec(safe);
-  }, [applyRealtimePracticeSettings, durationSec, isPlaying]);
+  }, [applyRealtimePracticeSettings, durationSec, isPlaying, volume]);
 
   const handleToggleMute = useCallback(() => {
     setVolume((previous) => {
