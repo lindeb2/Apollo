@@ -990,6 +990,7 @@ function TrackList({
       instrument: 'bg-purple-600',
       lead: 'bg-blue-600',
       choir: 'bg-green-600',
+      metronome: 'bg-orange-600',
       'choir-part-1': 'bg-green-600',
       'choir-part-2': 'bg-green-500',
       'choir-part-3': 'bg-green-400',
@@ -1728,9 +1729,12 @@ function TrackList({
               <button
                 className={menuItemClass}
                 onClick={() => {
+                  if (contextMenu.track.role === TRACK_ROLES.METRONOME) return;
                   onCreateSubtrack?.(contextMenu.track.id);
                   setContextMenu(null);
                 }}
+                disabled={contextMenu.track.role === TRACK_ROLES.METRONOME}
+                title={contextMenu.track.role === TRACK_ROLES.METRONOME ? 'Metronome tracks cannot have children' : undefined}
               >
                 Create subtrack
               </button>
@@ -1876,6 +1880,15 @@ function TrackList({
             }}
           >
             Choir Part
+          </button>
+          <button
+            className={menuItemClass}
+            onClick={() => {
+              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.METRONOME });
+              setContextMenu(null);
+            }}
+          >
+            Metronome
           </button>
 
           {autoPanManualChoirParts && (

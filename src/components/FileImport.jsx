@@ -99,6 +99,7 @@ function FileImport({ onImport, onClose, manualChoirPartsEnabled = false }) {
     { value: TRACK_ROLES.INSTRUMENT, label: 'Instrument' },
     { value: TRACK_ROLES.LEAD, label: 'Lead' },
     ...choirRoleOptions,
+    { value: TRACK_ROLES.METRONOME, label: 'Metronome' },
     { value: TRACK_ROLES.OTHER, label: 'Other' },
   ];
 

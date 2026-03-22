@@ -4,11 +4,13 @@ import {
   TRACK_ROLE_CHOIR,
   TRACK_ROLE_INSTRUMENT,
   TRACK_ROLE_LEAD,
+  TRACK_ROLE_METRONOME,
   TRACK_ROLE_OTHER,
   GROUP_ROLE_NONE,
   isChoirPartRole,
   isChoirRole,
   isGroupParentRole,
+  isMetronomeRole,
   getDefaultIconByRole,
   mapGroupParentRoleToTrackRole,
   normalizeGroupRole,
@@ -42,6 +44,10 @@ function makeTrackNode(trackId, order = 0, parentId = ROOT_PARENT_ID) {
     order,
     trackId,
   };
+}
+
+function isRootOnlyTrack(track) {
+  return isMetronomeRole(track?.role);
 }
 
 export function getTrackHeight(track) {
@@ -107,7 +113,12 @@ export function normalizeTrackTree(project) {
   }
 
   const nodeById = new Map(normalizedNodes.map((node) => [node.id, node]));
+  const trackById = new Map(tracks.map((track) => [track.id, track]));
   for (const node of normalizedNodes) {
+    if (node.kind === 'track' && isRootOnlyTrack(trackById.get(node.trackId))) {
+      node.parentId = ROOT_PARENT_ID;
+      continue;
+    }
     if (node.parentId === ROOT_PARENT_ID) continue;
     const parent = nodeById.get(node.parentId);
     if (!parent || parent.kind !== 'group') {
@@ -270,7 +281,8 @@ export function reorderTracksByTree(project) {
 
 export function attachTrackNode(project, trackId, parentId = ROOT_PARENT_ID, index = null) {
   const normalized = normalizeTrackTree(project);
-  const targetParentId = parentId || ROOT_PARENT_ID;
+  const track = (normalized.tracks || []).find((candidate) => candidate.id === trackId) || null;
+  const targetParentId = isRootOnlyTrack(track) ? ROOT_PARENT_ID : (parentId || ROOT_PARENT_ID);
   const existing = getTrackNodeByTrackId(normalized, trackId);
   if (existing) {
     const currentParentId = existing.parentId || ROOT_PARENT_ID;
@@ -511,17 +523,28 @@ function isDescendant(nodeById, maybeDescendantId, ancestorId) {
 export function moveTrackTreeNode(project, nodeId, targetNodeId, placement = 'after') {
   const normalized = normalizeTrackTree(project);
   const nodeById = new Map(normalized.trackTree.map((node) => [node.id, node]));
+  const trackById = new Map((normalized.tracks || []).map((track) => [track.id, track]));
   const moving = nodeById.get(nodeId);
   const target = nodeById.get(targetNodeId);
   if (!moving || !target || moving.id === target.id) return normalized;
+  const movingTrack = moving.kind === 'track' ? trackById.get(moving.trackId) : null;
+  const movingIsRootOnlyTrack = moving.kind === 'track' && isRootOnlyTrack(movingTrack);
 
   let newParentId = target.parentId || ROOT_PARENT_ID;
   if (placement === 'inside') {
+    if (movingIsRootOnlyTrack) return normalized;
     if (target.kind !== 'group') return normalized;
     if (moving.kind === 'group' && isDescendant(nodeById, target.id, moving.id)) {
       return normalized;
     }
     newParentId = target.id;
+  }
+
+  if (movingIsRootOnlyTrack) {
+    if ((target.parentId || ROOT_PARENT_ID) !== ROOT_PARENT_ID) {
+      return normalized;
+    }
+    newParentId = ROOT_PARENT_ID;
   }
 
   const siblingsOfTarget = normalized.trackTree
@@ -720,7 +743,7 @@ export function getEffectiveTrackMix(project) {
         soloPath: trackSoloPath,
         effectiveGain: inherited.gain * volumeToGain(Math.max(0, Math.min(100, toNumber(track.volume, 100)))),
         effectivePan: clampPan(inherited.pan + clampPan(track.pan)),
-        effectiveRole,
+        effectiveRole: isMetronomeRole(track.role) ? TRACK_ROLE_METRONOME : effectiveRole,
         roleUnitId,
         roleUnitName,
         choirRole,

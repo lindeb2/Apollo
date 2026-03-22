@@ -10,6 +10,8 @@ import {
   Home,
   ListMusic,
   Loader2,
+  Music,
+  Metronome,
   MoreHorizontal,
   Pause,
   Play,
@@ -43,7 +45,7 @@ import {
   updateVirtualMix,
 } from '../lib/serverApi';
 import {
-  EXPORT_PRESET_DEFINITIONS,
+  EXPORT_PRESETS,
   PRACTICE_REALTIME_MODES,
   isPracticeOmittedPresetId,
   isPracticePresetId,
@@ -58,16 +60,7 @@ import {
   PLAYER_COLLECTION_TYPES,
   PLAYER_LOOP_MODES,
 } from '../types/player';
-
-const SINGLE_OUTPUT_PRESETS = new Set([
-  'tutti',
-  'acapella',
-  'no_lead',
-  'no_choir',
-  'instrumental',
-  'lead_only',
-  'choir_only',
-]);
+import { TRACK_ROLE_METRONOME } from '../utils/trackRoles';
 
 const PRACTICE_FOCUS_STEPS = [
   'omitted',
@@ -137,18 +130,179 @@ function computeSnapshotDurationMs(snapshot) {
   return maxDurationMs;
 }
 
+function getSnapshotMetronomeTracks(snapshot) {
+  return (snapshot?.tracks || []).filter((track) => track?.role === TRACK_ROLE_METRONOME);
+}
+
+function hasSnapshotMetronome(snapshot) {
+  return getSnapshotMetronomeTracks(snapshot).length > 0;
+}
+
+function isSnapshotMetronomeMuted(snapshot) {
+  const metronomeTracks = getSnapshotMetronomeTracks(snapshot);
+  if (!metronomeTracks.length) return false;
+  return metronomeTracks.every((track) => Boolean(track?.muted));
+}
+
+function withSnapshotMetronomeMuted(snapshot, muted) {
+  if (!snapshot || typeof snapshot !== 'object' || !hasSnapshotMetronome(snapshot)) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    tracks: (snapshot.tracks || []).map((track) => (
+      track?.role === TRACK_ROLE_METRONOME
+        ? { ...track, muted: Boolean(muted) }
+        : track
+    )),
+  };
+}
+
 function selectFromPrompt(label, options) {
   if (!Array.isArray(options) || options.length === 0) return null;
-  const lines = options.map((option, idx) => `${idx + 1}. ${option.label} (${option.value})`).join('\n');
+  const selectableOptions = [];
+  const lines = options.map((option) => {
+    if (option?.kind === 'header') {
+      return `${option.label}`;
+    }
+    selectableOptions.push(option);
+    return `${selectableOptions.length}. ${option.label} (${option.value})`;
+  }).join('\n');
   const input = window.prompt(`${label}\n${lines}`, '1');
   if (input == null) return null;
   const trimmed = String(input).trim();
   const numeric = Number(trimmed);
-  if (Number.isInteger(numeric) && numeric >= 1 && numeric <= options.length) {
-    return options[numeric - 1].value;
+  if (Number.isInteger(numeric) && numeric >= 1 && numeric <= selectableOptions.length) {
+    return selectableOptions[numeric - 1].value;
   }
-  const byValue = options.find((option) => option.value === trimmed);
+  const byValue = selectableOptions.find((option) => option.value === trimmed);
   return byValue ? byValue.value : null;
+}
+
+function buildDefaultMixName(projectLike, mixLabel) {
+  return `${projectLike?.musicalNumber ? `${projectLike.musicalNumber} - ` : ''}${projectLike?.name || projectLike?.projectName || 'Mix'}${mixLabel ? ` - ${mixLabel}` : ''}`;
+}
+
+function buildMixCategoryOptions(snapshot) {
+  const groupMixOptions = buildGroupMixOptions(snapshot);
+  const partMixSections = buildPartMixSections(snapshot);
+  return [
+    {
+      id: 'tutti',
+      label: 'Tutti',
+    },
+    groupMixOptions.length > 1 ? {
+      id: 'group',
+      label: 'Group-mix',
+    } : null,
+    partMixSections.length ? {
+      id: 'part',
+      label: 'Part-mix',
+    } : null,
+  ].filter(Boolean);
+}
+
+function buildGroupMixOptions(snapshot) {
+  const options = [];
+  if (listPresetVariants(snapshot, EXPORT_PRESETS.INSTRUMENT_PARTS).length) {
+    options.push({
+      value: 'instruments',
+      label: 'Instruments',
+      onlyPresetId: EXPORT_PRESETS.INSTRUMENTAL,
+      omittedPresetId: EXPORT_PRESETS.ACAPELLA,
+    });
+  }
+  if (listPresetVariants(snapshot, EXPORT_PRESETS.LEAD_PARTS).length) {
+    options.push({
+      value: 'leads',
+      label: 'Leads',
+      onlyPresetId: EXPORT_PRESETS.LEAD_ONLY,
+      omittedPresetId: EXPORT_PRESETS.NO_LEAD,
+    });
+  }
+  if (listPresetVariants(snapshot, EXPORT_PRESETS.CHOIR_PARTS).length) {
+    options.push({
+      value: 'choirs',
+      label: 'Choirs',
+      onlyPresetId: EXPORT_PRESETS.CHOIR_ONLY,
+      omittedPresetId: EXPORT_PRESETS.NO_CHOIR,
+    });
+  }
+  return options;
+}
+
+function buildPartMixSections(snapshot) {
+  const instrumentParts = listPresetVariants(snapshot, EXPORT_PRESETS.INSTRUMENT_PARTS);
+  const leadParts = listPresetVariants(snapshot, EXPORT_PRESETS.LEAD_PARTS);
+  const choirParts = listPresetVariants(snapshot, EXPORT_PRESETS.CHOIR_PARTS);
+  const sections = [];
+
+  if (instrumentParts.length) {
+    sections.push({
+      label: 'Instruments',
+      options: instrumentParts.map((variant) => ({
+        value: `${EXPORT_PRESETS.INSTRUMENT_PARTS}:${variant.key}`,
+        label: variant.label,
+        presetId: EXPORT_PRESETS.INSTRUMENT_PARTS,
+        presetVariantKey: variant.key,
+      })),
+    });
+  }
+  if (leadParts.length) {
+    sections.push({
+      label: 'Leads',
+      options: leadParts.map((variant) => ({
+        value: `${EXPORT_PRESETS.LEAD_PARTS}:${variant.key}`,
+        label: variant.label,
+        presetId: EXPORT_PRESETS.LEAD_PARTS,
+        presetVariantKey: variant.key,
+      })),
+    });
+  }
+  if (choirParts.length) {
+    sections.push({
+      label: 'Choirs',
+      options: choirParts.map((variant) => ({
+        value: `${EXPORT_PRESETS.CHOIR_PARTS}:${variant.key}`,
+        label: variant.label,
+        presetId: EXPORT_PRESETS.CHOIR_PARTS,
+        presetVariantKey: variant.key,
+      })),
+    });
+  }
+
+  return sections;
+}
+
+function resolveGroupMixSelection(groupMixOptions, selectedGroupIds) {
+  const normalizedSelection = Array.isArray(selectedGroupIds)
+    ? selectedGroupIds.filter(Boolean)
+    : [];
+  if (!normalizedSelection.length) return null;
+
+  if (normalizedSelection.length === 1) {
+    const selectedGroup = groupMixOptions.find((option) => option.value === normalizedSelection[0]);
+    if (!selectedGroup) return null;
+    return {
+      presetId: selectedGroup.onlyPresetId,
+      mixLabel: selectedGroup.label,
+    };
+  }
+
+  if (normalizedSelection.length === 2 && groupMixOptions.length === 3) {
+    const selectedSet = new Set(normalizedSelection);
+    const omittedGroup = groupMixOptions.find((option) => !selectedSet.has(option.value));
+    const selectedLabels = groupMixOptions
+      .filter((option) => selectedSet.has(option.value))
+      .map((option) => option.label);
+    if (!omittedGroup || selectedLabels.length !== 2) return null;
+    return {
+      presetId: omittedGroup.omittedPresetId,
+      mixLabel: selectedLabels.join(' + '),
+    };
+  }
+
+  return null;
 }
 
 function PlayerDashboard({
@@ -182,6 +336,8 @@ function PlayerDashboard({
   const [playbackEngine, setPlaybackEngine] = useState('html');
   const [practicePanRange, setPracticePanRange] = useState(100);
   const [practiceFocusControl, setPracticeFocusControl] = useState(PRACTICE_FOCUS_DEFAULT_INDEX);
+  const [hasRealtimeMetronome, setHasRealtimeMetronome] = useState(false);
+  const [isRealtimeMetronomeMuted, setIsRealtimeMetronomeMuted] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [isLibraryCollapsed, setIsLibraryCollapsed] = useState(false);
   const [libraryScopeFolderId, setLibraryScopeFolderId] = useState(null);
@@ -190,6 +346,7 @@ function PlayerDashboard({
   const [projectContextMenu, setProjectContextMenu] = useState(null);
   const [sliderDragTooltip, setSliderDragTooltip] = useState(null);
   const [sliderEditTooltip, setSliderEditTooltip] = useState(null);
+  const [mixDialog, setMixDialog] = useState(null);
 
   const audioRef = useRef(null);
   const objectUrlRef = useRef(null);
@@ -238,6 +395,17 @@ function PlayerDashboard({
   useEffect(() => {
     refreshPlayerData();
   }, [refreshPlayerData]);
+
+  useEffect(() => {
+    if (!mixDialog) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape' && mixDialog.status !== 'saving') {
+        setMixDialog(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [mixDialog]);
 
   const getPracticeFocusStep = useCallback(
     (index) => PRACTICE_FOCUS_STEPS[Math.max(PRACTICE_FOCUS_MIN_INDEX, Math.min(PRACTICE_FOCUS_MAX_INDEX, Math.round(Number(index) || 0)))],
@@ -382,6 +550,8 @@ function PlayerDashboard({
       audio.removeEventListener('play', handlePlay);
       audio.removeEventListener('ended', handleEnded);
       realtimePlaybackRef.current = { project: null, item: null, durationMs: 0 };
+      setHasRealtimeMetronome(false);
+      setIsRealtimeMetronomeMuted(false);
       audioRef.current = null;
       if (objectUrlRef.current) {
         URL.revokeObjectURL(objectUrlRef.current);
@@ -643,13 +813,17 @@ function PlayerDashboard({
       setNowPlayingLabel(item.name || item.projectName || 'Mix');
 
       if (isPracticePresetId(item.presetId)) {
+        const metronomeMuted = isSnapshotMetronomeMuted(snapshot);
+        const playbackSnapshot = withSnapshotMetronomeMuted(snapshot, metronomeMuted);
         const durationMs = computeSnapshotDurationMs(snapshot);
-        audioManager.setPanLawDb(snapshot.panLawDb);
+        setHasRealtimeMetronome(hasSnapshotMetronome(snapshot));
+        setIsRealtimeMetronomeMuted(metronomeMuted);
+        audioManager.setPanLawDb(playbackSnapshot.panLawDb);
         audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
-        await audioManager.play(snapshot, 0, { useProjectMasterVolume: false });
-        applyRealtimePracticeSettings(snapshot, item);
+        await audioManager.play(playbackSnapshot, 0, { useProjectMasterVolume: false });
+        applyRealtimePracticeSettings(playbackSnapshot, item);
         realtimePlaybackRef.current = {
-          project: snapshot,
+          project: playbackSnapshot,
           item,
           durationMs,
         };
@@ -660,13 +834,22 @@ function PlayerDashboard({
         return;
       }
 
+      const metronomeMuted = isSnapshotMetronomeMuted(snapshot);
+      const playbackSnapshot = withSnapshotMetronomeMuted(snapshot, metronomeMuted);
+      setHasRealtimeMetronome(hasSnapshotMetronome(snapshot));
+      setIsRealtimeMetronomeMuted(metronomeMuted);
+      realtimePlaybackRef.current = {
+        project: playbackSnapshot,
+        item,
+        durationMs: computeSnapshotDurationMs(snapshot),
+      };
       const rendered = await renderPresetVariant(
-        snapshot,
+        playbackSnapshot,
         item.presetId,
         item.presetVariantKey,
         audioBuffers,
-        snapshot.exportSettings,
-        snapshot.projectName || item.projectName || item.name || 'mix',
+        playbackSnapshot.exportSettings,
+        playbackSnapshot.projectName || item.projectName || item.name || 'mix',
         'wav'
       );
       if (!rendered?.blob) {
@@ -684,6 +867,8 @@ function PlayerDashboard({
       realtimePlaybackRef.current = { project: null, item: null, durationMs: 0 };
       playbackEngineRef.current = 'html';
       setPlaybackEngine('html');
+      setHasRealtimeMetronome(false);
+      setIsRealtimeMetronomeMuted(false);
       setIsPlaying(false);
       setError(playError.message || 'Playback failed');
     } finally {
@@ -870,6 +1055,100 @@ function PlayerDashboard({
     });
   }, []);
 
+  const handleToggleMetronomeMute = useCallback(async () => {
+    const current = realtimePlaybackRef.current;
+    if (!current?.project || !current?.item || !hasSnapshotMetronome(current.project)) return;
+
+    const nextMuted = !isRealtimeMetronomeMuted;
+    const nextProject = withSnapshotMetronomeMuted(current.project, nextMuted);
+    realtimePlaybackRef.current = {
+      ...current,
+      project: nextProject,
+    };
+    setIsRealtimeMetronomeMuted(nextMuted);
+
+    try {
+      if (playbackEngineRef.current === 'realtime') {
+        if (!isPlaying) return;
+        const currentMs = Math.max(0, Math.round((Number(currentTimeSec) || 0) * 1000));
+        await audioManager.pause(currentMs);
+        audioManager.setPanLawDb(nextProject.panLawDb);
+        audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
+        await audioManager.play(nextProject, currentMs, { useProjectMasterVolume: false });
+        applyRealtimePracticeSettings(nextProject, current.item);
+        setIsPlaying(true);
+        return;
+      }
+
+      const audio = audioRef.current;
+      if (!audio) return;
+
+      const shouldResume = isPlaying;
+      const currentSec = Math.max(0, Number(currentTimeSec) || 0);
+      setIsRendering(true);
+      audio.pause();
+
+      const audioBuffers = await ensureSnapshotAudioBuffers(nextProject);
+      const rendered = await renderPresetVariant(
+        nextProject,
+        current.item.presetId,
+        current.item.presetVariantKey,
+        audioBuffers,
+        nextProject.exportSettings,
+        nextProject.projectName || current.item.projectName || current.item.name || 'mix',
+        'wav'
+      );
+      if (!rendered?.blob) {
+        throw new Error('Failed to build playback mix');
+      }
+
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+
+      const url = URL.createObjectURL(rendered.blob);
+      objectUrlRef.current = url;
+      await new Promise((resolve, reject) => {
+        const handleLoadedMetadata = () => {
+          audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
+          audio.removeEventListener('error', handleError);
+          resolve();
+        };
+        const handleError = () => {
+          audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
+          audio.removeEventListener('error', handleError);
+          reject(new Error('Failed to load playback mix'));
+        };
+        audio.addEventListener('loadedmetadata', handleLoadedMetadata);
+        audio.addEventListener('error', handleError);
+        audio.src = url;
+        audio.load();
+      });
+
+      audio.currentTime = Math.max(0, Math.min(currentSec, Number.isFinite(audio.duration) ? audio.duration : currentSec));
+      setDurationSec(Number.isFinite(audio.duration) ? audio.duration : 0);
+      setCurrentTimeSec(audio.currentTime);
+
+      if (shouldResume) {
+        await audio.play();
+      }
+    } catch (toggleError) {
+      setError(toggleError.message || 'Failed to update metronome playback');
+    } finally {
+      if (playbackEngineRef.current === 'html') {
+        setIsRendering(false);
+      }
+    }
+  }, [
+    applyRealtimePracticeSettings,
+    currentTimeSec,
+    ensureSnapshotAudioBuffers,
+    isPlaying,
+    isRealtimeMetronomeMuted,
+    volume,
+  ]);
+
   const beginSliderDrag = useCallback((event, config) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -1040,66 +1319,219 @@ function PlayerDashboard({
     }
   }, [refreshPlayerData, selectedPlaylistId, session]);
 
+  const groupMixOptions = useMemo(() => (
+    mixDialog?.snapshot ? buildGroupMixOptions(mixDialog.snapshot) : []
+  ), [mixDialog]);
+
+  const partMixSections = useMemo(() => (
+    mixDialog?.snapshot ? buildPartMixSections(mixDialog.snapshot) : []
+  ), [mixDialog]);
+
+  const mixTypeOptions = useMemo(() => (
+    mixDialog?.snapshot ? buildMixCategoryOptions(mixDialog.snapshot) : []
+  ), [mixDialog]);
+
+  const mixPlacementOptions = useMemo(() => ([
+    { value: '__root__', label: 'My Library' },
+    ...playlists.map((playlist) => ({ value: `playlist:${playlist.id}`, label: playlist.name })),
+  ]), [playlists]);
+
+  const mixDialogStep = useMemo(() => {
+    if (!mixDialog) return null;
+    if (mixDialog.status === 'loading') return 'loading';
+    if (mixDialog.status === 'saving') return 'saving';
+    if (!mixDialog.mixTypeId) return 'type';
+    if (mixDialog.mixTypeId === 'group' && !mixDialog.presetId) return 'group';
+    if (mixDialog.mixTypeId === 'part' && !mixDialog.presetId) return 'part';
+    return 'details';
+  }, [mixDialog]);
+
   const promptCreateMixFromProject = useCallback(async (projectLike) => {
     const projectId = String(projectLike?.projectId || projectLike?.id || '').trim();
     if (!projectId) return;
-
-    const defaultName = `${projectLike?.musicalNumber ? `${projectLike.musicalNumber} - ` : ''}${projectLike?.name || projectLike?.projectName || 'Mix'}`;
-    const mixName = window.prompt('Mix name', defaultName);
-    const normalizedMixName = String(mixName || '').trim();
-    if (!normalizedMixName) return;
-
-    const presetId = selectFromPrompt(
-      'Select preset',
-      EXPORT_PRESET_DEFINITIONS.map((preset) => ({
-        value: preset.id,
-        label: preset.label,
-      }))
-    );
-    if (!presetId) return;
-
-    let presetVariantKey = null;
-    if (!SINGLE_OUTPUT_PRESETS.has(presetId)) {
+    setMixDialog({
+        status: 'loading',
+        projectId,
+        projectLike,
+        snapshot: null,
+        mixTypeId: null,
+        groupIds: [],
+        presetId: null,
+        presetVariantKey: null,
+        mixLabel: '',
+        placement: '__root__',
+        name: '',
+    });
+    try {
       const payload = await bootstrapServerProject(projectId, session, 0);
-      const variants = listPresetVariants(payload?.snapshot || {}, presetId);
-      if (!variants.length) {
-        throw new Error('This preset has no selectable variants for the project.');
+      const snapshot = payload?.snapshot || {};
+      const availableMixTypes = buildMixCategoryOptions(snapshot);
+      if (!availableMixTypes.length) {
+        throw new Error('No mix options are available for this project.');
       }
-      const variantValue = selectFromPrompt(
-        'Select preset variant',
-        variants.map((variant) => ({
-          value: variant.key,
-          label: variant.label,
-        }))
-      );
-      if (!variantValue) return;
-      presetVariantKey = variantValue;
+      setMixDialog({
+        status: 'ready',
+        projectId,
+        projectLike,
+        snapshot,
+        mixTypeId: null,
+        groupIds: [],
+        presetId: null,
+        presetVariantKey: null,
+        mixLabel: '',
+        placement: '__root__',
+        name: '',
+      });
+    } catch (mixError) {
+      setMixDialog(null);
+      throw mixError;
     }
+  }, [session]);
 
-    const placement = selectFromPrompt(
-      'Place mix in',
-      [
-        { value: '__root__', label: 'My Library (Root)' },
-        ...playlists.map((playlist) => ({ value: `playlist:${playlist.id}`, label: `Playlist: ${playlist.name}` })),
-      ]
-    );
-    if (!placement) return;
-
-    const createdMix = await createVirtualMix({
-      projectId,
-      name: normalizedMixName,
-      presetId,
-      presetVariantKey,
-      folderId: null,
-    }, session);
-    if (String(placement).startsWith('playlist:')) {
-      const playlistId = String(placement).slice('playlist:'.length);
-      if (playlistId) {
-        await addPlayerPlaylistItem(playlistId, createdMix.id, session);
+  const handleSelectMixType = useCallback((mixTypeId) => {
+    setMixDialog((previous) => {
+      if (!previous || previous.status !== 'ready') return previous;
+      if (mixTypeId === 'tutti') {
+        const mixLabel = 'Tutti';
+        return {
+          ...previous,
+          mixTypeId,
+          groupIds: [],
+          presetId: EXPORT_PRESETS.TUTTI,
+          presetVariantKey: null,
+          mixLabel,
+          name: buildDefaultMixName(previous.projectLike, mixLabel),
+        };
       }
+      return {
+        ...previous,
+        mixTypeId,
+        groupIds: [],
+        presetId: null,
+        presetVariantKey: null,
+        mixLabel: '',
+        name: '',
+      };
+    });
+  }, []);
+
+  const handleToggleMixGroup = useCallback((groupId) => {
+    setMixDialog((previous) => {
+      if (!previous || previous.status !== 'ready') return previous;
+      const maxSelection = groupMixOptions.length === 3 ? 2 : 1;
+      const currentSelection = Array.isArray(previous.groupIds) ? previous.groupIds : [];
+      const isSelected = currentSelection.includes(groupId);
+      let nextGroupIds = currentSelection;
+      if (isSelected) {
+        nextGroupIds = currentSelection.filter((candidate) => candidate !== groupId);
+      } else if (currentSelection.length < maxSelection) {
+        nextGroupIds = [...currentSelection, groupId];
+      } else {
+        nextGroupIds = [groupId];
+      }
+      return {
+        ...previous,
+        groupIds: nextGroupIds,
+        presetId: null,
+        presetVariantKey: null,
+        mixLabel: '',
+        name: '',
+      };
+    });
+  }, [groupMixOptions.length]);
+
+  const handleConfirmGroupSelection = useCallback(() => {
+    setMixDialog((previous) => {
+      if (!previous || previous.status !== 'ready') return previous;
+      const resolved = resolveGroupMixSelection(groupMixOptions, previous.groupIds);
+      if (!resolved) return previous;
+      return {
+        ...previous,
+        presetId: resolved.presetId,
+        presetVariantKey: null,
+        mixLabel: resolved.mixLabel,
+        name: buildDefaultMixName(previous.projectLike, resolved.mixLabel),
+      };
+    });
+  }, [groupMixOptions]);
+
+  const handleSelectPartPreset = useCallback((partOption) => {
+    if (!partOption) return;
+    setMixDialog((previous) => {
+      if (!previous || previous.status !== 'ready') return previous;
+      return {
+        ...previous,
+        presetId: partOption.presetId,
+        presetVariantKey: partOption.presetVariantKey,
+        mixLabel: partOption.label,
+        name: buildDefaultMixName(previous.projectLike, partOption.label),
+      };
+    });
+  }, []);
+
+  const handleMixDialogBack = useCallback(() => {
+    setMixDialog((previous) => {
+      if (!previous || previous.status !== 'ready') return previous;
+      if (previous.mixTypeId === 'group' && previous.presetId) {
+        return {
+          ...previous,
+          presetId: null,
+          presetVariantKey: null,
+          mixLabel: '',
+          name: '',
+        };
+      }
+      if (previous.mixTypeId === 'part' && previous.presetId) {
+        return {
+          ...previous,
+          presetId: null,
+          presetVariantKey: null,
+          mixLabel: '',
+          name: '',
+        };
+      }
+      return {
+        ...previous,
+        mixTypeId: null,
+        groupIds: [],
+        presetId: null,
+        presetVariantKey: null,
+        mixLabel: '',
+        name: '',
+      };
+    });
+  }, []);
+
+  const handleCreateMixFromDialog = useCallback(async () => {
+    if (!mixDialog || mixDialog.status !== 'ready' || !mixDialog.presetId) return;
+    const normalizedMixName = String(mixDialog.name || '').trim();
+    if (!normalizedMixName) {
+      setError('Mix name is required.');
+      return;
     }
-    await refreshPlayerData();
-  }, [playlists, refreshPlayerData, session]);
+    setError('');
+    setMixDialog((previous) => (previous ? { ...previous, status: 'saving' } : previous));
+    try {
+      const createdMix = await createVirtualMix({
+        projectId: mixDialog.projectId,
+        name: normalizedMixName,
+        presetId: mixDialog.presetId,
+        presetVariantKey: mixDialog.presetVariantKey,
+        folderId: null,
+      }, session);
+      if (String(mixDialog.placement).startsWith('playlist:')) {
+        const playlistId = String(mixDialog.placement).slice('playlist:'.length);
+        if (playlistId) {
+          await addPlayerPlaylistItem(playlistId, createdMix.id, session);
+        }
+      }
+      setMixDialog(null);
+      await refreshPlayerData();
+    } catch (createError) {
+      setError(createError.message || 'Failed to create mix');
+      setMixDialog((previous) => (previous ? { ...previous, status: 'ready' } : previous));
+    }
+  }, [mixDialog, refreshPlayerData, session]);
 
   const handleDeleteMix = useCallback(async (mix) => {
     if (!window.confirm(`Delete mix "${mix?.name}"?`)) return;
@@ -1186,12 +1618,14 @@ function PlayerDashboard({
     ? 'text-gray-400'
     : 'text-blue-300';
   const shuffleButtonClass = shuffleEnabled ? 'text-blue-300' : 'text-gray-400';
+  const metronomeButtonClass = isRealtimeMetronomeMuted ? 'text-gray-400' : 'text-blue-300';
   const isMuted = volume <= 0;
   const VolumeIcon = isMuted ? VolumeX : Volume2;
   const practiceControlItem = playbackEngine === 'realtime'
     ? realtimePlaybackRef.current?.item
     : null;
   const practiceControlsEnabled = isPracticePresetId(practiceControlItem?.presetId);
+  const metronomeControlsEnabled = hasRealtimeMetronome;
   const focusControlDisabled = !practiceControlsEnabled || isRendering;
   const focusStep = getPracticeFocusStep(practiceFocusControl);
   const focusSliderPosition = getPracticeFocusSliderPosition(practiceFocusControl);
@@ -1902,6 +2336,204 @@ function PlayerDashboard({
         </div>
       ) : null}
 
+      {mixDialog ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 px-4"
+          onClick={() => {
+            if (mixDialog.status === 'saving') return;
+            setMixDialog(null);
+          }}
+        >
+          <div
+            className="w-full max-w-2xl rounded-2xl border border-gray-700 bg-gray-900 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-gray-800 px-6 py-4">
+              <div>
+                <div className="text-lg font-semibold text-gray-100">Create Mix</div>
+                <div className="text-sm text-gray-400">
+                  {mixDialog.projectLike?.musicalNumber ? `${mixDialog.projectLike.musicalNumber} - ` : ''}
+                  {mixDialog.projectLike?.name || mixDialog.projectLike?.projectName || 'Project'}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {mixDialogStep !== 'type' && mixDialogStep !== 'loading' && mixDialogStep !== 'saving' ? (
+                  <button
+                    type="button"
+                    onClick={handleMixDialogBack}
+                    className="rounded-md border border-gray-700 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-800"
+                  >
+                    Back
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setMixDialog(null)}
+                  disabled={mixDialog.status === 'saving'}
+                  className="rounded-md border border-gray-700 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800 disabled:opacity-50"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="px-6 py-5">
+              {mixDialogStep === 'loading' ? (
+                <div className="flex min-h-48 items-center justify-center gap-3 text-gray-300">
+                  <Loader2 size={20} className="animate-spin" />
+                  <span>Loading mix options...</span>
+                </div>
+              ) : null}
+
+              {mixDialogStep === 'saving' ? (
+                <div className="flex min-h-48 items-center justify-center gap-3 text-gray-300">
+                  <Loader2 size={20} className="animate-spin" />
+                  <span>Creating mix...</span>
+                </div>
+              ) : null}
+
+              {mixDialogStep === 'type' ? (
+                <div className="space-y-3 text-center">
+                  <div className="text-sm font-medium text-gray-300">Choose mix type</div>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {mixTypeOptions.map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => handleSelectMixType(option.id)}
+                        className="rounded-xl border border-gray-700 bg-gray-800 px-4 py-5 text-center text-base font-medium text-gray-100 transition-colors hover:border-gray-500 hover:bg-gray-750"
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {mixDialogStep === 'group' ? (
+                <div className="space-y-4 text-center">
+                  <div className="space-y-1">
+                    <div className="text-sm font-medium text-gray-300">Choose group</div>
+                    <div className="text-xs text-gray-500">
+                      {groupMixOptions.length === 3 ? 'Select one or two groups' : 'Select one group'}
+                    </div>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {groupMixOptions.map((option) => {
+                      const isSelected = (mixDialog?.groupIds || []).includes(option.value);
+                      return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => handleToggleMixGroup(option.value)}
+                        className={`rounded-xl border px-4 py-5 text-center text-base font-medium transition-colors ${
+                          isSelected
+                            ? 'border-blue-500 bg-blue-500/10 text-blue-100'
+                            : 'border-gray-700 bg-gray-800 text-gray-100 hover:border-gray-500 hover:bg-gray-750'
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                      );
+                    })}
+                  </div>
+                  <div className="flex justify-center">
+                    <button
+                      type="button"
+                      onClick={handleConfirmGroupSelection}
+                      disabled={!resolveGroupMixSelection(groupMixOptions, mixDialog?.groupIds)}
+                      className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Continue
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {mixDialogStep === 'part' ? (
+                <div className="space-y-4 text-center">
+                  <div className="text-sm font-medium text-gray-300">Choose part</div>
+                  <div className="space-y-4">
+                    {partMixSections.map((section) => (
+                      <div key={section.label} className="space-y-2">
+                        <div className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">
+                          {section.label}
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3">
+                          {section.options.map((option) => (
+                            <button
+                              key={option.value}
+                              type="button"
+                              onClick={() => handleSelectPartPreset(option)}
+                              className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-center text-sm font-medium text-gray-100 transition-colors hover:border-gray-500 hover:bg-gray-750"
+                            >
+                              {option.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {mixDialogStep === 'details' ? (
+                <div className="space-y-5">
+                  <div>
+                    <div className="text-center text-sm font-medium text-gray-300">Name</div>
+                    <input
+                      type="text"
+                      value={mixDialog.name}
+                      onChange={(event) => setMixDialog((previous) => (
+                        previous ? { ...previous, name: event.target.value } : previous
+                      ))}
+                      className="mt-2 w-full rounded-xl border border-gray-700 bg-gray-800 px-4 py-3 text-base text-gray-100 placeholder:text-gray-500 focus:border-gray-500 focus:outline-none"
+                      placeholder="Mix name"
+                      autoFocus
+                    />
+                  </div>
+
+                  <div className="space-y-3 text-center">
+                    <div className="text-sm font-medium text-gray-300">Place in</div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {mixPlacementOptions.map((option) => {
+                        const isSelected = mixDialog.placement === option.value;
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => setMixDialog((previous) => (
+                              previous ? { ...previous, placement: option.value } : previous
+                            ))}
+                            className={`rounded-xl border px-4 py-3 text-center text-base font-medium transition-colors ${
+                              isSelected
+                                ? 'border-blue-500 bg-blue-500/10 text-blue-100'
+                                : 'border-gray-700 bg-gray-800 text-gray-100 hover:border-gray-500 hover:bg-gray-750'
+                            }`}
+                          >
+                            {option.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={handleCreateMixFromDialog}
+                      className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-500"
+                    >
+                      Create Mix
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="bg-gray-850 border-t border-gray-800 px-6 py-4">
         <div className="grid grid-cols-[minmax(0,1fr)_minmax(380px,760px)_minmax(0,1fr)] items-center gap-4">
           <div className="min-w-0 text-lg font-semibold text-gray-200">
@@ -1972,165 +2604,180 @@ function PlayerDashboard({
           </div>
 
           <div className="flex items-center justify-end gap-2">
-            {practiceControlsEnabled ? (
-              <div className="flex flex-col gap-2.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-gray-400" title="Practice focus">
-                    <FocusIcon size={20} />
-                  </span>
-                  <div
-                    className={`relative w-40 h-7 ${focusControlDisabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
-                    onMouseDown={(event) => {
-                      if (event.detail > 1) return;
-                      if (focusControlDisabled) return;
-                      const rect = event.currentTarget.getBoundingClientRect();
-                      const relative = ((event.clientX - rect.left) / Math.max(1, rect.width)) * 100;
-                      const clamped = Math.max(0, Math.min(100, relative));
-                      const nextFocusIndex = resolvePracticeFocusIndexFromSlider(clamped);
-                      setPracticeFocusControl(nextFocusIndex);
-                      beginSliderDrag(event, {
-                        kind: 'focus',
-                        value: getPracticeFocusSliderPosition(nextFocusIndex),
-                        min: 0,
-                        max: 100,
-                        step: 1,
-                        disabled: false,
-                      });
-                    }}
-                    onDoubleClick={() => openSliderEdit('focus', practiceFocusControl, focusControlDisabled)}
-                    title="Practice focus"
+            {practiceControlsEnabled || metronomeControlsEnabled ? (
+              <div className="flex items-center gap-3">
+                {metronomeControlsEnabled ? (
+                  <button
+                    onClick={handleToggleMetronomeMute}
+                    disabled={isRendering}
+                    className={`rounded bg-gray-700 hover:bg-gray-600 p-3 disabled:opacity-50 ${metronomeButtonClass}`}
+                    title={isRealtimeMetronomeMuted ? 'Unmute metronome' : 'Mute metronome'}
                   >
-                    <div className="absolute left-[13px] right-[13px] top-1/2 -translate-y-1/2 h-[26px] rounded-full bg-gray-800 border border-gray-600 pointer-events-none z-0" />
-                    <div
-                      className={`absolute left-0 top-1/2 -translate-y-1/2 h-[26px] w-[26px] rounded-full bg-gray-800 border pointer-events-none z-10 ${
-                        focusStep === 'omitted' ? 'border-blue-400' : 'border-gray-600'
-                      }`}
-                    />
-                    <div
-                      className={`absolute right-0 top-1/2 -translate-y-1/2 h-[26px] w-[26px] rounded-full bg-gray-800 border pointer-events-none z-10 ${
-                        focusStep === 'solo' ? 'border-blue-400' : 'border-gray-600'
-                      }`}
-                    />
-                    <div className="absolute top-0 bottom-0 left-[13px] right-[13px] pointer-events-none z-20">
-                      <div
-                        className="absolute top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full bg-gray-600"
-                        style={{ left: `${focusSliderPosition}%` }}
-                      />
-                    </div>
-                    {sliderDragTooltip?.kind === 'focus' && (
-                      <div
-                        className="absolute bottom-full left-1/2 -translate-x-1/2 w-14 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
-                        style={{ marginBottom: '1px' }}
-                      >
-                        {formatSliderValue('focus', Number(sliderDragTooltip.value))}
-                      </div>
-                    )}
-                    {sliderEditTooltip?.kind === 'focus' && (
-                      <input
-                        type="text"
-                        value={sliderEditTooltip.text}
-                        onChange={(event) => setSliderEditTooltip((previous) => (
-                          previous ? { ...previous, text: event.target.value } : previous
-                        ))}
-                        onFocus={(event) => event.target.select()}
-                        onBlur={commitSliderEdit}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault();
-                            event.currentTarget.blur();
-                          } else if (event.key === 'Escape') {
-                            event.preventDefault();
-                            setSliderEditTooltip(null);
-                          }
-                        }}
-                        className="absolute bottom-full left-1/2 -translate-x-1/2 w-14 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
-                        style={{ marginBottom: '1px' }}
-                        autoFocus
-                      />
-                    )}
-                  </div>
-                </div>
+                    <Metronome size={20} />
+                  </button>
+                ) : null}
 
-                <div className={`flex items-center gap-2 ${panControlDisabled ? 'opacity-40' : ''}`}>
-                  <span className="text-gray-400" title="Transformed pan range">
-                    <ChevronsLeftRightEllipsis size={20} />
-                  </span>
-                  <div
-                    className={`relative w-40 h-7 ${panControlDisabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}
-                    onMouseDown={(event) => {
-                      if (event.detail > 1) return;
-                      if (panControlDisabled) return;
-                      beginSliderDrag(event, {
-                        kind: 'pan',
-                        value: practicePanRange,
-                        min: 0,
-                        max: 200,
-                        step: 1,
-                        disabled: false,
-                      });
-                    }}
-                    onDoubleClick={() => openSliderEdit('pan', practicePanRange, panControlDisabled)}
-                    title={panControlDisabled ? 'Transformed pan range disabled for Omitted/Solo focus' : 'Transformed pan range'}
-                  >
-                    <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[26px] rounded-full bg-gray-800 border border-gray-600 overflow-hidden pointer-events-none">
-                    </div>
-                    <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[26px] rounded-full overflow-hidden pointer-events-none">
+                {practiceControlsEnabled ? (
+                  <div className="flex flex-col gap-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-gray-400" title="Practice focus">
+                        <FocusIcon size={20} />
+                      </span>
                       <div
-                        className={`absolute left-0 top-0 bottom-0 bg-gray-600 ${showPanRangeHighlight ? 'opacity-70' : 'opacity-0'}`}
-                        style={{ width: `${practicePanHighlightPixel}px` }}
-                      />
-                    </div>
-                    <div className="absolute top-0 bottom-0 left-[13px] right-[13px] pointer-events-none">
-                      <div
-                        className="absolute top-1/2 h-6 w-6 -translate-y-1/2 rounded-full bg-gray-600 z-20"
-                        style={{ left: `${practicePanKnobPixel - 12}px` }}
-                      />
-                      {showPanFocusAxisMarker ? (
-                        <div
-                          className="absolute h-[10px] w-[10px] rounded-full bg-gray-200 z-30 pointer-events-none"
-                          style={{
-                            left: `${practicePanFocusAxisPixel}px`,
-                            top: '50%',
-                            transform: 'translate3d(-50%, -50%, 0)',
-                            backfaceVisibility: 'hidden',
-                            willChange: 'left',
-                          }}
-                        />
-                      ) : null}
-                    </div>
-                    {sliderDragTooltip?.kind === 'pan' && (
-                      <div
-                        className="absolute bottom-full left-1/2 -translate-x-1/2 w-10 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
-                        style={{ marginBottom: '1px' }}
+                        className={`relative w-40 h-7 ${focusControlDisabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
+                        onMouseDown={(event) => {
+                          if (event.detail > 1) return;
+                          if (focusControlDisabled) return;
+                          const rect = event.currentTarget.getBoundingClientRect();
+                          const relative = ((event.clientX - rect.left) / Math.max(1, rect.width)) * 100;
+                          const clamped = Math.max(0, Math.min(100, relative));
+                          const nextFocusIndex = resolvePracticeFocusIndexFromSlider(clamped);
+                          setPracticeFocusControl(nextFocusIndex);
+                          beginSliderDrag(event, {
+                            kind: 'focus',
+                            value: getPracticeFocusSliderPosition(nextFocusIndex),
+                            min: 0,
+                            max: 100,
+                            step: 1,
+                            disabled: false,
+                          });
+                        }}
+                        onDoubleClick={() => openSliderEdit('focus', practiceFocusControl, focusControlDisabled)}
+                        title="Practice focus"
                       >
-                        {formatSliderValue('pan', Number(sliderDragTooltip.value))}
+                        <div className="absolute left-[13px] right-[13px] top-1/2 -translate-y-1/2 h-[26px] rounded-full bg-gray-800 border border-gray-600 pointer-events-none z-0" />
+                        <div
+                          className={`absolute left-0 top-1/2 -translate-y-1/2 h-[26px] w-[26px] rounded-full bg-gray-800 border pointer-events-none z-10 ${
+                            focusStep === 'omitted' ? 'border-blue-400' : 'border-gray-600'
+                          }`}
+                        />
+                        <div
+                          className={`absolute right-0 top-1/2 -translate-y-1/2 h-[26px] w-[26px] rounded-full bg-gray-800 border pointer-events-none z-10 ${
+                            focusStep === 'solo' ? 'border-blue-400' : 'border-gray-600'
+                          }`}
+                        />
+                        <div className="absolute top-0 bottom-0 left-[13px] right-[13px] pointer-events-none z-20">
+                          <div
+                            className="absolute top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full bg-gray-600"
+                            style={{ left: `${focusSliderPosition}%` }}
+                          />
+                        </div>
+                        {sliderDragTooltip?.kind === 'focus' && (
+                          <div
+                            className="absolute bottom-full left-1/2 -translate-x-1/2 w-14 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
+                            style={{ marginBottom: '1px' }}
+                          >
+                            {formatSliderValue('focus', Number(sliderDragTooltip.value))}
+                          </div>
+                        )}
+                        {sliderEditTooltip?.kind === 'focus' && (
+                          <input
+                            type="text"
+                            value={sliderEditTooltip.text}
+                            onChange={(event) => setSliderEditTooltip((previous) => (
+                              previous ? { ...previous, text: event.target.value } : previous
+                            ))}
+                            onFocus={(event) => event.target.select()}
+                            onBlur={commitSliderEdit}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                event.currentTarget.blur();
+                              } else if (event.key === 'Escape') {
+                                event.preventDefault();
+                                setSliderEditTooltip(null);
+                              }
+                            }}
+                            className="absolute bottom-full left-1/2 -translate-x-1/2 w-14 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
+                            style={{ marginBottom: '1px' }}
+                            autoFocus
+                          />
+                        )}
                       </div>
-                    )}
-                    {sliderEditTooltip?.kind === 'pan' && (
-                      <input
-                        type="text"
-                        value={sliderEditTooltip.text}
-                        onChange={(event) => setSliderEditTooltip((previous) => (
-                          previous ? { ...previous, text: event.target.value } : previous
-                        ))}
-                        onFocus={(event) => event.target.select()}
-                        onBlur={commitSliderEdit}
-                        onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault();
-                          event.currentTarget.blur();
-                          } else if (event.key === 'Escape') {
-                            event.preventDefault();
-                          setSliderEditTooltip(null);
-                        }
-                      }}
-                        className="absolute bottom-full left-1/2 -translate-x-1/2 w-10 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
-                        style={{ marginBottom: '1px' }}
-                        autoFocus
-                      />
-                    )}
+                    </div>
+
+                    <div className={`flex items-center gap-2 ${panControlDisabled ? 'opacity-40' : ''}`}>
+                      <span className="text-gray-400" title="Transformed pan range">
+                        <ChevronsLeftRightEllipsis size={20} />
+                      </span>
+                      <div
+                        className={`relative w-40 h-7 ${panControlDisabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+                        onMouseDown={(event) => {
+                          if (event.detail > 1) return;
+                          if (panControlDisabled) return;
+                          beginSliderDrag(event, {
+                            kind: 'pan',
+                            value: practicePanRange,
+                            min: 0,
+                            max: 200,
+                            step: 1,
+                            disabled: false,
+                          });
+                        }}
+                        onDoubleClick={() => openSliderEdit('pan', practicePanRange, panControlDisabled)}
+                        title={panControlDisabled ? 'Transformed pan range disabled for Omitted/Solo focus' : 'Transformed pan range'}
+                      >
+                        <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[26px] rounded-full bg-gray-800 border border-gray-600 overflow-hidden pointer-events-none">
+                        </div>
+                        <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[26px] rounded-full overflow-hidden pointer-events-none">
+                          <div
+                            className={`absolute left-0 top-0 bottom-0 bg-gray-600 ${showPanRangeHighlight ? 'opacity-70' : 'opacity-0'}`}
+                            style={{ width: `${practicePanHighlightPixel}px` }}
+                          />
+                        </div>
+                        <div className="absolute top-0 bottom-0 left-[13px] right-[13px] pointer-events-none">
+                          <div
+                            className="absolute top-1/2 h-6 w-6 -translate-y-1/2 rounded-full bg-gray-600 z-20"
+                            style={{ left: `${practicePanKnobPixel - 12}px` }}
+                          />
+                          {showPanFocusAxisMarker ? (
+                            <div
+                              className="absolute h-[10px] w-[10px] rounded-full bg-gray-200 z-30 pointer-events-none"
+                              style={{
+                                left: `${practicePanFocusAxisPixel}px`,
+                                top: '50%',
+                                transform: 'translate3d(-50%, -50%, 0)',
+                                backfaceVisibility: 'hidden',
+                                willChange: 'left',
+                              }}
+                            />
+                          ) : null}
+                        </div>
+                        {sliderDragTooltip?.kind === 'pan' && (
+                          <div
+                            className="absolute bottom-full left-1/2 -translate-x-1/2 w-10 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
+                            style={{ marginBottom: '1px' }}
+                          >
+                            {formatSliderValue('pan', Number(sliderDragTooltip.value))}
+                          </div>
+                        )}
+                        {sliderEditTooltip?.kind === 'pan' && (
+                          <input
+                            type="text"
+                            value={sliderEditTooltip.text}
+                            onChange={(event) => setSliderEditTooltip((previous) => (
+                              previous ? { ...previous, text: event.target.value } : previous
+                            ))}
+                            onFocus={(event) => event.target.select()}
+                            onBlur={commitSliderEdit}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                event.currentTarget.blur();
+                              } else if (event.key === 'Escape') {
+                                event.preventDefault();
+                                setSliderEditTooltip(null);
+                              }
+                            }}
+                            className="absolute bottom-full left-1/2 -translate-x-1/2 w-10 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
+                            style={{ marginBottom: '1px' }}
+                            autoFocus
+                          />
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </div>
+                ) : null}
               </div>
             ) : null}
             <div className="flex items-center gap-0">

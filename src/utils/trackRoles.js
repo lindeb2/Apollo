@@ -1,6 +1,7 @@
 export const TRACK_ROLE_INSTRUMENT = 'instrument';
 export const TRACK_ROLE_LEAD = 'lead';
 export const TRACK_ROLE_CHOIR = 'choir';
+export const TRACK_ROLE_METRONOME = 'metronome';
 export const TRACK_ROLE_OTHER = 'other';
 
 export const TRACK_CHOIR_PART_ROLES = [
@@ -21,6 +22,7 @@ export const TRACK_CATEGORY_ROLES = new Set([
   TRACK_ROLE_INSTRUMENT,
   TRACK_ROLE_LEAD,
   TRACK_ROLE_CHOIR,
+  TRACK_ROLE_METRONOME,
   TRACK_ROLE_OTHER,
 ]);
 
@@ -33,7 +35,10 @@ const GROUP_PARENT_ROLES = new Set([
 
 const GROUP_ALLOWED_ROLES = new Set([
   GROUP_ROLE_NONE,
-  ...TRACK_CATEGORY_ROLES,
+  TRACK_ROLE_INSTRUMENT,
+  TRACK_ROLE_LEAD,
+  TRACK_ROLE_CHOIR,
+  TRACK_ROLE_OTHER,
   ...TRACK_CHOIR_PART_ROLES,
   ...GROUP_PARENT_ROLES,
 ]);
@@ -44,6 +49,10 @@ export function isChoirPartRole(role) {
 
 export function isChoirRole(role) {
   return role === TRACK_ROLE_CHOIR || isChoirPartRole(role);
+}
+
+export function isMetronomeRole(role) {
+  return role === TRACK_ROLE_METRONOME;
 }
 
 export function isTrackRole(role) {
@@ -101,6 +110,7 @@ export function getDefaultIconByRole(role) {
   if (normalizedTrackRole === TRACK_ROLE_INSTRUMENT) return 'guitar';
   if (normalizedTrackRole === TRACK_ROLE_LEAD) return 'user';
   if (normalizedTrackRole === TRACK_ROLE_CHOIR) return 'users';
+  if (normalizedTrackRole === TRACK_ROLE_METRONOME) return 'music';
   return 'wave';
 }
 
