@@ -15,6 +15,7 @@ import useKeyboardShortcuts from '../utils/useKeyboardShortcuts';
 import { processRecordingOverwrites } from '../utils/clipCollision';
 import { isPrimaryModifierPressed } from '../utils/keyboard';
 import { reportUserError } from '../utils/errorReporter';
+import { buildBlobReferenceErrorMessage } from '../utils/mediaErrors';
 import { measureTuttiPeak } from '../lib/exportEngine';
 import useRealtimeProjectSync from '../hooks/useRealtimeProjectSync';
 import { downloadMediaBlob, forceCheckpoint } from '../lib/serverApi';
@@ -23,6 +24,7 @@ import {
   GROUP_ROLE_CHOIRS,
   isChoirRole,
   isGroupParentRole,
+  isMetronomeRole,
   groupRoleToTrackRole,
 } from '../utils/trackRoles';
 import {
@@ -71,7 +73,7 @@ const getSupportedAudioFiles = (dataTransfer) => {
   });
 };
 
-function Editor({ onBackToDashboard, remoteSession = null }) {
+function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession = null }) {
   const {
     project,
     updateProject,
@@ -399,7 +401,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
           console.log(`Loaded audio buffer for ${blobId}`);
         } catch (error) {
           reportUserError(
-            `Failed to load audio buffer for media id ${blobId}.`,
+            buildBlobReferenceErrorMessage(currentProject, blobId, 'clip audio'),
             error,
             { onceKey: `editor:load-audio-buffer:${blobId}` }
           );
@@ -410,7 +412,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
           newMediaMap.set(blobId, media);
         } catch (error) {
           reportUserError(
-            `Failed to load media metadata for media id ${blobId}.`,
+            buildBlobReferenceErrorMessage(currentProject, blobId, 'clip media details'),
             error,
             { onceKey: `editor:load-media-data:${blobId}` }
           );
@@ -1486,6 +1488,14 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
         tracks: nextTracks,
       };
 
+      if (updates.role !== undefined) {
+        nextProject = normalizeTrackTree(nextProject);
+        if (isMetronomeRole(nextTracks.find((track) => track.id === trackId)?.role)) {
+          nextProject = collapseEmptyGroupsToTracks(nextProject);
+          nextProject = reorderTracksByTree(nextProject);
+        }
+      }
+
       if (updates.pan !== undefined && wasChoirTrack && proj.autoPan?.enabled && isDirectChoirPartTrack) {
         nextProject = {
           ...nextProject,
@@ -1740,6 +1750,7 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
       const sourceTrack = (normalized.tracks || []).find((track) => track.id === sourceTrackId);
 
       if (!sourceNode || !movingNode || !sourceTrack) return normalized;
+      if (isMetronomeRole(sourceTrack.role)) return normalized;
       if ((sourceTrack.clips?.length || 0) > 0) return normalized;
       if (sourceNode.id === movingNode.id) return normalized;
 
@@ -2389,6 +2400,10 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
     if (!trackId) return;
     const sourceTrack = project.tracks.find((t) => t.id === trackId);
     if (!sourceTrack) return;
+    if (isMetronomeRole(sourceTrack.role)) {
+      alert('Metronome tracks must stay at the root level and cannot have children.');
+      return;
+    }
     if ((sourceTrack.clips?.length || 0) > 0) {
       alert('Create new subtrack only works from an empty track.');
       return;
@@ -2634,6 +2649,16 @@ function Editor({ onBackToDashboard, remoteSession = null }) {
             >
               <ArrowLeft size={20} />
             </button>
+            {onSwitchToPlayerMode ? (
+              <button
+                onClick={onSwitchToPlayerMode}
+                className="text-gray-300 hover:text-white transition-colors flex-shrink-0 rounded bg-gray-700 hover:bg-gray-600 px-2 py-1 text-xs font-semibold disabled:opacity-50"
+                title={isRecording ? 'Cannot switch mode while recording' : 'Switch to Player Mode'}
+                disabled={isRecording}
+              >
+                Player
+              </button>
+            ) : null}
             <button
               onClick={() => {
                 setSettingsOpen(true);

@@ -379,3 +379,122 @@ export async function forceCheckpoint(projectId, session) {
     body: {},
   }, session);
 }
+
+export async function fetchPlayerMyDevice(session) {
+  return await apiFetch('/api/player/my-device', {}, session);
+}
+
+export async function fetchPlayerTuttiMixes(session) {
+  const payload = await apiFetch('/api/player/tutti', {}, session);
+  return payload.mixes || [];
+}
+
+export async function fetchPlayerGlobalMixes(session) {
+  const payload = await apiFetch('/api/player/mixes/global', {}, session);
+  return payload.mixes || [];
+}
+
+export async function createPlayerFolder(folder, session) {
+  const payload = await apiFetch('/api/player/folders', {
+    method: 'POST',
+    body: folder,
+  }, session);
+  return payload.folder;
+}
+
+export async function updatePlayerFolder(folderId, updates, session) {
+  const payload = await apiFetch(`/api/player/folders/${encodeURIComponent(folderId)}`, {
+    method: 'PATCH',
+    body: updates,
+  }, session);
+  return payload.folder;
+}
+
+export async function deletePlayerFolder(folderId, session) {
+  return await apiFetch(`/api/player/folders/${encodeURIComponent(folderId)}`, {
+    method: 'DELETE',
+  }, session);
+}
+
+export async function createVirtualMix(mix, session) {
+  const payload = await apiFetch('/api/player/mixes', {
+    method: 'POST',
+    body: mix,
+  }, session);
+  return payload.mix;
+}
+
+export async function updateVirtualMix(mixId, updates, session) {
+  const payload = await apiFetch(`/api/player/mixes/${encodeURIComponent(mixId)}`, {
+    method: 'PATCH',
+    body: updates,
+  }, session);
+  return payload.mix;
+}
+
+export async function deleteVirtualMix(mixId, session) {
+  return await apiFetch(`/api/player/mixes/${encodeURIComponent(mixId)}`, {
+    method: 'DELETE',
+  }, session);
+}
+
+export async function publishVirtualMix(mixId, session) {
+  const payload = await apiFetch(`/api/player/mixes/${encodeURIComponent(mixId)}/publish`, {
+    method: 'POST',
+    body: {},
+  }, session);
+  return payload.mix;
+}
+
+export async function unpublishVirtualMix(mixId, session) {
+  const payload = await apiFetch(`/api/player/mixes/${encodeURIComponent(mixId)}/unpublish`, {
+    method: 'POST',
+    body: {},
+  }, session);
+  return payload.mix;
+}
+
+export async function createPlayerPlaylist(playlist, session) {
+  const payload = await apiFetch('/api/player/playlists', {
+    method: 'POST',
+    body: playlist,
+  }, session);
+  return payload.playlist;
+}
+
+export async function updatePlayerPlaylist(playlistId, updates, session) {
+  const payload = await apiFetch(`/api/player/playlists/${encodeURIComponent(playlistId)}`, {
+    method: 'PATCH',
+    body: updates,
+  }, session);
+  return payload.playlist;
+}
+
+export async function deletePlayerPlaylist(playlistId, session) {
+  return await apiFetch(`/api/player/playlists/${encodeURIComponent(playlistId)}`, {
+    method: 'DELETE',
+  }, session);
+}
+
+export async function addPlayerPlaylistItem(playlistId, mixId, session) {
+  const payload = await apiFetch(`/api/player/playlists/${encodeURIComponent(playlistId)}/items`, {
+    method: 'POST',
+    body: { mixId },
+  }, session);
+  return payload.item;
+}
+
+export async function reorderPlayerPlaylistItems(playlistId, orderedItemIds, session) {
+  return await apiFetch(`/api/player/playlists/${encodeURIComponent(playlistId)}/items/reorder`, {
+    method: 'PATCH',
+    body: { orderedItemIds },
+  }, session);
+}
+
+export async function deletePlayerPlaylistItem(playlistId, itemId, session) {
+  return await apiFetch(
+    `/api/player/playlists/${encodeURIComponent(playlistId)}/items/${encodeURIComponent(itemId)}`,
+    { method: 'DELETE' },
+    session
+  );
+}

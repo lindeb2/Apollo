@@ -25,6 +25,8 @@ class AudioManager {
     this.isInitializingPlayback = false; // Flag to prevent concurrent play() calls
     this.currentMasterVolume = 100;
     this.currentPanLawDb = normalizePanLawDb();
+    this.masterVolumeCurve = 'legacy';
+    this.masterHeadroomEnabled = true;
   }
 
   /**
@@ -180,7 +182,7 @@ class AudioManager {
   /**
    * Play project from current time
    */
-  async play(project, currentTimeMs) {
+  async play(project, currentTimeMs, options = {}) {
     // Prevent concurrent play() calls - if already initializing, stop first
     if (this.isInitializingPlayback) {
       console.log('Play called while already initializing - stopping first');
@@ -200,9 +202,12 @@ class AudioManager {
 
       this.isPlaying = true;
       this.startTime = this.audioContext.currentTime - msToSeconds(currentTimeMs);
-      this.currentMasterVolume = Number.isFinite(Number(project?.masterVolume))
-        ? Number(project.masterVolume)
-        : this.currentMasterVolume;
+      const useProjectMasterVolume = options?.useProjectMasterVolume !== false;
+      if (useProjectMasterVolume) {
+        this.currentMasterVolume = Number.isFinite(Number(project?.masterVolume))
+          ? Number(project.masterVolume)
+          : this.currentMasterVolume;
+      }
       this.currentPanLawDb = normalizePanLawDb(project?.panLawDb);
       this.applyMasterGain();
       const mix = getEffectiveTrackMix(project);
@@ -359,9 +364,20 @@ class AudioManager {
    * Set master volume
    */
   setMasterVolume(volume) {
-    this.currentMasterVolume = Number.isFinite(Number(volume))
-      ? Number(volume)
-      : this.currentMasterVolume;
+    const parsed = Number(volume);
+    if (Number.isFinite(parsed)) {
+      this.currentMasterVolume = Math.max(0, Math.min(100, parsed));
+    }
+    this.applyMasterGain();
+  }
+
+  setMasterVolumeCurve(curve) {
+    this.masterVolumeCurve = curve === 'unity' ? 'unity' : 'legacy';
+    this.applyMasterGain();
+  }
+
+  setMasterHeadroomEnabled(enabled) {
+    this.masterHeadroomEnabled = enabled !== false;
     this.applyMasterGain();
   }
 
@@ -460,7 +476,19 @@ class AudioManager {
   }
 
   getMasterOutputGain() {
-    return volumeToGain(this.currentMasterVolume) * getPanLawHeadroomGain(this.currentPanLawDb);
+    const headroomGain = this.masterHeadroomEnabled
+      ? getPanLawHeadroomGain(this.currentPanLawDb)
+      : 1;
+    return this.getMasterVolumeGain() * headroomGain;
+  }
+
+  getMasterVolumeGain() {
+    const clamped = Math.max(0, Math.min(100, Number(this.currentMasterVolume) || 0));
+    if (clamped <= 0) return 0;
+    if (this.masterVolumeCurve === 'unity') {
+      return clamped / 100;
+    }
+    return volumeToGain(clamped);
   }
 
   applyMasterGain() {

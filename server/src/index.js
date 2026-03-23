@@ -414,6 +414,78 @@ async function cleanupExpiredLocks() {
   await Promise.all(result.rows.map((row) => broadcastLockState(row.project_id, row.track_id)));
 }
 
+function normalizeText(value) {
+  return String(value ?? '').trim();
+}
+
+function normalizeOptionalText(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim();
+  return normalized || null;
+}
+
+function normalizeOrderIndex(value) {
+  if (value == null || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isInteger(numeric) || numeric < 0) return NaN;
+  return numeric;
+}
+
+function canMutateOwnedEntity(ownerUserId, user) {
+  return Boolean(user?.isAdmin) || String(ownerUserId) === String(user?.id || '');
+}
+
+async function loadPlayerFolderById(folderId) {
+  const result = await pool.query(
+    `SELECT id,
+            owner_user_id AS "ownerUserId",
+            name,
+            parent_folder_id AS "parentFolderId",
+            order_index AS "orderIndex",
+            created_at AS "createdAt",
+            updated_at AS "updatedAt"
+     FROM player_folders
+     WHERE id = $1`,
+    [folderId]
+  );
+  return result.rows[0] || null;
+}
+
+async function loadVirtualMixById(mixId) {
+  const result = await pool.query(
+    `SELECT id,
+            owner_user_id AS "ownerUserId",
+            project_id AS "projectId",
+            name,
+            preset_id AS "presetId",
+            preset_variant_key AS "presetVariantKey",
+            visibility,
+            folder_id AS "folderId",
+            created_at AS "createdAt",
+            updated_at AS "updatedAt",
+            published_at AS "publishedAt"
+     FROM virtual_mixes
+     WHERE id = $1`,
+    [mixId]
+  );
+  return result.rows[0] || null;
+}
+
+async function loadPlaylistById(playlistId) {
+  const result = await pool.query(
+    `SELECT id,
+            owner_user_id AS "ownerUserId",
+            name,
+            folder_id AS "folderId",
+            created_at AS "createdAt",
+            updated_at AS "updatedAt"
+     FROM player_playlists
+     WHERE id = $1`,
+    [playlistId]
+  );
+  return result.rows[0] || null;
+}
+
 app.use(cors({
   origin: config.corsOrigin === '*' ? true : config.corsOrigin,
   credentials: true,
@@ -1062,6 +1134,987 @@ app.put('/api/projects/:projectId/permissions/:userId', requireAuth, async (req,
   );
 
   res.json({ ok: true });
+});
+
+app.get('/api/player/my-device', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const isAdmin = Boolean(req.user.isAdmin);
+    const [folderResult, mixResult, playlistResult, playlistItemResult] = await Promise.all([
+      pool.query(
+        `SELECT id,
+                owner_user_id AS "ownerUserId",
+                name,
+                parent_folder_id AS "parentFolderId",
+                order_index AS "orderIndex",
+                created_at AS "createdAt",
+                updated_at AS "updatedAt"
+         FROM player_folders
+         WHERE owner_user_id = $1
+         ORDER BY parent_folder_id NULLS FIRST, order_index ASC, name ASC`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT vm.id,
+                vm.owner_user_id AS "ownerUserId",
+                vm.project_id AS "projectId",
+                vm.name,
+                vm.preset_id AS "presetId",
+                vm.preset_variant_key AS "presetVariantKey",
+                vm.visibility,
+                vm.folder_id AS "folderId",
+                vm.created_at AS "createdAt",
+                vm.updated_at AS "updatedAt",
+                vm.published_at AS "publishedAt",
+                p.name AS "projectName",
+                p.musical_number AS "musicalNumber",
+                p.scene_order AS "sceneOrder",
+                CASE WHEN $2::boolean THEN TRUE ELSE COALESCE(pp.can_read, FALSE) END AS "canRead",
+                CASE WHEN $2::boolean THEN TRUE ELSE COALESCE(pp.can_write, FALSE) END AS "canWrite"
+         FROM virtual_mixes vm
+         JOIN projects p
+           ON p.id = vm.project_id
+         LEFT JOIN project_permissions pp
+           ON pp.project_id = p.id AND pp.user_id = $1
+         WHERE vm.owner_user_id = $1
+         ORDER BY vm.updated_at DESC`,
+        [userId, isAdmin]
+      ),
+      pool.query(
+        `SELECT id,
+                owner_user_id AS "ownerUserId",
+                name,
+                folder_id AS "folderId",
+                created_at AS "createdAt",
+                updated_at AS "updatedAt"
+         FROM player_playlists
+         WHERE owner_user_id = $1
+         ORDER BY updated_at DESC, created_at DESC`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT pli.id,
+                pli.playlist_id AS "playlistId",
+                pli.mix_id AS "mixId",
+                pli.order_index AS "orderIndex",
+                pli.created_at AS "createdAt",
+                vm.owner_user_id AS "mixOwnerUserId",
+                vm.project_id AS "projectId",
+                vm.name AS "mixName",
+                vm.preset_id AS "presetId",
+                vm.preset_variant_key AS "presetVariantKey",
+                vm.visibility AS "mixVisibility",
+                vm.folder_id AS "mixFolderId",
+                vm.created_at AS "mixCreatedAt",
+                vm.updated_at AS "mixUpdatedAt",
+                vm.published_at AS "mixPublishedAt",
+                p.name AS "projectName",
+                p.musical_number AS "musicalNumber",
+                p.scene_order AS "sceneOrder",
+                CASE
+                  WHEN vm.id IS NULL THEN FALSE
+                  WHEN $2::boolean THEN TRUE
+                  WHEN vm.owner_user_id = $1 THEN TRUE
+                  WHEN vm.visibility = 'global' AND COALESCE(pp.can_read, FALSE) = TRUE THEN TRUE
+                  ELSE FALSE
+                END AS "mixReadable",
+                CASE
+                  WHEN vm.id IS NULL THEN FALSE
+                  WHEN $2::boolean THEN TRUE
+                  ELSE COALESCE(pp.can_write, FALSE)
+                END AS "projectCanWrite"
+         FROM player_playlist_items pli
+         JOIN player_playlists pl
+           ON pl.id = pli.playlist_id
+         LEFT JOIN virtual_mixes vm
+           ON vm.id = pli.mix_id
+         LEFT JOIN projects p
+           ON p.id = vm.project_id
+         LEFT JOIN project_permissions pp
+           ON pp.project_id = p.id AND pp.user_id = $1
+         WHERE pl.owner_user_id = $1
+         ORDER BY pli.playlist_id ASC, pli.order_index ASC`,
+        [userId, isAdmin]
+      ),
+    ]);
+
+    const playlistItemsByPlaylistId = {};
+    playlistResult.rows.forEach((playlist) => {
+      playlistItemsByPlaylistId[playlist.id] = [];
+    });
+
+    playlistItemResult.rows.forEach((row) => {
+      const readable = Boolean(row.mixReadable);
+      const mix = readable
+        ? {
+          id: row.mixId,
+          ownerUserId: row.mixOwnerUserId,
+          projectId: row.projectId,
+          name: row.mixName,
+          presetId: row.presetId,
+          presetVariantKey: row.presetVariantKey,
+          visibility: row.mixVisibility,
+          folderId: row.mixFolderId,
+          createdAt: row.mixCreatedAt,
+          updatedAt: row.mixUpdatedAt,
+          publishedAt: row.mixPublishedAt,
+          projectName: row.projectName,
+          musicalNumber: row.musicalNumber,
+          sceneOrder: row.sceneOrder,
+          canRead: true,
+          canWrite: Boolean(row.projectCanWrite),
+        }
+        : null;
+      const item = {
+        id: row.id,
+        playlistId: row.playlistId,
+        mixId: row.mixId,
+        orderIndex: Number(row.orderIndex || 0),
+        createdAt: row.createdAt,
+        unavailable: !readable,
+        mix,
+      };
+      if (!playlistItemsByPlaylistId[row.playlistId]) {
+        playlistItemsByPlaylistId[row.playlistId] = [];
+      }
+      playlistItemsByPlaylistId[row.playlistId].push(item);
+    });
+
+    res.json({
+      folders: folderResult.rows,
+      mixes: mixResult.rows,
+      playlists: playlistResult.rows,
+      playlistItemsByPlaylistId,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to load player library' });
+  }
+});
+
+app.get('/api/player/tutti', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT p.id, p.name,
+              p.musical_number AS "musicalNumber",
+              p.scene_order AS "sceneOrder",
+              CASE WHEN $2::boolean THEN TRUE ELSE COALESCE(pp.can_read, FALSE) END AS "canRead",
+              CASE WHEN $2::boolean THEN TRUE ELSE COALESCE(pp.can_write, FALSE) END AS "canWrite"
+       FROM projects p
+       LEFT JOIN project_permissions pp
+         ON pp.project_id = p.id AND pp.user_id = $1
+       WHERE $2::boolean = TRUE OR COALESCE(pp.can_read, FALSE) = TRUE`,
+      [req.user.id, Boolean(req.user.isAdmin)]
+    );
+
+    const projects = [...result.rows].sort(compareProjectsByMusicalOrder);
+    res.json({
+      mixes: projects.map((project) => ({
+        id: `tutti:${project.id}`,
+        projectId: project.id,
+        name: project.name,
+        presetId: 'tutti',
+        presetVariantKey: null,
+        musicalNumber: project.musicalNumber,
+        sceneOrder: project.sceneOrder,
+        canWrite: Boolean(project.canWrite),
+      })),
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to load tutti mixes' });
+  }
+});
+
+app.get('/api/player/mixes/global', requireAuth, async (req, res) => {
+  try {
+    const isAdmin = Boolean(req.user.isAdmin);
+    const result = await pool.query(
+      `SELECT vm.id,
+              vm.owner_user_id AS "ownerUserId",
+              vm.project_id AS "projectId",
+              vm.name,
+              vm.preset_id AS "presetId",
+              vm.preset_variant_key AS "presetVariantKey",
+              vm.visibility,
+              vm.folder_id AS "folderId",
+              vm.created_at AS "createdAt",
+              vm.updated_at AS "updatedAt",
+              vm.published_at AS "publishedAt",
+              p.name AS "projectName",
+              p.musical_number AS "musicalNumber",
+              p.scene_order AS "sceneOrder",
+              u.username AS "ownerUsername",
+              CASE WHEN $1::boolean THEN TRUE ELSE COALESCE(pp.can_write, FALSE) END AS "canWrite"
+       FROM virtual_mixes vm
+       JOIN projects p
+         ON p.id = vm.project_id
+       JOIN users u
+         ON u.id = vm.owner_user_id
+       LEFT JOIN project_permissions pp
+         ON pp.project_id = p.id AND pp.user_id = $2
+       WHERE vm.visibility = 'global'
+         AND ($1::boolean = TRUE OR COALESCE(pp.can_read, FALSE) = TRUE)
+       ORDER BY vm.published_at DESC NULLS LAST, vm.updated_at DESC`,
+      [isAdmin, req.user.id]
+    );
+    res.json({ mixes: result.rows });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to load global mixes' });
+  }
+});
+
+app.post('/api/player/folders', requireAuth, async (req, res) => {
+  try {
+    const name = normalizeText(req.body?.name);
+    const parentFolderId = normalizeOptionalText(req.body?.parentFolderId);
+    const orderIndexRaw = normalizeOrderIndex(req.body?.orderIndex);
+    const orderIndex = Number.isNaN(orderIndexRaw) ? null : orderIndexRaw;
+    if (!name) {
+      res.status(400).json({ error: 'Folder name is required' });
+      return;
+    }
+    if (Number.isNaN(orderIndexRaw)) {
+      res.status(400).json({ error: 'orderIndex must be an integer >= 0 when provided' });
+      return;
+    }
+
+    if (parentFolderId) {
+      const parentFolder = await loadPlayerFolderById(parentFolderId);
+      if (!parentFolder || parentFolder.ownerUserId !== req.user.id) {
+        res.status(400).json({ error: 'Parent folder not found' });
+        return;
+      }
+    }
+
+    const result = await pool.query(
+      `INSERT INTO player_folders(id, owner_user_id, name, parent_folder_id, order_index)
+       VALUES($1, $2, $3, $4, $5)
+       RETURNING id,
+                 owner_user_id AS "ownerUserId",
+                 name,
+                 parent_folder_id AS "parentFolderId",
+                 order_index AS "orderIndex",
+                 created_at AS "createdAt",
+                 updated_at AS "updatedAt"`,
+      [randomUUID(), req.user.id, name, parentFolderId, orderIndex ?? 0]
+    );
+
+    res.status(201).json({ folder: result.rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to create folder' });
+  }
+});
+
+app.patch('/api/player/folders/:id', requireAuth, async (req, res) => {
+  try {
+    const folder = await loadPlayerFolderById(req.params.id);
+    if (!folder) {
+      res.status(404).json({ error: 'Folder not found' });
+      return;
+    }
+    if (!canMutateOwnedEntity(folder.ownerUserId, req.user)) {
+      res.status(403).json({ error: 'No permission to edit this folder' });
+      return;
+    }
+
+    const hasName = Object.prototype.hasOwnProperty.call(req.body || {}, 'name');
+    const hasParentFolderId = Object.prototype.hasOwnProperty.call(req.body || {}, 'parentFolderId');
+    const hasOrderIndex = Object.prototype.hasOwnProperty.call(req.body || {}, 'orderIndex');
+    if (!hasName && !hasParentFolderId && !hasOrderIndex) {
+      res.status(400).json({ error: 'At least one field is required' });
+      return;
+    }
+
+    const updates = [];
+    const values = [folder.id];
+    let idx = 2;
+
+    if (hasName) {
+      const nextName = normalizeText(req.body?.name);
+      if (!nextName) {
+        res.status(400).json({ error: 'Folder name is required' });
+        return;
+      }
+      updates.push(`name = $${idx++}`);
+      values.push(nextName);
+    }
+
+    if (hasParentFolderId) {
+      const nextParentFolderId = normalizeOptionalText(req.body?.parentFolderId);
+      if (nextParentFolderId) {
+        if (nextParentFolderId === folder.id) {
+          res.status(400).json({ error: 'Folder cannot be parent of itself' });
+          return;
+        }
+        const parentFolder = await loadPlayerFolderById(nextParentFolderId);
+        if (!parentFolder || parentFolder.ownerUserId !== folder.ownerUserId) {
+          res.status(400).json({ error: 'Parent folder not found' });
+          return;
+        }
+
+        const cycleCheck = await pool.query(
+          `WITH RECURSIVE descendants AS (
+             SELECT id
+             FROM player_folders
+             WHERE id = $1
+             UNION ALL
+             SELECT pf.id
+             FROM player_folders pf
+             JOIN descendants d
+               ON pf.parent_folder_id = d.id
+           )
+           SELECT 1
+           FROM descendants
+           WHERE id = $2
+           LIMIT 1`,
+          [folder.id, nextParentFolderId]
+        );
+        if (cycleCheck.rowCount > 0) {
+          res.status(400).json({ error: 'Cannot move folder into itself or descendant folder' });
+          return;
+        }
+      }
+      updates.push(`parent_folder_id = $${idx++}`);
+      values.push(nextParentFolderId);
+    }
+
+    if (hasOrderIndex) {
+      const nextOrderIndex = normalizeOrderIndex(req.body?.orderIndex);
+      if (Number.isNaN(nextOrderIndex)) {
+        res.status(400).json({ error: 'orderIndex must be an integer >= 0 when provided' });
+        return;
+      }
+      updates.push(`order_index = $${idx++}`);
+      values.push(nextOrderIndex ?? 0);
+    }
+
+    const result = await pool.query(
+      `UPDATE player_folders
+       SET ${updates.join(', ')}, updated_at = NOW()
+       WHERE id = $1
+       RETURNING id,
+                 owner_user_id AS "ownerUserId",
+                 name,
+                 parent_folder_id AS "parentFolderId",
+                 order_index AS "orderIndex",
+                 created_at AS "createdAt",
+                 updated_at AS "updatedAt"`,
+      values
+    );
+
+    res.json({ folder: result.rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to update folder' });
+  }
+});
+
+app.delete('/api/player/folders/:id', requireAuth, async (req, res) => {
+  try {
+    const folder = await loadPlayerFolderById(req.params.id);
+    if (!folder) {
+      res.status(404).json({ error: 'Folder not found' });
+      return;
+    }
+    if (!canMutateOwnedEntity(folder.ownerUserId, req.user)) {
+      res.status(403).json({ error: 'No permission to delete this folder' });
+      return;
+    }
+
+    const countResult = await pool.query(
+      `SELECT
+          (SELECT COUNT(*)::integer FROM player_folders WHERE parent_folder_id = $1) AS "childCount",
+          (SELECT COUNT(*)::integer FROM virtual_mixes WHERE folder_id = $1) AS "mixCount"`,
+      [folder.id]
+    );
+    const childCount = Number(countResult.rows?.[0]?.childCount || 0);
+    const mixCount = Number(countResult.rows?.[0]?.mixCount || 0);
+    if (childCount > 0 || mixCount > 0) {
+      res.status(409).json({ error: 'Folder is not empty' });
+      return;
+    }
+
+    await pool.query(`DELETE FROM player_folders WHERE id = $1`, [folder.id]);
+    res.json({ ok: true, folderId: folder.id });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to delete folder' });
+  }
+});
+
+app.post('/api/player/mixes', requireAuth, async (req, res) => {
+  try {
+    const projectId = normalizeText(req.body?.projectId);
+    const name = normalizeText(req.body?.name);
+    const presetId = normalizeText(req.body?.presetId);
+    const presetVariantKey = normalizeOptionalText(req.body?.presetVariantKey);
+    const folderId = normalizeOptionalText(req.body?.folderId);
+    if (!projectId || !name || !presetId) {
+      res.status(400).json({ error: 'projectId, name, and presetId are required' });
+      return;
+    }
+
+    const projectExists = await pool.query(
+      `SELECT id
+       FROM projects
+       WHERE id = $1`,
+      [projectId]
+    );
+    if (projectExists.rowCount === 0) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+
+    const permission = await getProjectPermission(req.user.id, projectId, req.user.isAdmin);
+    if (!permission.canRead) {
+      res.status(403).json({ error: 'No read permission for source project' });
+      return;
+    }
+
+    if (folderId) {
+      const folder = await loadPlayerFolderById(folderId);
+      if (!folder || folder.ownerUserId !== req.user.id) {
+        res.status(400).json({ error: 'Folder not found' });
+        return;
+      }
+    }
+
+    const result = await pool.query(
+      `INSERT INTO virtual_mixes(
+          id, owner_user_id, project_id, name, preset_id, preset_variant_key, visibility, folder_id
+       )
+       VALUES($1, $2, $3, $4, $5, $6, 'private', $7)
+       RETURNING id,
+                 owner_user_id AS "ownerUserId",
+                 project_id AS "projectId",
+                 name,
+                 preset_id AS "presetId",
+                 preset_variant_key AS "presetVariantKey",
+                 visibility,
+                 folder_id AS "folderId",
+                 created_at AS "createdAt",
+                 updated_at AS "updatedAt",
+                 published_at AS "publishedAt"`,
+      [randomUUID(), req.user.id, projectId, name, presetId, presetVariantKey, folderId]
+    );
+    res.status(201).json({ mix: result.rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to create virtual mix' });
+  }
+});
+
+app.patch('/api/player/mixes/:id', requireAuth, async (req, res) => {
+  try {
+    const mix = await loadVirtualMixById(req.params.id);
+    if (!mix) {
+      res.status(404).json({ error: 'Mix not found' });
+      return;
+    }
+    if (!canMutateOwnedEntity(mix.ownerUserId, req.user)) {
+      res.status(403).json({ error: 'No permission to edit this mix' });
+      return;
+    }
+
+    const hasName = Object.prototype.hasOwnProperty.call(req.body || {}, 'name');
+    const hasPresetId = Object.prototype.hasOwnProperty.call(req.body || {}, 'presetId');
+    const hasPresetVariantKey = Object.prototype.hasOwnProperty.call(req.body || {}, 'presetVariantKey');
+    const hasFolderId = Object.prototype.hasOwnProperty.call(req.body || {}, 'folderId');
+    if (!hasName && !hasPresetId && !hasPresetVariantKey && !hasFolderId) {
+      res.status(400).json({ error: 'At least one field is required' });
+      return;
+    }
+
+    const updates = [];
+    const values = [mix.id];
+    let idx = 2;
+
+    if (hasName) {
+      const nextName = normalizeText(req.body?.name);
+      if (!nextName) {
+        res.status(400).json({ error: 'Mix name is required' });
+        return;
+      }
+      updates.push(`name = $${idx++}`);
+      values.push(nextName);
+    }
+
+    if (hasPresetId) {
+      const nextPresetId = normalizeText(req.body?.presetId);
+      if (!nextPresetId) {
+        res.status(400).json({ error: 'presetId is required' });
+        return;
+      }
+      updates.push(`preset_id = $${idx++}`);
+      values.push(nextPresetId);
+    }
+
+    if (hasPresetVariantKey) {
+      const nextVariant = normalizeOptionalText(req.body?.presetVariantKey);
+      updates.push(`preset_variant_key = $${idx++}`);
+      values.push(nextVariant);
+    }
+
+    if (hasFolderId) {
+      const nextFolderId = normalizeOptionalText(req.body?.folderId);
+      if (nextFolderId) {
+        const folder = await loadPlayerFolderById(nextFolderId);
+        if (!folder || folder.ownerUserId !== mix.ownerUserId) {
+          res.status(400).json({ error: 'Folder not found' });
+          return;
+        }
+      }
+      updates.push(`folder_id = $${idx++}`);
+      values.push(nextFolderId);
+    }
+
+    const result = await pool.query(
+      `UPDATE virtual_mixes
+       SET ${updates.join(', ')}, updated_at = NOW()
+       WHERE id = $1
+       RETURNING id,
+                 owner_user_id AS "ownerUserId",
+                 project_id AS "projectId",
+                 name,
+                 preset_id AS "presetId",
+                 preset_variant_key AS "presetVariantKey",
+                 visibility,
+                 folder_id AS "folderId",
+                 created_at AS "createdAt",
+                 updated_at AS "updatedAt",
+                 published_at AS "publishedAt"`,
+      values
+    );
+    res.json({ mix: result.rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to update mix' });
+  }
+});
+
+app.delete('/api/player/mixes/:id', requireAuth, async (req, res) => {
+  try {
+    const mix = await loadVirtualMixById(req.params.id);
+    if (!mix) {
+      res.status(404).json({ error: 'Mix not found' });
+      return;
+    }
+    if (!canMutateOwnedEntity(mix.ownerUserId, req.user)) {
+      res.status(403).json({ error: 'No permission to delete this mix' });
+      return;
+    }
+
+    await pool.query(`DELETE FROM virtual_mixes WHERE id = $1`, [mix.id]);
+    res.json({ ok: true, mixId: mix.id });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to delete mix' });
+  }
+});
+
+app.post('/api/player/mixes/:id/publish', requireAuth, async (req, res) => {
+  try {
+    const mix = await loadVirtualMixById(req.params.id);
+    if (!mix) {
+      res.status(404).json({ error: 'Mix not found' });
+      return;
+    }
+    if (!canMutateOwnedEntity(mix.ownerUserId, req.user)) {
+      res.status(403).json({ error: 'No permission to publish this mix' });
+      return;
+    }
+    const result = await pool.query(
+      `UPDATE virtual_mixes
+       SET visibility = 'global',
+           published_at = NOW(),
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING id,
+                 owner_user_id AS "ownerUserId",
+                 project_id AS "projectId",
+                 name,
+                 preset_id AS "presetId",
+                 preset_variant_key AS "presetVariantKey",
+                 visibility,
+                 folder_id AS "folderId",
+                 created_at AS "createdAt",
+                 updated_at AS "updatedAt",
+                 published_at AS "publishedAt"`,
+      [mix.id]
+    );
+    res.json({ mix: result.rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to publish mix' });
+  }
+});
+
+app.post('/api/player/mixes/:id/unpublish', requireAuth, async (req, res) => {
+  try {
+    const mix = await loadVirtualMixById(req.params.id);
+    if (!mix) {
+      res.status(404).json({ error: 'Mix not found' });
+      return;
+    }
+    if (!canMutateOwnedEntity(mix.ownerUserId, req.user)) {
+      res.status(403).json({ error: 'No permission to unpublish this mix' });
+      return;
+    }
+    const result = await pool.query(
+      `UPDATE virtual_mixes
+       SET visibility = 'private',
+           published_at = NULL,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING id,
+                 owner_user_id AS "ownerUserId",
+                 project_id AS "projectId",
+                 name,
+                 preset_id AS "presetId",
+                 preset_variant_key AS "presetVariantKey",
+                 visibility,
+                 folder_id AS "folderId",
+                 created_at AS "createdAt",
+                 updated_at AS "updatedAt",
+                 published_at AS "publishedAt"`,
+      [mix.id]
+    );
+    res.json({ mix: result.rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to unpublish mix' });
+  }
+});
+
+app.post('/api/player/playlists', requireAuth, async (req, res) => {
+  try {
+    const name = normalizeText(req.body?.name);
+    const folderId = normalizeOptionalText(req.body?.folderId);
+    if (!name) {
+      res.status(400).json({ error: 'Playlist name is required' });
+      return;
+    }
+    if (folderId) {
+      const folder = await loadPlayerFolderById(folderId);
+      if (!folder || folder.ownerUserId !== req.user.id) {
+        res.status(400).json({ error: 'Folder not found' });
+        return;
+      }
+    }
+    const result = await pool.query(
+      `INSERT INTO player_playlists(id, owner_user_id, name, folder_id)
+       VALUES($1, $2, $3, $4)
+       RETURNING id,
+                 owner_user_id AS "ownerUserId",
+                 name,
+                 folder_id AS "folderId",
+                 created_at AS "createdAt",
+                 updated_at AS "updatedAt"`,
+      [randomUUID(), req.user.id, name, folderId]
+    );
+    res.status(201).json({ playlist: result.rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to create playlist' });
+  }
+});
+
+app.patch('/api/player/playlists/:id', requireAuth, async (req, res) => {
+  try {
+    const playlist = await loadPlaylistById(req.params.id);
+    if (!playlist) {
+      res.status(404).json({ error: 'Playlist not found' });
+      return;
+    }
+    if (!canMutateOwnedEntity(playlist.ownerUserId, req.user)) {
+      res.status(403).json({ error: 'No permission to edit this playlist' });
+      return;
+    }
+    const hasName = Object.prototype.hasOwnProperty.call(req.body || {}, 'name');
+    const hasFolderId = Object.prototype.hasOwnProperty.call(req.body || {}, 'folderId');
+    if (!hasName && !hasFolderId) {
+      res.status(400).json({ error: 'At least one field is required' });
+      return;
+    }
+
+    const updates = [];
+    const values = [playlist.id];
+    let idx = 2;
+
+    if (hasName) {
+      const name = normalizeText(req.body?.name);
+      if (!name) {
+        res.status(400).json({ error: 'Playlist name is required' });
+        return;
+      }
+      updates.push(`name = $${idx++}`);
+      values.push(name);
+    }
+
+    if (hasFolderId) {
+      const folderId = normalizeOptionalText(req.body?.folderId);
+      if (folderId) {
+        const folder = await loadPlayerFolderById(folderId);
+        if (!folder || folder.ownerUserId !== playlist.ownerUserId) {
+          res.status(400).json({ error: 'Folder not found' });
+          return;
+        }
+      }
+      updates.push(`folder_id = $${idx++}`);
+      values.push(folderId);
+    }
+
+    const result = await pool.query(
+      `UPDATE player_playlists
+       SET ${updates.join(', ')},
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING id,
+                 owner_user_id AS "ownerUserId",
+                 name,
+                 folder_id AS "folderId",
+                 created_at AS "createdAt",
+                 updated_at AS "updatedAt"`,
+      values
+    );
+    res.json({ playlist: result.rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to update playlist' });
+  }
+});
+
+app.delete('/api/player/playlists/:id', requireAuth, async (req, res) => {
+  try {
+    const playlist = await loadPlaylistById(req.params.id);
+    if (!playlist) {
+      res.status(404).json({ error: 'Playlist not found' });
+      return;
+    }
+    if (!canMutateOwnedEntity(playlist.ownerUserId, req.user)) {
+      res.status(403).json({ error: 'No permission to delete this playlist' });
+      return;
+    }
+    await pool.query(`DELETE FROM player_playlists WHERE id = $1`, [playlist.id]);
+    res.json({ ok: true, playlistId: playlist.id });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to delete playlist' });
+  }
+});
+
+app.post('/api/player/playlists/:id/items', requireAuth, async (req, res) => {
+  try {
+    const playlist = await loadPlaylistById(req.params.id);
+    if (!playlist) {
+      res.status(404).json({ error: 'Playlist not found' });
+      return;
+    }
+    if (!canMutateOwnedEntity(playlist.ownerUserId, req.user)) {
+      res.status(403).json({ error: 'No permission to edit this playlist' });
+      return;
+    }
+
+    const mixId = normalizeText(req.body?.mixId);
+    if (!mixId) {
+      res.status(400).json({ error: 'mixId is required' });
+      return;
+    }
+    const mixPermission = await pool.query(
+      `SELECT vm.id,
+              vm.owner_user_id AS "ownerUserId",
+              CASE
+                WHEN $3::boolean THEN TRUE
+                WHEN vm.owner_user_id = $2 THEN TRUE
+                WHEN vm.visibility = 'global' AND COALESCE(pp.can_read, FALSE) = TRUE THEN TRUE
+                ELSE FALSE
+              END AS "canUse"
+       FROM virtual_mixes vm
+       JOIN projects p
+         ON p.id = vm.project_id
+       LEFT JOIN project_permissions pp
+         ON pp.project_id = p.id AND pp.user_id = $2
+       WHERE vm.id = $1`,
+      [mixId, req.user.id, Boolean(req.user.isAdmin)]
+    );
+    if (mixPermission.rowCount === 0) {
+      res.status(404).json({ error: 'Mix not found' });
+      return;
+    }
+    if (!Boolean(mixPermission.rows[0].canUse)) {
+      res.status(403).json({ error: 'No permission to use this mix in playlist' });
+      return;
+    }
+
+    const nextIndexResult = await pool.query(
+      `SELECT COALESCE(MAX(order_index), -1) + 1 AS "nextIndex"
+       FROM player_playlist_items
+       WHERE playlist_id = $1`,
+      [playlist.id]
+    );
+    const nextIndex = Number(nextIndexResult.rows?.[0]?.nextIndex || 0);
+    const result = await pool.query(
+      `INSERT INTO player_playlist_items(id, playlist_id, mix_id, order_index)
+       VALUES($1, $2, $3, $4)
+       RETURNING id,
+                 playlist_id AS "playlistId",
+                 mix_id AS "mixId",
+                 order_index AS "orderIndex",
+                 created_at AS "createdAt"`,
+      [randomUUID(), playlist.id, mixId, nextIndex]
+    );
+    await pool.query(
+      `UPDATE player_playlists
+       SET updated_at = NOW()
+       WHERE id = $1`,
+      [playlist.id]
+    );
+    res.status(201).json({ item: result.rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to add playlist item' });
+  }
+});
+
+app.patch('/api/player/playlists/:id/items/reorder', requireAuth, async (req, res) => {
+  try {
+    const playlist = await loadPlaylistById(req.params.id);
+    if (!playlist) {
+      res.status(404).json({ error: 'Playlist not found' });
+      return;
+    }
+    if (!canMutateOwnedEntity(playlist.ownerUserId, req.user)) {
+      res.status(403).json({ error: 'No permission to reorder this playlist' });
+      return;
+    }
+
+    const orderedItemIds = Array.isArray(req.body?.orderedItemIds)
+      ? req.body.orderedItemIds.map((value) => String(value))
+      : null;
+    if (!orderedItemIds) {
+      res.status(400).json({ error: 'orderedItemIds array is required' });
+      return;
+    }
+    if (new Set(orderedItemIds).size !== orderedItemIds.length) {
+      res.status(400).json({ error: 'orderedItemIds must not contain duplicates' });
+      return;
+    }
+
+    const existingResult = await pool.query(
+      `SELECT id
+       FROM player_playlist_items
+       WHERE playlist_id = $1
+       ORDER BY order_index ASC, created_at ASC`,
+      [playlist.id]
+    );
+    const existingIds = existingResult.rows.map((row) => row.id);
+    if (existingIds.length !== orderedItemIds.length) {
+      res.status(400).json({ error: 'orderedItemIds must include all playlist item ids exactly once' });
+      return;
+    }
+    const existingSet = new Set(existingIds);
+    const allKnown = orderedItemIds.every((id) => existingSet.has(id));
+    if (!allKnown) {
+      res.status(400).json({ error: 'orderedItemIds contains unknown item ids' });
+      return;
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (let i = 0; i < orderedItemIds.length; i += 1) {
+        await client.query(
+          `UPDATE player_playlist_items
+           SET order_index = $3
+           WHERE playlist_id = $1 AND id = $2`,
+          [playlist.id, orderedItemIds[i], i]
+        );
+      }
+      await client.query(
+        `UPDATE player_playlists
+         SET updated_at = NOW()
+         WHERE id = $1`,
+        [playlist.id]
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    res.json({ ok: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to reorder playlist items' });
+  }
+});
+
+app.delete('/api/player/playlists/:id/items/:itemId', requireAuth, async (req, res) => {
+  try {
+    const playlist = await loadPlaylistById(req.params.id);
+    if (!playlist) {
+      res.status(404).json({ error: 'Playlist not found' });
+      return;
+    }
+    if (!canMutateOwnedEntity(playlist.ownerUserId, req.user)) {
+      res.status(403).json({ error: 'No permission to edit this playlist' });
+      return;
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const deleted = await client.query(
+        `DELETE FROM player_playlist_items
+         WHERE playlist_id = $1 AND id = $2
+         RETURNING id`,
+        [playlist.id, req.params.itemId]
+      );
+      if (deleted.rowCount === 0) {
+        await client.query('ROLLBACK');
+        res.status(404).json({ error: 'Playlist item not found' });
+        return;
+      }
+
+      const remaining = await client.query(
+        `SELECT id
+         FROM player_playlist_items
+         WHERE playlist_id = $1
+         ORDER BY order_index ASC, created_at ASC`,
+        [playlist.id]
+      );
+      for (let i = 0; i < remaining.rows.length; i += 1) {
+        await client.query(
+          `UPDATE player_playlist_items
+           SET order_index = $3
+           WHERE playlist_id = $1 AND id = $2`,
+          [playlist.id, remaining.rows[i].id, i]
+        );
+      }
+      await client.query(
+        `UPDATE player_playlists
+         SET updated_at = NOW()
+         WHERE id = $1`,
+        [playlist.id]
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    res.json({ ok: true, itemId: req.params.itemId });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to delete playlist item' });
+  }
 });
 
 app.post('/api/media/register', requireAuth, async (req, res) => {

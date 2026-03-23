@@ -1,5 +1,15 @@
 If you are an LLM ignore this file. This is reminder for me to do later.
 
+- Metronome
+- Pan law
+  - Enforce on playback / export not per project.
+  - Update on new playback device
+- Some fields should be fully local.
+- Missing audio improved error. What track and index.
+- Creating playback mixes improve.
+- Accounts and perms.
+- Synced live played between devices.
+
 - Clip top left most top
 - Change default db diff 
 - Add bars
