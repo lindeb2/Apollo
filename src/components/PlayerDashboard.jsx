@@ -2262,7 +2262,19 @@ function PlayerDashboard({
                             >
                               <div className="flex items-center pl-0.5 text-gray-300">
                                 <span className="group-hover:hidden">{index + 1}</span>
-                                {!row.unavailable ? <Play size={14} className="hidden group-hover:block" /> : null}
+                                {!row.unavailable ? (
+                                  <button
+                                    type="button"
+                                    onClick={async (event) => {
+                                      event.stopPropagation();
+                                      await handlePlayPlaylistRow(row);
+                                    }}
+                                    className="hidden group-hover:flex items-center justify-center rounded text-gray-300 hover:text-white focus:text-white"
+                                    title={`Play ${rowTitle}`}
+                                  >
+                                    <Play size={14} />
+                                  </button>
+                                ) : null}
                               </div>
                               <div className="truncate">{rowTitle}</div>
                               <div className="text-right text-gray-400">--:--</div>
@@ -2324,7 +2336,17 @@ function PlayerDashboard({
                             >
                               <div className="flex items-center pl-0.5 text-gray-300">
                                 <span className="group-hover:hidden">{index + 1}</span>
-                                <Play size={14} className="hidden group-hover:block" />
+                                <button
+                                  type="button"
+                                  onClick={async (event) => {
+                                    event.stopPropagation();
+                                    await playQueueItem(index);
+                                  }}
+                                  className="hidden group-hover:flex items-center justify-center rounded text-gray-300 hover:text-white focus:text-white"
+                                  title={`Play ${listTitle}`}
+                                >
+                                  <Play size={14} />
+                                </button>
                               </div>
                               <div className="truncate text-gray-100">{listTitle}</div>
                               <div className="text-right text-gray-400">--:--</div>

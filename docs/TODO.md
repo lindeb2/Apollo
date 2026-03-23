@@ -1,8 +1,5 @@
 If you are an LLM ignore this file. This is reminder for me to do later.
 
-- Pan law
-  - Enforce on playback / export not per project.
-  - Update on new playback device
 - Some fields should be fully local.
 - Accounts and perms.
 - Synced live played between devices.
