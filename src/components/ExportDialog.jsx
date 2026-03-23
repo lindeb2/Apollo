@@ -8,6 +8,7 @@ import {
 import { exportAsZIP, downloadFile } from '../lib/projectPortability';
 import { loadExportDirectoryHandle, saveExportDirectoryHandle } from '../lib/db';
 import { normalizeExportSettings } from '../types/project';
+import { PAN_LAW_OPTIONS_DB } from '../utils/audio';
 import { hasInvalidExportNameChars, normalizeExportName } from '../utils/naming';
 import { reportUserError } from '../utils/errorReporter';
 import { getEffectiveTrackMix } from '../utils/trackTree';
@@ -358,6 +359,14 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap, onUpdateExport
       ? Number(project.exportSettings.practiceFocusDiffDb)
       : 0
   );
+  const [exportPanLawDb, setExportPanLawDb] = useState(
+    Number.isFinite(Number(project?.exportSettings?.panLawDb))
+      ? Number(project.exportSettings.panLawDb)
+      : -3
+  );
+  const [exportForceMonoOutput, setExportForceMonoOutput] = useState(
+    project?.exportSettings?.forceMonoOutput === true
+  );
   const [expandedNodeIds, setExpandedNodeIds] = useState(() => new Set(DEFAULT_EXPANDED_NODE_IDS));
   const [showProgressWindow, setShowProgressWindow] = useState(false);
   const [progressMode, setProgressMode] = useState(null);
@@ -379,6 +388,8 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap, onUpdateExport
     const normalized = normalizeExportSettings(project?.exportSettings || {});
     setTransformedPanRange(normalized.transformedPanRange);
     setPracticeFocusDiffDb(normalized.practiceFocusDiffDb);
+    setExportPanLawDb(normalized.panLawDb);
+    setExportForceMonoOutput(normalized.forceMonoOutput);
   }, [project?.projectId, project?.exportSettings]);
 
   const { instrumentUnits, leadUnits, choirUnits } = useMemo(() => {
@@ -683,6 +694,8 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap, onUpdateExport
       ...(project.exportSettings || {}),
       transformedPanRange,
       practiceFocusDiffDb,
+      panLawDb: exportPanLawDb,
+      forceMonoOutput: exportForceMonoOutput,
     });
 
     try {
@@ -833,6 +846,8 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap, onUpdateExport
       ...(project?.exportSettings || {}),
       transformedPanRange,
       practiceFocusDiffDb,
+      panLawDb: exportPanLawDb,
+      forceMonoOutput: exportForceMonoOutput,
       ...updates,
     });
     if (typeof updates.transformedPanRange !== 'undefined') {
@@ -841,9 +856,17 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap, onUpdateExport
     if (typeof updates.practiceFocusDiffDb !== 'undefined') {
       setPracticeFocusDiffDb(normalized.practiceFocusDiffDb);
     }
+    if (typeof updates.panLawDb !== 'undefined') {
+      setExportPanLawDb(normalized.panLawDb);
+    }
+    if (typeof updates.forceMonoOutput !== 'undefined') {
+      setExportForceMonoOutput(normalized.forceMonoOutput);
+    }
     onUpdateExportSettings?.({
       transformedPanRange: normalized.transformedPanRange,
       practiceFocusDiffDb: normalized.practiceFocusDiffDb,
+      panLawDb: normalized.panLawDb,
+      forceMonoOutput: normalized.forceMonoOutput,
     });
   };
 
@@ -1004,6 +1027,46 @@ function ExportDialog({ project, onClose, audioBuffers, mediaMap, onUpdateExport
                           />
                         </div>
                       </div>
+                    </div>
+                    <div className="mb-3">
+                      <label className="flex items-center gap-2 text-sm text-gray-300 select-none">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-gray-600 bg-gray-900"
+                          checked={exportForceMonoOutput}
+                          onChange={(e) => handleUpdateExportSetting({ forceMonoOutput: e.target.checked })}
+                          disabled={isExporting}
+                        />
+                        <span>Force mono export</span>
+                      </label>
+                    </div>
+                    <div className="mb-3">
+                      <label className="block text-xs text-gray-400 mb-1">Panning law</label>
+                      <select
+                        value={String(exportForceMonoOutput ? 0 : exportPanLawDb)}
+                        onChange={(e) => handleUpdateExportSetting({ panLawDb: Number(e.target.value) })}
+                        className={`w-full rounded border px-3 py-2 text-sm focus:outline-none ${
+                          exportForceMonoOutput
+                            ? 'bg-gray-800 border-gray-700 text-gray-500 cursor-not-allowed'
+                            : 'bg-gray-900 border-gray-700'
+                        }`}
+                        disabled={isExporting || exportForceMonoOutput}
+                      >
+                        {exportForceMonoOutput ? (
+                          <option value="0">0 dB</option>
+                        ) : (
+                          PAN_LAW_OPTIONS_DB.map((value) => (
+                            <option key={value} value={value}>
+                              {`${value} dB`}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                      <p className="mt-1 text-xs text-gray-500">
+                        {exportForceMonoOutput
+                          ? 'Panning law is disabled while exporting mono.'
+                          : 'Stereo export pan law'}
+                      </p>
                     </div>
                   </>
                 )}

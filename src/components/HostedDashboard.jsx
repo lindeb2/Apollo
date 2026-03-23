@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Plus, Download, FileAudio, CircleUserRound } from 'lucide-react';
 import { isValidMusicalNumber, normalizeMusicalNumber, normalizeProjectName } from '../utils/naming';
+import { PlaybackDevicesSettingsPanel } from './SettingsPanels';
+import { usePlaybackDeviceSettings } from '../hooks/usePlaybackDeviceSettings';
 
 function HostedDashboard({
   session,
@@ -24,7 +26,19 @@ function HostedDashboard({
   const [editingProjectId, setEditingProjectId] = useState(null);
   const [editingProjectName, setEditingProjectName] = useState('');
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const profileMenuRef = useRef(null);
+  const {
+    audioInputs,
+    audioOutputs,
+    audioSettings,
+    outputChannelCount,
+    playbackPanLawDb,
+    refreshAudioDevices,
+    setAudioSettings,
+  } = usePlaybackDeviceSettings({
+    errorPrefix: 'hosted-dashboard',
+  });
 
   const formatRelativeTime = (timestamp) => {
     const numeric = Number(timestamp);
@@ -173,6 +187,16 @@ function HostedDashboard({
             </button>
             {profileMenuOpen ? (
               <div className="absolute right-0 top-full mt-2 min-w-32 rounded-md border border-gray-700 bg-gray-800 shadow-lg z-30 overflow-hidden">
+                <button
+                  onClick={() => {
+                    setProfileMenuOpen(false);
+                    setSettingsOpen(true);
+                    refreshAudioDevices();
+                  }}
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+                >
+                  Settings
+                </button>
                 <button
                   onClick={() => {
                     setProfileMenuOpen(false);
@@ -367,6 +391,42 @@ function HostedDashboard({
           </button>
         </div>
       )}
+
+      {settingsOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg rounded-lg border border-gray-700 bg-gray-800 shadow-xl">
+            <div className="flex items-center justify-between border-b border-gray-700 px-4 py-3">
+              <div className="text-sm font-semibold">Settings</div>
+              <button
+                className="text-gray-400 hover:text-gray-200"
+                onClick={() => setSettingsOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="px-4 py-3">
+              <PlaybackDevicesSettingsPanel
+                audioSettings={audioSettings}
+                setAudioSettings={setAudioSettings}
+                audioInputs={audioInputs}
+                audioOutputs={audioOutputs}
+                monoOutputActive={audioSettings.forceMonoOutput === true || outputChannelCount <= 1}
+                onRefreshDevices={refreshAudioDevices}
+                outputChannelCount={outputChannelCount}
+                playbackPanLawDb={playbackPanLawDb}
+              />
+            </div>
+            <div className="border-t border-gray-700 px-4 py-3 flex justify-end">
+              <button
+                className="bg-gray-700 hover:bg-gray-600 text-white rounded px-3 py-2 text-sm"
+                onClick={() => setSettingsOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

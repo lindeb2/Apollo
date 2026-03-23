@@ -9,8 +9,9 @@ import FileImport from './FileImport';
 import TrackList from './TrackList';
 import Timeline from './Timeline';
 import ExportDialog from './ExportDialog';
-import { dbToVolume, volumeToDb, PAN_LAW_OPTIONS_DB, normalizePanLawDb } from '../utils/audio';
-import { AUTO_PAN_STRATEGIES, applyChoirAutoPanToProject } from '../utils/choirAutoPan';
+import { dbToVolume, volumeToDb } from '../utils/audio';
+import { applyChoirAutoPanToProject } from '../utils/choirAutoPan';
+import { PlaybackDevicesSettingsPanel, ProjectSettingsPanel } from './SettingsPanels';
 import useKeyboardShortcuts from '../utils/useKeyboardShortcuts';
 import { processRecordingOverwrites } from '../utils/clipCollision';
 import { isPrimaryModifierPressed } from '../utils/keyboard';
@@ -43,6 +44,7 @@ import {
   syncDirectChildRolesFromGroupCategories,
   toggleGroupCollapsed,
 } from '../utils/trackTree';
+import { usePlaybackDeviceSettings } from '../hooks/usePlaybackDeviceSettings';
 
 const SUPPORTED_IMPORT_EXTENSIONS = new Set(['wav', 'mp3', 'flac']);
 const TRACK_CONFIG_COLUMN_WIDTH_PX = 384;
@@ -96,13 +98,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   const [showFileImport, setShowFileImport] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [audioInputs, setAudioInputs] = useState([]);
-  const [audioOutputs, setAudioOutputs] = useState([]);
-  const [audioSettings, setAudioSettings] = useState({
-    inputDeviceId: '',
-    outputDeviceId: '',
-    recordingOffsetMs: 0,
-  });
+  const [settingsTab, setSettingsTab] = useState('playback');
   const [masterVolume, setMasterVolume] = useState(() => toFiniteNumber(project?.masterVolume, 100));
   const [masterEditTooltip, setMasterEditTooltip] = useState(null);
   const [masterDragTooltip, setMasterDragTooltip] = useState(null);
@@ -122,7 +118,6 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   const previousTimeRef = useRef(0);
   const recordingStartTimeRef = useRef(0);
   const projectRef = useRef(project);
-  const hasHydratedSettingsRef = useRef(false);
   const isHandlingLoopWrapRef = useRef(false);
   
   // Refs for scroll synchronization
@@ -136,6 +131,31 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   const lockByTrackIdRef = useRef({});
   const isHostedSession = Boolean(remoteSession?.session && remoteSession?.serverProjectId);
   const remoteUserId = remoteSession?.session?.user?.id || null;
+  const {
+    audioInputs,
+    audioOutputs,
+    audioSettings,
+    outputChannelCount,
+    playbackPanLawDb,
+    refreshAudioDevices,
+    setAudioSettings,
+  } = usePlaybackDeviceSettings({
+    errorPrefix: 'editor',
+    onRecordingOffsetChange: setRecordingOffsetMs,
+  });
+  const applyEditorPlaybackOutputConfig = useCallback(async () => {
+    await audioManager.setPlaybackOutputConfig({
+      outputDeviceId: audioSettings.outputDeviceId,
+      outputChannelCount,
+      forceMonoOutput: audioSettings.forceMonoOutput,
+      panLawDb: playbackPanLawDb,
+    });
+  }, [
+    audioSettings.forceMonoOutput,
+    audioSettings.outputDeviceId,
+    outputChannelCount,
+    playbackPanLawDb,
+  ]);
 
   const {
     connected: syncConnected,
@@ -271,71 +291,6 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   }, [remoteSession?.musicalNumber, remoteSession?.projectName, project?.musicalNumber, project?.projectName]);
 
   useEffect(() => {
-    const saved = localStorage.getItem('apollo.settings');
-    if (!saved) return;
-    try {
-      const parsed = JSON.parse(saved);
-      setAudioSettings((prev) => ({
-        ...prev,
-        ...parsed,
-        recordingOffsetMs:
-          typeof parsed.recordingOffsetMs === 'number'
-            ? parsed.recordingOffsetMs
-            : prev.recordingOffsetMs,
-      }));
-    } catch (error) {
-      reportUserError(
-        'Failed to read app settings from local storage. Defaults will be used.',
-        error,
-        { onceKey: 'editor:settings-parse' }
-      );
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!hasHydratedSettingsRef.current) {
-      hasHydratedSettingsRef.current = true;
-    } else {
-      let existing = {};
-      try {
-        existing = JSON.parse(localStorage.getItem('apollo.settings') || '{}');
-      } catch (error) {
-        reportUserError(
-          'Failed to parse existing app settings from local storage. They will be replaced.',
-          error,
-          { onceKey: 'editor:settings-merge-parse' }
-        );
-        existing = {};
-      }
-      localStorage.setItem('apollo.settings', JSON.stringify({
-        ...existing,
-        ...audioSettings,
-      }));
-    }
-    setRecordingOffsetMs(Math.max(0, Number(audioSettings.recordingOffsetMs) || 0));
-  }, [audioSettings]);
-
-  const refreshAudioDevices = async () => {
-    if (!navigator.mediaDevices?.enumerateDevices) return;
-    let devices = await navigator.mediaDevices.enumerateDevices();
-    const hasLabels = devices.some((device) => device.label);
-    if (!hasLabels) {
-      try {
-        await navigator.mediaDevices.getUserMedia({ audio: true });
-        devices = await navigator.mediaDevices.enumerateDevices();
-      } catch (error) {
-        reportUserError(
-          'Could not access microphone permissions to read device labels.',
-          error,
-          { onceKey: 'editor:device-label-permission' }
-        );
-      }
-    }
-    setAudioInputs(devices.filter((device) => device.kind === 'audioinput'));
-    setAudioOutputs(devices.filter((device) => device.kind === 'audiooutput'));
-  };
-
-  useEffect(() => {
     if (!project) return;
     const visibleTrackIds = getVisibleTrackIds(project);
     if (!project.tracks || project.tracks.length === 0 || visibleTrackIds.length === 0) {
@@ -459,9 +414,8 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   }, [masterVolume]);
 
   useEffect(() => {
-    if (!project) return;
-    audioManager.setPanLawDb(project.panLawDb);
-  }, [project?.panLawDb]);
+    void applyEditorPlaybackOutputConfig();
+  }, [applyEditorPlaybackOutputConfig]);
 
   useEffect(() => {
     const handleMove = (e) => {
@@ -537,6 +491,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         
         audioManager.stop();
         if (!isCancelled) {
+          await applyEditorPlaybackOutputConfig();
           await audioManager.play(project, currentTimeMs);
         }
       };
@@ -586,14 +541,16 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
             
             // Wait one audio processing frame for sources to stop
             loopRestartTimeout = setTimeout(() => {
-              audioManager.play(currentProject, currentProject.loop.startMs).then(() => {
+              applyEditorPlaybackOutputConfig()
+                .then(() => audioManager.play(currentProject, currentProject.loop.startMs))
+                .then(() => {
                 // Set previousTime above loop end to prevent edge re-detection
                 previousTimeRef.current = currentProject.loop.endMs + 1000;
                 // Wait 100ms before resetting flag
                 setTimeout(() => {
                   isHandlingLoopWrapRef.current = false;
                 }, 100);
-              });
+                });
             }, 5);
           } else {
             setCurrentTime(newTime);
@@ -619,7 +576,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         clearInterval(interval);
       }
     };
-  }, [isPlaying, project.projectId, isRecording, recordingSegments.length]);
+  }, [applyEditorPlaybackOutputConfig, isPlaying, project.projectId, isRecording, recordingSegments.length]);
 
   // Separate effect for handling recording overwrite
   useEffect(() => {
@@ -1517,7 +1474,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       const shouldRestart = updates.muted !== undefined || updates.soloed !== undefined;
       if (shouldRestart) {
         audioManager.stop();
-        audioManager.play(nextProjectAfter, currentTimeMs);
+        void applyEditorPlaybackOutputConfig().then(() => audioManager.play(nextProjectAfter, currentTimeMs));
       } else {
         const mix = getEffectiveTrackMix(nextProjectAfter);
         mix.statesByTrackId.forEach((state, id) => {
@@ -1608,7 +1565,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       const shouldRestart = updates.muted !== undefined || updates.soloed !== undefined;
       if (shouldRestart) {
         audioManager.stop();
-        audioManager.play(nextProjectAfter, currentTimeMs);
+        void applyEditorPlaybackOutputConfig().then(() => audioManager.play(nextProjectAfter, currentTimeMs));
       } else {
         const mix = getEffectiveTrackMix(nextProjectAfter);
         mix.statesByTrackId.forEach((state, id) => {
@@ -1670,14 +1627,6 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         ...updates,
       }),
     }), 'Update export settings');
-  };
-
-  const handleUpdatePanLaw = (nextPanLawDb) => {
-    const normalizedPanLawDb = normalizePanLawDb(nextPanLawDb);
-    updateProject((proj) => ({
-      ...proj,
-      panLawDb: normalizedPanLawDb,
-    }), 'Update panning law');
   };
 
   const handleReorderTrack = (trackId, insertIndex) => {
@@ -2649,18 +2598,9 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
             >
               <ArrowLeft size={20} />
             </button>
-            {onSwitchToPlayerMode ? (
-              <button
-                onClick={onSwitchToPlayerMode}
-                className="text-gray-300 hover:text-white transition-colors flex-shrink-0 rounded bg-gray-700 hover:bg-gray-600 px-2 py-1 text-xs font-semibold disabled:opacity-50"
-                title={isRecording ? 'Cannot switch mode while recording' : 'Switch to Player Mode'}
-                disabled={isRecording}
-              >
-                Player
-              </button>
-            ) : null}
             <button
               onClick={() => {
+                setSettingsTab('playback');
                 setSettingsOpen(true);
                 refreshAudioDevices();
               }}
@@ -2975,121 +2915,53 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
               </button>
             </div>
             <div className="px-4 py-3">
-              <div className="mb-3 text-xs uppercase tracking-wide text-gray-400">Audio</div>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">Input device</label>
-                  <select
-                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                    value={audioSettings.inputDeviceId}
-                    onChange={(e) =>
-                      setAudioSettings((prev) => ({ ...prev, inputDeviceId: e.target.value }))
-                    }
-                  >
-                    <option value="">Default</option>
-                    {audioInputs.map((device) => (
-                      <option key={device.deviceId} value={device.deviceId}>
-                        {device.label || `Input ${device.deviceId.slice(0, 6)}`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">Output device</label>
-                  <select
-                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                    value={audioSettings.outputDeviceId}
-                    onChange={(e) =>
-                      setAudioSettings((prev) => ({ ...prev, outputDeviceId: e.target.value }))
-                    }
-                  >
-                    <option value="">Default</option>
-                    {audioOutputs.map((device) => (
-                      <option key={device.deviceId} value={device.deviceId}>
-                        {device.label || `Output ${device.deviceId.slice(0, 6)}`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">Recording offset (ms)</label>
-                  <input
-                    type="number"
-                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                    value={audioSettings.recordingOffsetMs}
-                    onChange={(e) =>
-                      setAudioSettings((prev) => ({
-                        ...prev,
-                        recordingOffsetMs: Number(e.target.value),
-                      }))
-                    }
-                  />
-                </div>
+              <div className="mb-4 flex items-center gap-2 rounded-lg bg-gray-900 p-1">
                 <button
-                  className="text-xs text-gray-400 hover:text-gray-200"
-                  onClick={refreshAudioDevices}
+                  type="button"
+                  onClick={() => setSettingsTab('playback')}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    settingsTab === 'playback'
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                  }`}
                 >
-                  Refresh device list
+                  Playback and Devices
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSettingsTab('project')}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    settingsTab === 'project'
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                  }`}
+                >
+                  Project
                 </button>
               </div>
 
-              <div className="mt-6 mb-3 text-xs uppercase tracking-wide text-gray-400">
-                Project Settings
-              </div>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">
-                    Choir auto-pan
-                  </label>
-                  <select
-                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                    value={project?.autoPan?.enabled ? project.autoPan?.strategy : 'off'}
-                    onChange={(e) => handleSetAutoPanStrategy(e.target.value)}
-                  >
-                    <option value="off">Off</option>
-                    {AUTO_PAN_STRATEGIES.map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <label className="flex items-center gap-2 text-sm text-gray-300 select-none">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 rounded border-gray-600 bg-gray-900"
-                    checked={Boolean(project?.autoPan?.inverted)}
-                    onChange={(e) => applyProjectAutoPanSettings(
-                      { inverted: e.target.checked },
-                      'Update inverted auto-pan'
-                    )}
-                  />
-                  <span>Inverted Auto Pan</span>
-                </label>
-                <label className="flex items-center gap-2 text-sm text-gray-300 select-none">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 rounded border-gray-600 bg-gray-900"
-                    checked={Boolean(project?.autoPan?.manualChoirParts)}
-                    onChange={(e) => handleSetAutoPanManualChoirParts(e.target.checked)}
-                  />
-                  <span>Manually select choir parts</span>
-                </label>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">Panning law</label>
-                  <select
-                    className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-                    value={String(project?.panLawDb ?? -3)}
-                    onChange={(e) => handleUpdatePanLaw(Number(e.target.value))}
-                  >
-                    {PAN_LAW_OPTIONS_DB.map((value) => (
-                      <option key={value} value={value}>
-                        {`${value} dB`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+              {settingsTab === 'playback' ? (
+                <PlaybackDevicesSettingsPanel
+                  audioSettings={audioSettings}
+                  setAudioSettings={setAudioSettings}
+                  audioInputs={audioInputs}
+                  audioOutputs={audioOutputs}
+                  monoOutputActive={audioSettings.forceMonoOutput === true || outputChannelCount <= 1}
+                  onRefreshDevices={refreshAudioDevices}
+                  outputChannelCount={outputChannelCount}
+                  playbackPanLawDb={playbackPanLawDb}
+                />
+              ) : (
+                <ProjectSettingsPanel
+                  project={project}
+                  onSetAutoPanStrategy={handleSetAutoPanStrategy}
+                  onToggleAutoPanInverted={(enabled) => applyProjectAutoPanSettings(
+                    { inverted: enabled },
+                    'Update inverted auto-pan'
+                  )}
+                  onSetAutoPanManualChoirParts={handleSetAutoPanManualChoirParts}
+                />
+              )}
             </div>
             <div className="border-t border-gray-700 px-4 py-3 flex justify-end">
               <button

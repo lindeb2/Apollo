@@ -211,6 +211,7 @@ async function buildPracticePeakNormalizedGainMap({
   targetTrackIds,
   trackStateById,
   practiceFocusDiffDb,
+  renderSettings = null,
 }) {
   const gainMap = {};
   if (!tracks.length) return gainMap;
@@ -231,11 +232,14 @@ async function buildPracticePeakNormalizedGainMap({
       audioBuffers,
       {},
       panAdjustments,
-      trackStateById
+      trackStateById,
+      renderSettings
     );
-    const focusPeakRight = getAudioBufferChannelPeak(focusBuffer, 1);
-    if (focusPeakRight > 0) {
-      focusScale = dbToGain(PRACTICE_FOCUS_PEAK_DB) / focusPeakRight;
+    const focusPeak = renderSettings?.forceMonoOutput
+      ? getAudioBufferPeak(focusBuffer)
+      : getAudioBufferChannelPeak(focusBuffer, 1);
+    if (focusPeak > 0) {
+      focusScale = dbToGain(PRACTICE_FOCUS_PEAK_DB) / focusPeak;
     }
   }
 
@@ -246,11 +250,14 @@ async function buildPracticePeakNormalizedGainMap({
       audioBuffers,
       {},
       panAdjustments,
-      trackStateById
+      trackStateById,
+      renderSettings
     );
-    const backingPeakLeft = getAudioBufferChannelPeak(backingBuffer, 0);
-    if (backingPeakLeft > 0) {
-      backingScale = dbToGain(backingTargetPeakDb) / backingPeakLeft;
+    const backingPeak = renderSettings?.forceMonoOutput
+      ? getAudioBufferPeak(backingBuffer)
+      : getAudioBufferChannelPeak(backingBuffer, 0);
+    if (backingPeak > 0) {
+      backingScale = dbToGain(backingTargetPeakDb) / backingPeak;
     }
   }
 
@@ -766,7 +773,7 @@ export async function exportProject(
         subgroup: null,
         subgroupCount: 0,
         filename: createFileName(projectBase, '', outputFormat),
-        blob: await renderTracks(project, activeTracks, audioBuffers, {}, {}, outputFormat, trackStateById),
+          blob: await renderTracks(project, activeTracks, audioBuffers, {}, {}, outputFormat, trackStateById, exportSettings),
       });
       advanceProgress('Tutti');
       continue;
@@ -785,7 +792,7 @@ export async function exportProject(
         subgroup: null,
         subgroupCount: 0,
         filename: createFileName(projectBase, 'No Instruments', outputFormat),
-        blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById),
+        blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById, exportSettings),
       });
       advanceProgress('No Instruments');
       continue;
@@ -804,7 +811,7 @@ export async function exportProject(
         subgroup: null,
         subgroupCount: 0,
         filename: createFileName(projectBase, 'No Leads', outputFormat),
-        blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById),
+        blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById, exportSettings),
       });
       advanceProgress('No Leads');
       continue;
@@ -823,7 +830,7 @@ export async function exportProject(
         subgroup: null,
         subgroupCount: 0,
         filename: createFileName(projectBase, 'No Choir', outputFormat),
-        blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById),
+        blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById, exportSettings),
       });
       advanceProgress('No Choir');
       continue;
@@ -837,7 +844,7 @@ export async function exportProject(
         subgroup: null,
         subgroupCount: 0,
         filename: createFileName(projectBase, 'Instruments Only', outputFormat),
-        blob: await renderTracks(project, [...instrumentTracks, ...metronomeTracks], audioBuffers, {}, {}, outputFormat, trackStateById),
+        blob: await renderTracks(project, [...instrumentTracks, ...metronomeTracks], audioBuffers, {}, {}, outputFormat, trackStateById, exportSettings),
       });
       advanceProgress('Instruments Only');
       continue;
@@ -851,7 +858,7 @@ export async function exportProject(
         subgroup: null,
         subgroupCount: 0,
         filename: createFileName(projectBase, 'Leads Only', outputFormat),
-        blob: await renderTracks(project, [...leadTracks, ...metronomeTracks], audioBuffers, {}, {}, outputFormat, trackStateById),
+        blob: await renderTracks(project, [...leadTracks, ...metronomeTracks], audioBuffers, {}, {}, outputFormat, trackStateById, exportSettings),
       });
       advanceProgress('Lead Only');
       continue;
@@ -865,7 +872,7 @@ export async function exportProject(
         subgroup: null,
         subgroupCount: 0,
         filename: createFileName(projectBase, 'Choir Only', outputFormat),
-        blob: await renderTracks(project, [...choirTracks, ...metronomeTracks], audioBuffers, {}, {}, outputFormat, trackStateById),
+        blob: await renderTracks(project, [...choirTracks, ...metronomeTracks], audioBuffers, {}, {}, outputFormat, trackStateById, exportSettings),
       });
       advanceProgress('Choir Only');
       continue;
@@ -892,6 +899,7 @@ export async function exportProject(
           targetTrackIds,
           trackStateById,
           practiceFocusDiffDb: exportSettings.practiceFocusDiffDb,
+          renderSettings: exportSettings,
         });
         files.push({
           presetId,
@@ -899,7 +907,7 @@ export async function exportProject(
           subgroup: 'Instruments',
           subgroupCount: selectedUnits.length,
           filename: createFileName(projectBase, targetUnit.label, outputFormat),
-          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat, trackStateById),
+          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat, trackStateById, exportSettings),
         });
         advanceProgress(targetUnit.label);
       }
@@ -927,6 +935,7 @@ export async function exportProject(
           targetTrackIds,
           trackStateById,
           practiceFocusDiffDb: exportSettings.practiceFocusDiffDb,
+          renderSettings: exportSettings,
         });
         files.push({
           presetId,
@@ -934,7 +943,7 @@ export async function exportProject(
           subgroup: 'Leads',
           subgroupCount: selectedUnits.length,
           filename: createFileName(projectBase, targetUnit.label, outputFormat),
-          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat, trackStateById),
+          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat, trackStateById, exportSettings),
         });
         advanceProgress(targetUnit.label);
       }
@@ -966,6 +975,7 @@ export async function exportProject(
           targetTrackIds,
           trackStateById,
           practiceFocusDiffDb: exportSettings.practiceFocusDiffDb,
+          renderSettings: exportSettings,
         });
         files.push({
           presetId,
@@ -973,7 +983,7 @@ export async function exportProject(
           subgroup: 'Choir',
           subgroupCount: selectedUnits.length,
           filename: createFileName(projectBase, targetUnit.label, outputFormat),
-          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat, trackStateById),
+          blob: await renderTracks(project, activeTracks, audioBuffers, gainAdjustments, panAdjustments, outputFormat, trackStateById, exportSettings),
         });
         advanceProgress(targetUnit.label);
       }
@@ -992,7 +1002,7 @@ export async function exportProject(
           subgroup: 'Instruments',
           subgroupCount: selectedUnits.length,
           filename: createFileName(projectBase, `${omittedUnit.label} Omitted`, outputFormat),
-          blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById),
+          blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById, exportSettings),
         });
         advanceProgress(`${omittedUnit.label} Omitted`);
       }
@@ -1011,7 +1021,7 @@ export async function exportProject(
           subgroup: 'Leads',
           subgroupCount: selectedUnits.length,
           filename: createFileName(projectBase, `${omittedUnit.label} Omitted`, outputFormat),
-          blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById),
+          blob: await renderTracks(project, tracks, audioBuffers, {}, {}, outputFormat, trackStateById, exportSettings),
         });
         advanceProgress(`${omittedUnit.label} Omitted`);
       }
@@ -1032,7 +1042,7 @@ export async function exportProject(
           subgroup: 'Choir',
           subgroupCount: selectedUnits.length,
           filename: createFileName(projectBase, `${omittedUnit.label} Omitted`, outputFormat),
-          blob: await renderTracks(project, tracks, audioBuffers, {}, autoPannedChoirMap, outputFormat, trackStateById),
+          blob: await renderTracks(project, tracks, audioBuffers, {}, autoPannedChoirMap, outputFormat, trackStateById, exportSettings),
         });
         advanceProgress(`${omittedUnit.label} Omitted`);
       }
@@ -1071,7 +1081,7 @@ export async function renderPresetVariant(
   return files[0] || null;
 }
 
-async function renderTracksToAudioBuffer(project, tracks, audioBuffers, gainAdjustments = {}, panAdjustments = {}, trackStateById = null) {
+async function renderTracksToAudioBuffer(project, tracks, audioBuffers, gainAdjustments = {}, panAdjustments = {}, trackStateById = null, renderSettings = null) {
   let maxDurationMs = 0;
   for (const track of tracks) {
     for (const clip of track.clips) {
@@ -1082,11 +1092,17 @@ async function renderTracksToAudioBuffer(project, tracks, audioBuffers, gainAdju
 
   // Render exactly to the last clip end (no extra tail padding).
   const length = Math.max(1, Math.ceil(msToSeconds(maxDurationMs) * SAMPLE_RATE));
-  const offlineContext = new OfflineAudioContext(2, length, SAMPLE_RATE);
-  const panLawDb = normalizePanLawDb(project?.panLawDb);
+  const normalizedRenderSettings = normalizeExportSettings({
+    ...(project?.exportSettings || {}),
+    ...(renderSettings || {}),
+  });
+  const forceMonoOutput = normalizedRenderSettings.forceMonoOutput === true;
+  const outputChannelCount = forceMonoOutput ? 1 : 2;
+  const panLawDb = normalizePanLawDb(normalizedRenderSettings.panLawDb);
+  const offlineContext = new OfflineAudioContext(outputChannelCount, length, SAMPLE_RATE);
 
   const masterGain = offlineContext.createGain();
-  masterGain.gain.value = volumeToGain(project.masterVolume) * getPanLawHeadroomGain(panLawDb);
+  masterGain.gain.value = volumeToGain(project.masterVolume) * (forceMonoOutput ? 1 : getPanLawHeadroomGain(panLawDb));
   masterGain.connect(offlineContext.destination);
 
   for (const track of tracks) {
@@ -1098,12 +1114,13 @@ async function renderTracksToAudioBuffer(project, tracks, audioBuffers, gainAdju
       : volumeToGain(track.volume);
     const adjustmentGain = gainAdjustments[track.id] || 1.0;
     const totalGain = baseGain * adjustmentGain;
-    const totalPan = clampPan(
+    const rawPan = clampPan(
       panAdjustments[track.id] !== undefined
         ? panAdjustments[track.id]
         : (Number.isFinite(effective?.effectivePan) ? effective.effectivePan : track.pan)
     );
-    const panLawCompensationGain = getPanLawCompensationGain(totalPan, panLawDb);
+    const totalPan = forceMonoOutput ? 0 : rawPan;
+    const panLawCompensationGain = forceMonoOutput ? 1 : getPanLawCompensationGain(totalPan, panLawDb);
 
     for (const clip of track.clips) {
       if (clip.muted) continue;
@@ -1116,13 +1133,15 @@ async function renderTracksToAudioBuffer(project, tracks, audioBuffers, gainAdju
 
       const gainNode = offlineContext.createGain();
       gainNode.gain.value = totalGain * dbToGain(clip.gainDb) * panLawCompensationGain;
-
-      const panNode = offlineContext.createStereoPanner();
-      panNode.pan.value = totalPan / 100;
-
       source.connect(gainNode);
-      gainNode.connect(panNode);
-      panNode.connect(masterGain);
+      if (forceMonoOutput) {
+        gainNode.connect(masterGain);
+      } else {
+        const panNode = offlineContext.createStereoPanner();
+        panNode.pan.value = totalPan / 100;
+        gainNode.connect(panNode);
+        panNode.connect(masterGain);
+      }
 
       source.start(
         msToSeconds(clip.timelineStartMs),
@@ -1135,14 +1154,15 @@ async function renderTracksToAudioBuffer(project, tracks, audioBuffers, gainAdju
   return await offlineContext.startRendering();
 }
 
-async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {}, panAdjustments = {}, format = 'wav', trackStateById = null) {
+async function renderTracks(project, tracks, audioBuffers, gainAdjustments = {}, panAdjustments = {}, format = 'wav', trackStateById = null, renderSettings = null) {
   const renderedBuffer = await renderTracksToAudioBuffer(
     project,
     tracks,
     audioBuffers,
     gainAdjustments,
     panAdjustments,
-    trackStateById
+    trackStateById,
+    renderSettings
   );
   return audioBufferToBlob(renderedBuffer, format === 'mp3' ? 'mp3' : 'wav');
 }

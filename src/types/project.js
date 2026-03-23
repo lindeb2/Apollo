@@ -33,6 +33,8 @@ export const SAMPLE_RATE = 44100;
 export const DEFAULT_EXPORT_SETTINGS = {
   transformedPanRange: 100,
   practiceFocusDiffDb: 0,
+  panLawDb: DEFAULT_PAN_LAW_DB,
+  forceMonoOutput: false,
 };
 
 export function normalizeExportSettings(settings = {}) {
@@ -42,6 +44,8 @@ export function normalizeExportSettings(settings = {}) {
   };
   const transformedPanRange = Number(next.transformedPanRange);
   const practiceFocusDiffDb = Number(next.practiceFocusDiffDb);
+  next.panLawDb = normalizePanLawDb(next.panLawDb ?? next.legacyPanLawDb ?? DEFAULT_PAN_LAW_DB);
+  next.forceMonoOutput = next.forceMonoOutput === true;
   next.transformedPanRange = Number.isFinite(transformedPanRange)
     ? Math.max(0, Math.min(200, transformedPanRange))
     : DEFAULT_EXPORT_SETTINGS.transformedPanRange;
@@ -98,10 +102,11 @@ export function normalizeExportSettings(settings = {}) {
  * @property {boolean} autoPan.manualChoirParts - Use manual choir part selection
  * @property {number} autoPan.rangeLimit - Max pan range
  * @property {number} autoPan.spreadK - Spread factor
- * @property {number} panLawDb - Pan law in dB at center (0, -3, -4.5, -6)
  * @property {Object} exportSettings - Export configuration
  * @property {number} exportSettings.transformedPanRange - Pan transform range control (0-200)
  * @property {number} exportSettings.practiceFocusDiffDb - Practice backing level difference from focus in dB (-6 to 6)
+ * @property {number} exportSettings.panLawDb - Stereo export pan law in dB at center (0, -3, -4.5, -6)
+ * @property {boolean} exportSettings.forceMonoOutput - Export mono output instead of stereo
  * @property {Array} trackTree - Hierarchy nodes for groups/tracks
  * @property {Track[]} tracks - Array of tracks
  * @property {Loop} loop - Loop configuration
@@ -114,7 +119,6 @@ export function createEmptyProject(
   name = 'Untitled Project',
   autoPan = null,
   exportSettings = null,
-  panLawDb = DEFAULT_PAN_LAW_DB,
   musicalNumber = '0.0'
 ) {
   return {
@@ -124,7 +128,6 @@ export function createEmptyProject(
     sampleRate: SAMPLE_RATE,
     masterVolume: dbToVolume(0),
     autoPan: autoPan ?? { ...DEFAULT_AUTO_PAN_SETTINGS },
-    panLawDb: normalizePanLawDb(panLawDb),
     exportSettings: normalizeExportSettings(exportSettings || {}),
     trackTree: [],
     tracks: [],

@@ -8,6 +8,7 @@ import {
 import { SAMPLE_RATE } from '../types/project';
 import { getEffectiveTrackMix } from '../utils/trackTree';
 import { reportUserError } from '../utils/errorReporter';
+import { applySinkIdToMediaElement } from '../utils/playbackOutput';
 
 /**
  * Audio Manager
@@ -25,8 +26,14 @@ class AudioManager {
     this.isInitializingPlayback = false; // Flag to prevent concurrent play() calls
     this.currentMasterVolume = 100;
     this.currentPanLawDb = normalizePanLawDb();
+    this.currentOutputDeviceId = '';
+    this.currentOutputChannelCount = 2;
+    this.forceMonoOutput = false;
     this.masterVolumeCurve = 'legacy';
     this.masterHeadroomEnabled = true;
+    this.outputStreamDestination = null;
+    this.outputRoutingElement = null;
+    this.outputTargetNode = null;
   }
 
   /**
@@ -41,8 +48,11 @@ class AudioManager {
 
     // Create master gain node
     this.masterGainNode = this.audioContext.createGain();
+    this.masterGainNode.channelCountMode = 'explicit';
+    this.masterGainNode.channelInterpretation = 'speakers';
+    this.masterGainNode.channelCount = this.getTargetOutputChannelCount();
     this.masterGainNode.gain.value = this.getMasterOutputGain();
-    this.masterGainNode.connect(this.audioContext.destination);
+    await this.configureOutputRouting();
     
     console.log('AudioManager initialized', {
       sampleRate: this.audioContext.sampleRate,
@@ -57,6 +67,7 @@ class AudioManager {
     if (this.audioContext && this.audioContext.state === 'suspended') {
       await this.audioContext.resume();
     }
+    await this.resumeOutputRoutingElement();
   }
 
   /**
@@ -208,7 +219,6 @@ class AudioManager {
           ? Number(project.masterVolume)
           : this.currentMasterVolume;
       }
-      this.currentPanLawDb = normalizePanLawDb(project?.panLawDb);
       this.applyMasterGain();
       const mix = getEffectiveTrackMix(project);
 
@@ -261,7 +271,7 @@ class AudioManager {
       // Create pan node
       const panNode = this.audioContext.createStereoPanner();
       const effectivePan = Number.isFinite(effectiveState.effectivePan) ? effectiveState.effectivePan : track.pan;
-      panNode.pan.value = effectivePan / 100;
+      panNode.pan.value = this.getEffectiveOutputPan(effectivePan) / 100;
       gainNode.gain.value = this.getClipOutputGain(baseGain, clipGain, effectivePan);
 
       // Connect: source -> gain -> pan -> master -> destination
@@ -386,11 +396,25 @@ class AudioManager {
     this.applyMasterGain();
 
     for (const nodes of this.activeSources.values()) {
-      nodes.gainNode.gain.value = this.getClipOutputGain(
-        nodes.baseGain,
-        nodes.clipGain,
-        nodes.effectivePan
-      );
+      this.applyNodeMix(nodes);
+    }
+  }
+
+  async setPlaybackOutputConfig({ outputDeviceId = '', outputChannelCount = 2, forceMonoOutput = false, panLawDb = this.currentPanLawDb } = {}) {
+    this.currentOutputDeviceId = String(outputDeviceId || '');
+    this.currentOutputChannelCount = Number.isFinite(Number(outputChannelCount))
+      ? Number(outputChannelCount)
+      : this.currentOutputChannelCount;
+    this.forceMonoOutput = forceMonoOutput === true;
+    this.currentPanLawDb = normalizePanLawDb(panLawDb);
+
+    if (this.audioContext) {
+      await this.configureOutputRouting();
+    }
+    this.applyMasterGain();
+
+    for (const nodes of this.activeSources.values()) {
+      this.applyNodeMix(nodes);
     }
   }
 
@@ -418,12 +442,7 @@ class AudioManager {
     for (const [sourceKey, nodes] of this.activeSources.entries()) {
       if (sourceKey === trackId || sourceKey.startsWith(`${trackId}-`)) {
         nodes.effectivePan = pan;
-        nodes.panNode.pan.value = pan / 100;
-        nodes.gainNode.gain.value = this.getClipOutputGain(
-          nodes.baseGain,
-          nodes.clipGain,
-          nodes.effectivePan
-        );
+        this.applyNodeMix(nodes);
       }
     }
   }
@@ -439,13 +458,8 @@ class AudioManager {
         }
         if (Number.isFinite(effectivePan)) {
           nodes.effectivePan = effectivePan;
-          nodes.panNode.pan.value = effectivePan / 100;
         }
-        nodes.gainNode.gain.value = this.getClipOutputGain(
-          nodes.baseGain,
-          nodes.clipGain,
-          nodes.effectivePan
-        );
+        this.applyNodeMix(nodes);
       }
     }
   }
@@ -465,6 +479,22 @@ class AudioManager {
    */
   dispose() {
     this.stop();
+
+    if (this.outputRoutingElement) {
+      try {
+        this.outputRoutingElement.pause();
+      } catch {
+        // Ignore teardown failures for the hidden routing element.
+      }
+      try {
+        this.outputRoutingElement.srcObject = null;
+      } catch {
+        // Ignore srcObject cleanup failures.
+      }
+      this.outputRoutingElement = null;
+    }
+    this.outputStreamDestination = null;
+    this.outputTargetNode = null;
     
     if (this.audioContext) {
       this.audioContext.close();
@@ -476,6 +506,9 @@ class AudioManager {
   }
 
   getMasterOutputGain() {
+    if (this.isMonoOutput()) {
+      return this.getMasterVolumeGain();
+    }
     const headroomGain = this.masterHeadroomEnabled
       ? getPanLawHeadroomGain(this.currentPanLawDb)
       : 1;
@@ -493,12 +526,120 @@ class AudioManager {
 
   applyMasterGain() {
     if (!this.masterGainNode) return;
+    this.masterGainNode.channelCount = this.getTargetOutputChannelCount();
     this.masterGainNode.gain.value = this.getMasterOutputGain();
   }
 
   getClipOutputGain(baseGain, clipGain, pan) {
+    if (this.isMonoOutput()) {
+      return baseGain * clipGain;
+    }
     const panCompensation = getPanLawCompensationGain(pan, this.currentPanLawDb);
     return baseGain * clipGain * panCompensation;
+  }
+
+  getTargetOutputChannelCount() {
+    return this.isMonoOutput() ? 1 : 2;
+  }
+
+  isMonoOutput() {
+    return this.forceMonoOutput === true || Number(this.currentOutputChannelCount) <= 1;
+  }
+
+  getEffectiveOutputPan(pan) {
+    if (this.isMonoOutput()) return 0;
+    return Math.max(-100, Math.min(100, Number(pan) || 0));
+  }
+
+  applyNodeMix(nodes) {
+    if (!nodes?.panNode || !nodes?.gainNode) return;
+    nodes.panNode.pan.value = this.getEffectiveOutputPan(nodes.effectivePan) / 100;
+    nodes.gainNode.gain.value = this.getClipOutputGain(
+      nodes.baseGain,
+      nodes.clipGain,
+      nodes.effectivePan
+    );
+  }
+
+  async configureOutputRouting() {
+    if (!this.audioContext || !this.masterGainNode) return;
+
+    if (this.outputTargetNode) {
+      try {
+        this.masterGainNode.disconnect(this.outputTargetNode);
+      } catch {
+        // Ignore reconnect noise when the previous route is already gone.
+      }
+    } else {
+      try {
+        this.masterGainNode.disconnect();
+      } catch {
+        // Ignore initial disconnect attempts before anything is connected.
+      }
+    }
+
+    const routedTarget = await this.ensureOutputRoutingTarget();
+    this.outputTargetNode = routedTarget || this.audioContext.destination;
+
+    if (this.outputTargetNode === this.audioContext.destination) {
+      this.applyOutputChannelConfig();
+    }
+
+    this.masterGainNode.connect(this.outputTargetNode);
+  }
+
+  applyOutputChannelConfig() {
+    if (!this.audioContext?.destination) return;
+    const destination = this.audioContext.destination;
+    try {
+      destination.channelCountMode = 'explicit';
+      destination.channelInterpretation = 'speakers';
+      const maxChannelCount = Math.max(1, Number(destination.maxChannelCount) || 2);
+      destination.channelCount = Math.min(this.getTargetOutputChannelCount(), maxChannelCount);
+    } catch {
+      // Some browsers lock destination channel configuration.
+    }
+  }
+
+  async ensureOutputRoutingTarget() {
+    if (!this.audioContext) return null;
+
+    try {
+      if (!this.outputStreamDestination) {
+        this.outputStreamDestination = this.audioContext.createMediaStreamDestination();
+      }
+
+      if (!this.outputRoutingElement) {
+        const element = new Audio();
+        element.autoplay = true;
+        element.preload = 'auto';
+        element.srcObject = this.outputStreamDestination.stream;
+        this.outputRoutingElement = element;
+      } else if (this.outputRoutingElement.srcObject !== this.outputStreamDestination.stream) {
+        this.outputRoutingElement.srcObject = this.outputStreamDestination.stream;
+      }
+
+      await applySinkIdToMediaElement(this.outputRoutingElement, this.currentOutputDeviceId);
+      await this.resumeOutputRoutingElement();
+
+      return this.outputStreamDestination;
+    } catch (error) {
+      reportUserError(
+        'Failed to route live playback to the selected output device. Playback will continue on the default output.',
+        error,
+        { onceKey: `audio:stream-route:${this.currentOutputDeviceId || 'default'}` }
+      );
+      return null;
+    }
+  }
+
+  async resumeOutputRoutingElement() {
+    if (!this.outputRoutingElement) return;
+    try {
+      await this.outputRoutingElement.play();
+    } catch {
+      // Ignore autoplay-related routing element failures.
+    }
   }
 }
 

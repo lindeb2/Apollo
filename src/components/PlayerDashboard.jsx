@@ -26,6 +26,7 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
+import { PlaybackDevicesSettingsPanel } from './SettingsPanels';
 import {
   addPlayerPlaylistItem,
   bootstrapServerProject,
@@ -60,7 +61,10 @@ import {
   PLAYER_COLLECTION_TYPES,
   PLAYER_LOOP_MODES,
 } from '../types/player';
+import { normalizeExportSettings } from '../types/project';
 import { TRACK_ROLE_METRONOME } from '../utils/trackRoles';
+import { usePlaybackDeviceSettings } from '../hooks/usePlaybackDeviceSettings';
+import { applySinkIdToMediaElement } from '../utils/playbackOutput';
 
 const PRACTICE_FOCUS_STEPS = [
   'omitted',
@@ -339,6 +343,7 @@ function PlayerDashboard({
   const [hasRealtimeMetronome, setHasRealtimeMetronome] = useState(false);
   const [isRealtimeMetronomeMuted, setIsRealtimeMetronomeMuted] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [mainPanelView, setMainPanelView] = useState('library');
   const [isLibraryCollapsed, setIsLibraryCollapsed] = useState(false);
   const [libraryScopeFolderId, setLibraryScopeFolderId] = useState(null);
   const [libraryCreateMenuOpen, setLibraryCreateMenuOpen] = useState(false);
@@ -368,6 +373,38 @@ function PlayerDashboard({
   const libraryContextMenuRef = useRef(null);
   const projectContextMenuRef = useRef(null);
   const sliderDragRef = useRef(null);
+  const {
+    audioInputs,
+    audioOutputs,
+    audioSettings,
+    outputChannelCount,
+    playbackPanLawDb,
+    refreshAudioDevices,
+    setAudioSettings,
+  } = usePlaybackDeviceSettings({
+    errorPrefix: 'player-dashboard',
+  });
+
+  const monoOutputActive = audioSettings.forceMonoOutput === true || outputChannelCount <= 1;
+  const buildPlaybackExportSettings = useCallback((projectLike) => normalizeExportSettings({
+    ...(projectLike?.exportSettings || {}),
+    panLawDb: playbackPanLawDb,
+    forceMonoOutput: monoOutputActive,
+  }), [monoOutputActive, playbackPanLawDb]);
+
+  const applyPlaybackOutputConfig = useCallback(async () => {
+    await audioManager.setPlaybackOutputConfig({
+      outputDeviceId: audioSettings.outputDeviceId,
+      outputChannelCount,
+      forceMonoOutput: audioSettings.forceMonoOutput,
+      panLawDb: playbackPanLawDb,
+    });
+  }, [
+    audioSettings.forceMonoOutput,
+    audioSettings.outputDeviceId,
+    outputChannelCount,
+    playbackPanLawDb,
+  ]);
 
   const refreshPlayerData = useCallback(async () => {
     if (!session) return;
@@ -406,6 +443,11 @@ function PlayerDashboard({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [mixDialog]);
+
+  useEffect(() => {
+    if (mainPanelView !== 'settings') return;
+    refreshAudioDevices();
+  }, [mainPanelView, refreshAudioDevices]);
 
   const getPracticeFocusStep = useCallback(
     (index) => PRACTICE_FOCUS_STEPS[Math.max(PRACTICE_FOCUS_MIN_INDEX, Math.min(PRACTICE_FOCUS_MAX_INDEX, Math.round(Number(index) || 0)))],
@@ -513,6 +555,7 @@ function PlayerDashboard({
     audio.preload = 'auto';
     audio.volume = volume / 100;
     audioRef.current = audio;
+    void applySinkIdToMediaElement(audio, audioSettings.outputDeviceId);
 
     const handleTimeUpdate = () => {
       if (playbackEngineRef.current !== 'html') return;
@@ -568,6 +611,15 @@ function PlayerDashboard({
       audioManager.setMasterVolumeCurve('legacy');
     };
   }, []);
+
+  useEffect(() => {
+    void applyPlaybackOutputConfig();
+  }, [applyPlaybackOutputConfig]);
+
+  useEffect(() => {
+    if (!audioRef.current) return;
+    void applySinkIdToMediaElement(audioRef.current, audioSettings.outputDeviceId);
+  }, [audioSettings.outputDeviceId]);
 
   useEffect(() => {
     if (!audioRef.current) return;
@@ -818,7 +870,7 @@ function PlayerDashboard({
         const durationMs = computeSnapshotDurationMs(snapshot);
         setHasRealtimeMetronome(hasSnapshotMetronome(snapshot));
         setIsRealtimeMetronomeMuted(metronomeMuted);
-        audioManager.setPanLawDb(playbackSnapshot.panLawDb);
+        await applyPlaybackOutputConfig();
         audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
         await audioManager.play(playbackSnapshot, 0, { useProjectMasterVolume: false });
         applyRealtimePracticeSettings(playbackSnapshot, item);
@@ -848,7 +900,7 @@ function PlayerDashboard({
         item.presetId,
         item.presetVariantKey,
         audioBuffers,
-        playbackSnapshot.exportSettings,
+        buildPlaybackExportSettings(playbackSnapshot),
         playbackSnapshot.projectName || item.projectName || item.name || 'mix',
         'wav'
       );
@@ -874,7 +926,7 @@ function PlayerDashboard({
     } finally {
       setIsRendering(false);
     }
-  }, [applyRealtimePracticeSettings, ensureSnapshotAudioBuffers, session, volume]);
+  }, [applyPlaybackOutputConfig, applyRealtimePracticeSettings, buildPlaybackExportSettings, ensureSnapshotAudioBuffers, session, volume]);
 
   const playQueueItem = useCallback(async (index) => {
     if (index < 0 || index >= activeQueueItems.length) return;
@@ -922,11 +974,13 @@ function PlayerDashboard({
   }, [applyRealtimePracticeSettings, playbackEngine]);
 
   const handleSelectCollection = useCallback((type, id = null) => {
+    setMainPanelView('library');
     setActiveCollectionType(type);
     setActiveCollectionId(id || type);
   }, []);
 
   const handleSelectItem = useCallback((type, collectionId, index) => {
+    setMainPanelView('library');
     setActiveCollectionType(type);
     setActiveCollectionId(collectionId || type);
     setActiveIndex(index);
@@ -955,7 +1009,7 @@ function PlayerDashboard({
     ) {
       const resumeMs = Math.max(0, Math.round((Number(currentTimeSec) || 0) * 1000));
       const current = realtimePlaybackRef.current;
-      audioManager.setPanLawDb(current.project.panLawDb);
+      await applyPlaybackOutputConfig();
       audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
       await audioManager.play(current.project, resumeMs, { useProjectMasterVolume: false });
       applyRealtimePracticeSettings(current.project, current.item);
@@ -965,7 +1019,7 @@ function PlayerDashboard({
 
     const startIndex = activeIndex >= 0 ? activeIndex : 0;
     await playQueueItem(startIndex);
-  }, [activeIndex, activeQueueItems.length, applyRealtimePracticeSettings, currentTimeSec, durationSec, isPlaying, playQueueItem, volume]);
+  }, [activeIndex, activeQueueItems.length, applyPlaybackOutputConfig, applyRealtimePracticeSettings, currentTimeSec, durationSec, isPlaying, playQueueItem, volume]);
 
   const handleNext = useCallback(async () => {
     if (!activeQueueItems.length) return;
@@ -992,7 +1046,7 @@ function PlayerDashboard({
         const current = realtimePlaybackRef.current;
         if (isPlaying) {
           await audioManager.pause(0);
-          audioManager.setPanLawDb(current.project.panLawDb);
+          await applyPlaybackOutputConfig();
           audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
           await audioManager.play(current.project, 0, { useProjectMasterVolume: false });
           applyRealtimePracticeSettings(current.project, current.item);
@@ -1015,7 +1069,7 @@ function PlayerDashboard({
         : 0;
     }
     await playQueueItem(previousIndex);
-  }, [activeIndex, activeQueueItems.length, applyRealtimePracticeSettings, currentTimeSec, isPlaying, loopMode, playQueueItem, volume]);
+  }, [activeIndex, activeQueueItems.length, applyPlaybackOutputConfig, applyRealtimePracticeSettings, currentTimeSec, isPlaying, loopMode, playQueueItem, volume]);
 
   const handleSeek = useCallback(async (nextTimeSec) => {
     const safe = Math.max(0, Math.min(Number(nextTimeSec || 0), Number(durationSec || 0)));
@@ -1025,7 +1079,7 @@ function PlayerDashboard({
         const current = realtimePlaybackRef.current;
         if (isPlaying) {
           await audioManager.pause(seekMs);
-          audioManager.setPanLawDb(current.project.panLawDb);
+          await applyPlaybackOutputConfig();
           audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
           await audioManager.play(current.project, seekMs, { useProjectMasterVolume: false });
           applyRealtimePracticeSettings(current.project, current.item);
@@ -1042,7 +1096,7 @@ function PlayerDashboard({
     if (!audioRef.current) return;
     audioRef.current.currentTime = safe;
     setCurrentTimeSec(safe);
-  }, [applyRealtimePracticeSettings, durationSec, isPlaying, volume]);
+  }, [applyPlaybackOutputConfig, applyRealtimePracticeSettings, durationSec, isPlaying, volume]);
 
   const handleToggleMute = useCallback(() => {
     setVolume((previous) => {
@@ -1072,7 +1126,7 @@ function PlayerDashboard({
         if (!isPlaying) return;
         const currentMs = Math.max(0, Math.round((Number(currentTimeSec) || 0) * 1000));
         await audioManager.pause(currentMs);
-        audioManager.setPanLawDb(nextProject.panLawDb);
+        await applyPlaybackOutputConfig();
         audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
         await audioManager.play(nextProject, currentMs, { useProjectMasterVolume: false });
         applyRealtimePracticeSettings(nextProject, current.item);
@@ -1094,7 +1148,7 @@ function PlayerDashboard({
         current.item.presetId,
         current.item.presetVariantKey,
         audioBuffers,
-        nextProject.exportSettings,
+        buildPlaybackExportSettings(nextProject),
         nextProject.projectName || current.item.projectName || current.item.name || 'mix',
         'wav'
       );
@@ -1141,7 +1195,9 @@ function PlayerDashboard({
       }
     }
   }, [
+    applyPlaybackOutputConfig,
     applyRealtimePracticeSettings,
+    buildPlaybackExportSettings,
     currentTimeSec,
     ensureSnapshotAudioBuffers,
     isPlaying,
@@ -1683,6 +1739,7 @@ function PlayerDashboard({
 
   const handleSelectLibraryEntry = useCallback((entry) => {
     if (!entry) return;
+    setMainPanelView('library');
     if (entry.kind === 'folder') {
       const folderId = entry.folder?.id || null;
       setLibraryScopeFolderId(folderId);
@@ -1933,6 +1990,16 @@ function PlayerDashboard({
               <div className="absolute right-0 top-full mt-2 min-w-32 rounded-md border border-gray-700 bg-gray-800 shadow-lg z-30 overflow-hidden">
                 <button
                   onClick={() => {
+                    setMainPanelView('settings');
+                    setProfileMenuOpen(false);
+                    refreshAudioDevices();
+                  }}
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+                >
+                  Settings
+                </button>
+                <button
+                  onClick={() => {
                     setProfileMenuOpen(false);
                     onLogout();
                   }}
@@ -1952,6 +2019,7 @@ function PlayerDashboard({
             <button
               type="button"
               onClick={() => {
+                setMainPanelView('library');
                 setLibraryScopeFolderId(null);
                 setSelectedPlaylistId(null);
                 setSelectedFolderId(null);
@@ -2111,147 +2179,179 @@ function PlayerDashboard({
             </div>
 
             <div className="flex-1 min-w-0 rounded-lg border border-gray-700 bg-gray-800/80 flex flex-col overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-700">
-                <h2 className="text-sm font-semibold">
-                  {selectedPlaylist && activeCollectionType === PLAYER_COLLECTION_TYPES.PLAYLIST
-                    ? selectedPlaylist.name
-                    : "This Year's Musical Numbers"}
-                </h2>
-              </div>
-              <div className="grid grid-cols-[56px_minmax(0,1fr)_96px_34px] px-4 py-2 text-xs uppercase tracking-wide text-gray-400 border-b border-gray-700">
-                <div>#</div>
-                <div>Title</div>
-                <div className="text-right">Total Time</div>
-                <div />
-              </div>
-              <div className="flex-1 overflow-auto">
-                {selectedPlaylist && activeCollectionType === PLAYER_COLLECTION_TYPES.PLAYLIST ? (
-                  <>
-                    {activePlaylistRows.map((row, index) => {
-                      const rowTitle = row.unavailable
-                        ? '[Unavailable]'
-                        : `${row.mix?.name || row.mix?.projectName || 'Mix'}`;
-                      const isActive = !row.unavailable && row.queueIndex >= 0 && activeIndex === row.queueIndex;
-                      return (
-                        <div
-                          key={row.id}
-                          onContextMenu={(event) => {
-                            if (row.unavailable || !row.mix) return;
-                            event.preventDefault();
-                            setLibraryContextMenu({
-                              entry: {
-                                kind: 'mix',
-                                mix: row.mix,
-                                sourcePlaylistId: selectedPlaylist.id,
-                                sourcePlaylistItemId: row.id,
-                              },
-                              x: event.clientX,
-                              y: event.clientY,
-                            });
-                          }}
-                          onClick={() => {
-                            if (row.unavailable || row.queueIndex < 0) return;
-                            handleSelectItem(PLAYER_COLLECTION_TYPES.PLAYLIST, selectedPlaylist.id, row.queueIndex);
-                          }}
-                          onDoubleClick={async () => {
-                            await handlePlayPlaylistRow(row);
-                          }}
-                          className={`group grid grid-cols-[56px_minmax(0,1fr)_96px_34px] items-center px-4 py-2.5 text-sm transition-colors ${
-                            row.unavailable
-                              ? 'text-gray-500'
-                              : (isActive ? 'bg-blue-700/20 cursor-pointer' : 'hover:bg-gray-700/60 cursor-pointer')
-                          }`}
-                        >
-                          <div className="flex items-center pl-0.5 text-gray-300">
-                            <span className="group-hover:hidden">{index + 1}</span>
-                            {!row.unavailable ? <Play size={14} className="hidden group-hover:block" /> : null}
-                          </div>
-                          <div className="truncate">{rowTitle}</div>
-                          <div className="text-right text-gray-400">--:--</div>
-                          <div className="flex justify-end">
-                            {!row.unavailable && row.mix ? (
-                              <button
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  const rect = event.currentTarget.getBoundingClientRect();
-                                  setLibraryContextMenu({
-                                    entry: {
-                                      kind: 'mix',
-                                      mix: row.mix,
-                                      sourcePlaylistId: selectedPlaylist.id,
-                                      sourcePlaylistItemId: row.id,
-                                    },
-                                    x: rect.right,
-                                    y: rect.bottom + 4,
-                                  });
-                                }}
-                                className="rounded p-1 text-gray-400 hover:text-white hover:bg-gray-700 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
-                                title="Options"
-                              >
-                                <MoreHorizontal size={14} />
-                              </button>
-                            ) : null}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {!activePlaylistRows.length ? (
-                      <div className="text-xs text-gray-500 px-4 py-3">No playlist items.</div>
-                    ) : null}
-                  </>
-                ) : (
-                  <>
-                    {(tuttiMixes || []).map((mix, index) => {
-                      const isActive = (
-                        activeCollectionType === PLAYER_COLLECTION_TYPES.TUTTI
-                        && activeCollectionId === 'tutti'
-                        && activeIndex === index
-                      );
-                      const listTitle = `${mix.musicalNumber || '0.0'} - ${mix.projectName || mix.name || 'Untitled Project'}`;
-                      return (
-                        <div
-                          key={mix.id}
-                          onClick={() => handleSelectItem(PLAYER_COLLECTION_TYPES.TUTTI, 'tutti', index)}
-                          onDoubleClick={async () => {
-                            await playQueueItem(index);
-                          }}
-                          onContextMenu={(event) => {
-                            event.preventDefault();
-                            handleSelectItem(PLAYER_COLLECTION_TYPES.TUTTI, 'tutti', index);
-                            setProjectContextMenu({ mix, x: event.clientX, y: event.clientY });
-                          }}
-                          className={`group grid grid-cols-[56px_minmax(0,1fr)_96px_34px] items-center px-4 py-2.5 text-sm cursor-pointer transition-colors ${
-                            isActive ? 'bg-blue-700/20' : 'hover:bg-gray-700/60'
-                          }`}
-                        >
-                          <div className="flex items-center pl-0.5 text-gray-300">
-                            <span className="group-hover:hidden">{index + 1}</span>
-                            <Play size={14} className="hidden group-hover:block" />
-                          </div>
-                          <div className="truncate text-gray-100">{listTitle}</div>
-                          <div className="text-right text-gray-400">--:--</div>
-                          <div className="flex justify-end">
-                            <button
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                const rect = event.currentTarget.getBoundingClientRect();
-                                setProjectContextMenu({ mix, x: rect.right, y: rect.bottom + 4 });
+              {mainPanelView === 'settings' ? (
+                <>
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+                    <div>
+                      <h2 className="text-sm font-semibold">Settings</h2>
+                      <p className="text-xs text-gray-400 mt-0.5">Playback and device options for the player.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setMainPanelView('library')}
+                      className="rounded-md border border-gray-700 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700"
+                    >
+                      Close
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-auto p-4">
+                    <PlaybackDevicesSettingsPanel
+                      audioSettings={audioSettings}
+                      setAudioSettings={setAudioSettings}
+                      audioInputs={audioInputs}
+                      audioOutputs={audioOutputs}
+                      monoOutputActive={monoOutputActive}
+                      onRefreshDevices={refreshAudioDevices}
+                      outputChannelCount={outputChannelCount}
+                      playbackPanLawDb={playbackPanLawDb}
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="px-4 py-3 border-b border-gray-700">
+                    <h2 className="text-sm font-semibold">
+                      {selectedPlaylist && activeCollectionType === PLAYER_COLLECTION_TYPES.PLAYLIST
+                        ? selectedPlaylist.name
+                        : "This Year's Musical Numbers"}
+                    </h2>
+                  </div>
+                  <div className="grid grid-cols-[56px_minmax(0,1fr)_96px_34px] px-4 py-2 text-xs uppercase tracking-wide text-gray-400 border-b border-gray-700">
+                    <div>#</div>
+                    <div>Title</div>
+                    <div className="text-right">Total Time</div>
+                    <div />
+                  </div>
+                  <div className="flex-1 overflow-auto">
+                    {selectedPlaylist && activeCollectionType === PLAYER_COLLECTION_TYPES.PLAYLIST ? (
+                      <>
+                        {activePlaylistRows.map((row, index) => {
+                          const rowTitle = row.unavailable
+                            ? '[Unavailable]'
+                            : `${row.mix?.name || row.mix?.projectName || 'Mix'}`;
+                          const isActive = !row.unavailable && row.queueIndex >= 0 && activeIndex === row.queueIndex;
+                          return (
+                            <div
+                              key={row.id}
+                              onContextMenu={(event) => {
+                                if (row.unavailable || !row.mix) return;
+                                event.preventDefault();
+                                setLibraryContextMenu({
+                                  entry: {
+                                    kind: 'mix',
+                                    mix: row.mix,
+                                    sourcePlaylistId: selectedPlaylist.id,
+                                    sourcePlaylistItemId: row.id,
+                                  },
+                                  x: event.clientX,
+                                  y: event.clientY,
+                                });
                               }}
-                              className="rounded p-1 text-gray-400 hover:text-white hover:bg-gray-700 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
-                              title="Options"
+                              onClick={() => {
+                                if (row.unavailable || row.queueIndex < 0) return;
+                                handleSelectItem(PLAYER_COLLECTION_TYPES.PLAYLIST, selectedPlaylist.id, row.queueIndex);
+                              }}
+                              onDoubleClick={async () => {
+                                await handlePlayPlaylistRow(row);
+                              }}
+                              className={`group grid grid-cols-[56px_minmax(0,1fr)_96px_34px] items-center px-4 py-2.5 text-sm transition-colors ${
+                                row.unavailable
+                                  ? 'text-gray-500'
+                                  : (isActive ? 'bg-blue-700/20 cursor-pointer' : 'hover:bg-gray-700/60 cursor-pointer')
+                              }`}
                             >
-                              <MoreHorizontal size={14} />
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {!tuttiMixes.length ? (
-                      <div className="text-xs text-gray-500 px-4 py-3">No readable projects found.</div>
-                    ) : null}
-                  </>
-                )}
-              </div>
+                              <div className="flex items-center pl-0.5 text-gray-300">
+                                <span className="group-hover:hidden">{index + 1}</span>
+                                {!row.unavailable ? <Play size={14} className="hidden group-hover:block" /> : null}
+                              </div>
+                              <div className="truncate">{rowTitle}</div>
+                              <div className="text-right text-gray-400">--:--</div>
+                              <div className="flex justify-end">
+                                {!row.unavailable && row.mix ? (
+                                  <button
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      const rect = event.currentTarget.getBoundingClientRect();
+                                      setLibraryContextMenu({
+                                        entry: {
+                                          kind: 'mix',
+                                          mix: row.mix,
+                                          sourcePlaylistId: selectedPlaylist.id,
+                                          sourcePlaylistItemId: row.id,
+                                        },
+                                        x: rect.right,
+                                        y: rect.bottom + 4,
+                                      });
+                                    }}
+                                    className="rounded p-1 text-gray-400 hover:text-white hover:bg-gray-700 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                                    title="Options"
+                                  >
+                                    <MoreHorizontal size={14} />
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {!activePlaylistRows.length ? (
+                          <div className="text-xs text-gray-500 px-4 py-3">No playlist items.</div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        {(tuttiMixes || []).map((mix, index) => {
+                          const isActive = (
+                            activeCollectionType === PLAYER_COLLECTION_TYPES.TUTTI
+                            && activeCollectionId === 'tutti'
+                            && activeIndex === index
+                          );
+                          const listTitle = `${mix.musicalNumber || '0.0'} - ${mix.projectName || mix.name || 'Untitled Project'}`;
+                          return (
+                            <div
+                              key={mix.id}
+                              onClick={() => handleSelectItem(PLAYER_COLLECTION_TYPES.TUTTI, 'tutti', index)}
+                              onDoubleClick={async () => {
+                                await playQueueItem(index);
+                              }}
+                              onContextMenu={(event) => {
+                                event.preventDefault();
+                                handleSelectItem(PLAYER_COLLECTION_TYPES.TUTTI, 'tutti', index);
+                                setProjectContextMenu({ mix, x: event.clientX, y: event.clientY });
+                              }}
+                              className={`group grid grid-cols-[56px_minmax(0,1fr)_96px_34px] items-center px-4 py-2.5 text-sm cursor-pointer transition-colors ${
+                                isActive ? 'bg-blue-700/20' : 'hover:bg-gray-700/60'
+                              }`}
+                            >
+                              <div className="flex items-center pl-0.5 text-gray-300">
+                                <span className="group-hover:hidden">{index + 1}</span>
+                                <Play size={14} className="hidden group-hover:block" />
+                              </div>
+                              <div className="truncate text-gray-100">{listTitle}</div>
+                              <div className="text-right text-gray-400">--:--</div>
+                              <div className="flex justify-end">
+                                <button
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    const rect = event.currentTarget.getBoundingClientRect();
+                                    setProjectContextMenu({ mix, x: rect.right, y: rect.bottom + 4 });
+                                  }}
+                                  className="rounded p-1 text-gray-400 hover:text-white hover:bg-gray-700 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                                  title="Options"
+                                >
+                                  <MoreHorizontal size={14} />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {!tuttiMixes.length ? (
+                          <div className="text-xs text-gray-500 px-4 py-3">No readable projects found.</div>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
