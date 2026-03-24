@@ -7,9 +7,7 @@ KEY_PATH="${CERT_DIR}/dev.key"
 CERT_PATH="${CERT_DIR}/dev.crt"
 DEV_HOST="${1:-${DEV_HOST:-}}"
 
-if [[ ! -f "${KEY_PATH}" || ! -f "${CERT_PATH}" ]]; then
-  "${ROOT_DIR}/scripts/generate-lan-cert.sh" "${DEV_HOST:-}"
-fi
+"${ROOT_DIR}/scripts/generate-lan-cert.sh" "${DEV_HOST:-}"
 
 cd "${ROOT_DIR}"
 VITE_USE_HTTPS=true \

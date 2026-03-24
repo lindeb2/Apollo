@@ -16,6 +16,13 @@ detect_dev_host() {
   echo "${detected}"
 }
 
+cert_contains_ip() {
+  local cert_path="$1"
+  local ip="$2"
+
+  "${OPENSSL_BIN}" x509 -in "${cert_path}" -noout -ext subjectAltName 2>/dev/null | grep -Fq "IP Address:${ip}"
+}
+
 DEV_HOST="${1:-${DEV_HOST:-}}"
 if [[ -z "${DEV_HOST}" ]]; then
   DEV_HOST="$(detect_dev_host)"
@@ -34,8 +41,12 @@ fi
 mkdir -p "${CERT_DIR}"
 
 if [[ -f "${KEY_PATH}" && -f "${CERT_PATH}" && "${FORCE_REGEN:-false}" != "true" ]]; then
-  echo "Existing cert found at ${CERT_PATH}. Set FORCE_REGEN=true to replace it."
-  exit 0
+  if cert_contains_ip "${CERT_PATH}" "${DEV_HOST}"; then
+    echo "Existing cert already covers ${DEV_HOST}: ${CERT_PATH}"
+    exit 0
+  fi
+
+  echo "Existing cert does not cover ${DEV_HOST}; regenerating ${CERT_PATH}."
 fi
 
 echo "Generating local HTTPS cert for ${DEV_HOST}..."
