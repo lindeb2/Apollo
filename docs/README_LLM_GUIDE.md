@@ -17,7 +17,7 @@
    - ~400 lines of focused, technical information
    - Much cheaper than carrying 100k+ tokens of chat history
 
-3. **Add your request** using templates from [`PROMPT_TEMPLATES.md`](PROMPT_TEMPLATES.md)
+3. **Add your request** using templates from [`PROMPT_TEMPLATES.md`](old/PROMPT_TEMPLATES.md)
 
 4. **Implement and test** the changes
 
@@ -32,7 +32,7 @@
 | File | Purpose | When to Use |
 |------|---------|-------------|
 | **[LLM_CONTEXT.md](LLM_CONTEXT.md)** ⭐ | Essential context for LLMs | **Start of EVERY new chat** |
-| **[PROMPT_TEMPLATES.md](PROMPT_TEMPLATES.md)** | Ready-to-use prompt examples | When crafting requests |
+| **[PROMPT_TEMPLATES.md](old/PROMPT_TEMPLATES.md)** | Ready-to-use prompt examples | When crafting requests |
 | **[WORKING_WITH_LLMS.md](WORKING_WITH_LLMS.md)** | Workflow guide & best practices | First time using these docs |
 
 ### For Development Reference
@@ -40,10 +40,10 @@
 | File | Purpose |
 |------|---------|
 | [README.md](../README.md) | User guide, installation, features |
-| [IMPLEMENTATION.md](IMPLEMENTATION.md) | Detailed technical documentation |
-| [SPEC_CHANGES.md](SPEC_CHANGES.md) | Tracks deviations (currently zero) |
+| [IMPLEMENTATION.md](old/IMPLEMENTATION.md) | Detailed technical documentation |
+| [SPEC_CHANGES.md](old/SPEC_CHANGES.md) | Tracks deviations (currently zero) |
 | [PHASE_0-3_SUMMARY.md](apollo-app/) | Implementation details per phase |
-| [MVP_DELIVERY.md](MVP_DELIVERY.md) | Final delivery summary |
+| [MVP_DELIVERY.md](old/MVP_DELIVERY.md) | Final delivery summary |
 
 ---
 
@@ -75,7 +75,7 @@ Read in this order:
 
 1. **[WORKING_WITH_LLMS.md](WORKING_WITH_LLMS.md)** - Understand the workflow (10 min read)
 2. **[LLM_CONTEXT.md](LLM_CONTEXT.md)** - Skim to know what info is included
-3. **[PROMPT_TEMPLATES.md](PROMPT_TEMPLATES.md)** - See example prompts
+3. **[PROMPT_TEMPLATES.md](old/PROMPT_TEMPLATES.md)** - See example prompts
 
 Then you're ready to start making changes efficiently!
 
@@ -135,8 +135,8 @@ Apollo/
 
 - **How do I work with LLMs efficiently?** → Read [`WORKING_WITH_LLMS.md`](WORKING_WITH_LLMS.md)
 - **What should I paste in a new chat?** → [`LLM_CONTEXT.md`](LLM_CONTEXT.md)
-- **How should I phrase my request?** → See [`PROMPT_TEMPLATES.md`](PROMPT_TEMPLATES.md)
-- **What's the architecture?** → Check [`IMPLEMENTATION.md`](IMPLEMENTATION.md)
+- **How should I phrase my request?** → See [`PROMPT_TEMPLATES.md`](old/PROMPT_TEMPLATES.md)
+- **What's the architecture?** → Check [`IMPLEMENTATION.md`](old/IMPLEMENTATION.md)
 - **What's implemented?** → Read phase summaries: [`PHASE_0-3_SUMMARY.md`](apollo-app/)
 
 ---

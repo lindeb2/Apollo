@@ -251,7 +251,7 @@ See `IMPLEMENTATION.md` for technical details and `SPEC_CHANGES.md` for any devi
 **Need to make changes using an LLM?** We've created comprehensive guides:
 
 - **[LLM_CONTEXT.md](docs/LLM_CONTEXT.md)** ⭐ - Paste this at the start of every new chat
-- **[PROMPT_TEMPLATES.md](docs/PROMPT_TEMPLATES.md)** - Ready-to-use prompt examples  
+- **[PROMPT_TEMPLATES.md](docs/old/PROMPT_TEMPLATES.md)** - Ready-to-use prompt examples  
 - **[WORKING_WITH_LLMS.md](docs/WORKING_WITH_LLMS.md)** - Complete workflow guide
 
 **Quick start:** Start a fresh chat, paste `LLM_CONTEXT.md`, then describe what you need. This is **30-50x cheaper** than continuing long conversations and gives better results.
