@@ -1,24 +1,11 @@
 import JSZip from 'jszip';
-import { exportProjectJSON, importProjectJSON, getMediaBlob } from './db';
+import { exportProjectJSON, getMediaBlob } from './db';
 import { normalizeProjectName } from '../utils/naming';
 
 /**
  * Project Import/Export
- * Handles JSON and ZIP formats
+ * Handles ZIP-based project portability
  */
-
-/**
- * Export project as JSON file
- * Contains metadata only, references blobs by ID
- */
-export async function exportAsJSON(project) {
-  const json = exportProjectJSON(project);
-  const base = normalizeProjectName(project.projectName) || 'project';
-  const filename = `${base}_project.json`;
-  
-  const blob = new Blob([json], { type: 'application/json' });
-  return { blob, filename };
-}
 
 /**
  * Export project as ZIP file
@@ -124,16 +111,6 @@ export async function exportAsZIP(project, mediaMap, exportBaseName = null, onPr
   
   emitProgress('done', 'ZIP export complete', 100);
   return { blob: zipBlob, filename };
-}
-
-/**
- * Import project from JSON file
- * Validates blob references exist in IndexedDB
- */
-export async function importFromJSON(file) {
-  const text = await file.text();
-  const project = await importProjectJSON(text);
-  return project;
 }
 
 /**

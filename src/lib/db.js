@@ -1,5 +1,4 @@
 import Dexie from 'dexie';
-import { reportUserError } from '../utils/errorReporter';
 import { createId } from '../utils/id';
 
 /**
@@ -71,22 +70,7 @@ export async function saveProject(project) {
   };
   
   await db.projects.put(projectData);
-  
-  // Update localStorage for recent projects list
-  updateRecentProjects(project.projectId, project.projectName);
-  
   return projectData;
-}
-
-/**
- * Load a project from IndexedDB
- */
-export async function loadProject(projectId) {
-  const project = await db.projects.get(projectId);
-  if (!project) {
-    throw new Error(`Project ${projectId} not found`);
-  }
-  return project;
 }
 
 /**
@@ -100,17 +84,6 @@ export async function deleteProject(projectId) {
     await db.syncQueue.where('projectId').equals(projectId).delete();
     await db.syncQueue.delete(`${projectId}:pending`);
   });
-  
-  // Update recent projects
-  const recent = getRecentProjects().filter(p => p.id !== projectId);
-  localStorage.setItem('apollo_recent_projects', JSON.stringify(recent));
-}
-
-/**
- * List all projects
- */
-export async function listProjects() {
-  return await db.projects.toArray();
 }
 
 /**
@@ -146,14 +119,6 @@ export async function getMediaBlob(blobId) {
 }
 
 /**
- * Check if media blob exists
- */
-export async function mediaExists(blobId) {
-  const count = await db.media.where('blobId').equals(blobId).count();
-  return count > 0;
-}
-
-/**
  * Save undo/redo action (circular buffer, max 100)
  */
 export async function saveUndoAction(projectId, action, currentIndex) {
@@ -179,49 +144,6 @@ export async function loadUndoHistory(projectId) {
     .sortBy('actionIndex');
   
   return actions.map(a => a.action);
-}
-
-/**
- * Clear undo history for a project
- */
-export async function clearUndoHistory(projectId) {
-  await db.undo.where('projectId').equals(projectId).delete();
-}
-
-/**
- * Recent projects management (localStorage)
- */
-function updateRecentProjects(projectId, projectName) {
-  const recent = getRecentProjects();
-  
-  // Remove if already exists
-  const filtered = recent.filter(p => p.id !== projectId);
-  
-  // Add to front
-  filtered.unshift({
-    id: projectId,
-    name: projectName,
-    timestamp: Date.now(),
-  });
-  
-  // Keep only last 10
-  const limited = filtered.slice(0, 10);
-  
-  localStorage.setItem('apollo_recent_projects', JSON.stringify(limited));
-}
-
-export function getRecentProjects() {
-  try {
-    const data = localStorage.getItem('apollo_recent_projects');
-    return data ? JSON.parse(data) : [];
-  } catch (error) {
-    reportUserError(
-      'Failed to read recent projects from local storage.',
-      error,
-      { onceKey: 'db:recent-projects-parse' }
-    );
-    return [];
-  }
 }
 
 /**
@@ -253,43 +175,6 @@ export async function loadExportDirectoryHandle(id) {
  */
 export function exportProjectJSON(project) {
   return JSON.stringify(project, null, 2);
-}
-
-/**
- * Import project from JSON
- * Validates that all referenced blobs exist in IndexedDB
- */
-export async function importProjectJSON(jsonString) {
-  const project = JSON.parse(jsonString);
-  
-  // Collect all referenced blob IDs
-  const blobIds = new Set();
-  for (const track of project.tracks) {
-    for (const clip of track.clips) {
-      blobIds.add(clip.blobId);
-    }
-  }
-  
-  // Verify all blobs exist
-  const missingBlobs = [];
-  for (const blobId of blobIds) {
-    const exists = await mediaExists(blobId);
-    if (!exists) {
-      missingBlobs.push(blobId);
-    }
-  }
-  
-  if (missingBlobs.length > 0) {
-    throw new Error(
-      `Missing audio blobs: ${missingBlobs.join(', ')}. ` +
-      `Please import using ZIP format to restore all audio data.`
-    );
-  }
-  
-  // Save project
-  await saveProject(project);
-  
-  return project;
 }
 
 /**
