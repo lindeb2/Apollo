@@ -1,267 +1,183 @@
 # Apollo
 
-A browser-based simplified DAW for creating choir practice files. Import instrumental and choir audio, record vocals, edit clips non-destructively, and export deterministic WAV practice files according to strict presets.
+Apollo is a rehearsal tool for musical numbers before performance. It works both as:
 
-**No cloud. No tempo. WAV-only exports. Correctness and determinism valued over UI polish.**
+- a DAW-style environment for building rehearsal projects
+- an interactive music player for live playback manipulation during practice
 
-## Features
+The goal is to make rehearsal easier, more musical, and more flexible. Arranger-made virtual instrument tracks can be the baseline, but musicians are encouraged to record and add their own material as well. That helps reduce group-sync problems and makes practice more enjoyable. Apollo is useful for everyone, but especially helpful for performers who learn more by ear than by reading notation.
 
-- **Browser-only Web App** - No installation required, runs entirely in your browser
-- **IndexedDB Persistence** - Projects and audio stored locally with autosave
-- **Non-destructive Editing** - Crop, split, and adjust clips without altering source audio
-- **Recording** - Record vocals directly in the browser with punch & split model
-- **7 Export Presets** - Specialized exports for choir practice with exact gain/pan specifications
-- **Undo/Redo** - Full history that survives page refresh (last 100 actions)
-- **Project Portability** - Export/import projects as JSON or ZIP archives
+## What Apollo Does
 
-## Quick Start
+Apollo lets users:
 
-### Installation
+- create and manage rehearsal projects
+- import audio material and record new takes directly in the browser
+- edit clips non-destructively in a DAW-style timeline
+- build and export rehearsal-oriented practice mixes
+- switch between multiple preset-based mixes during playback
+- use a player view with a library, queues, and playlists for rehearsal use
 
-1. Clone or download this repository
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
+## Current Product Shape
 
-3. Start development server:
-   ```bash
-   npm run dev
-   ```
+Apollo is currently a hosted, server-backed application.
 
-4. Open browser to `http://localhost:3000`
+Today that means:
 
-### Building for Production
+- the frontend talks to an API and WebSocket backend
+- the backend stores structured data in Postgres
+- uploaded media is stored on the server filesystem / media volume
+- the browser still uses IndexedDB for local autosave, media caching, and pending sync support
 
-```bash
-npm run build
-npm run preview
+The main app surfaces are:
+
+- `HostedDashboard` for project management
+- `Editor` for DAW-style editing
+- `PlayerDashboard` for interactive playback and preset-based listening
+
+## Core Capabilities
+
+### DAW And Project Editing
+
+- create server-backed projects
+- import ZIP-based projects into the server
+- import audio files into tracks
+- record directly in the browser
+- edit clips in a timeline without destructively changing source media
+- organize tracks and groups
+- export preset-based rehearsal outputs
+
+### Interactive Player
+
+- browse a rehearsal library
+- create and manage playlists
+- queue and play preset-based mixes
+- switch listening context quickly during playback
+
+### Collaboration And Reliability
+
+- authenticated server sessions
+- realtime project sync over WebSocket
+- recording locks to avoid conflicting edits
+- local browser caching to support smoother hosted workflows
+
+## Tech Stack
+
+- React + Vite
+- Tailwind CSS
+- Zustand
+- Dexie / IndexedDB
+- Express
+- WebSocket (`ws`)
+- PostgreSQL
+- Web Audio API
+- JSZip
+
+## Repository Layout
+
+```text
+src/                 frontend app
+server/src/          backend API, WebSocket server, migrations
+docker-compose.yml   local full-stack Docker setup
+docs/WORKFLOW.md     recommended development workflow
+docs/old/            historical docs only, not source of truth
 ```
 
-## Server Hosting Mode (Self-Host / LAN)
+## Local Development
 
-Apollo now supports a hosted mode (Postgres + API + WebSocket + shared media storage) in addition to local IndexedDB mode.
+The recommended local workflow is:
 
-### Start Full Hosted Stack (Docker Compose)
+1. install dependencies
+2. run Postgres in Docker
+3. run backend and frontend with npm
+4. use Docker only as a final smoke test before pushing
 
-```bash
-npm run dev:full
-```
-
-Services:
-- `web` at `http://localhost:3000`
-- `api` at `http://localhost:8787`
-- `db` Postgres at `localhost:5432`
-
-Default admin credentials (change immediately in `docker-compose.yml` / env):
-- Username: `admin`
-- Password: `changemechangeme`
-
-### Frontend Env for Direct API (non-proxied dev)
-
-Create `.env` from `.env.example`:
+### 1. Install Dependencies
 
 ```bash
-cp .env.example .env
+npm install
 ```
 
-Then run frontend dev server:
-
-```bash
-npm run dev
-```
-
-### Backend Env (standalone API run)
-
-Create `server/.env` from `server/.env.example`:
+### 2. Create Backend Env
 
 ```bash
 cp server/.env.example server/.env
 ```
 
-Then run:
+The backend requires at least:
+
+- `DATABASE_URL`
+- `JWT_ACCESS_SECRET`
+- `JWT_REFRESH_SECRET`
+
+The example env points the backend at a local Postgres instance on `localhost:5432`.
+
+### 3. Start Only The Database
+
+```bash
+docker compose up -d db
+```
+
+### 4. Start The Backend
 
 ```bash
 npm run dev:server
 ```
 
-### Backup / Restore (Docker stack)
+### 5. Start The Frontend
 
 ```bash
-bash server/scripts/backup.sh
-bash server/scripts/restore.sh ./backups/<timestamp>
+npm run dev:https
 ```
 
-## Tech Stack
+### 6. Build Before Commit Or Push
 
-- **Framework:** React 18 + Vite
-- **Styling:** Tailwind CSS
-- **Icons:** Lucide React
-- **State:** Zustand
-- **Waveforms:** wavesurfer.js
-- **Audio:** Web Audio API (44.1 kHz, 32-bit float)
-- **Storage:** IndexedDB (Dexie.js)
-
-## Project Structure
-
-```
-src/
-├── components/      # React components
-│   ├── Dashboard.jsx    # Project dashboard
-│   └── Editor.jsx       # Main editor (Phase 1+)
-├── lib/            # Core libraries
-│   └── db.js           # IndexedDB wrapper (Dexie)
-├── store/          # State management
-│   └── useStore.js     # Zustand store
-├── types/          # Data models
-│   └── project.js      # Project schema & types
-├── utils/          # Utility functions
-│   └── audio.js        # Audio math (volume/pan/etc)
-├── App.jsx         # Root component
-├── main.jsx        # Entry point
-└── index.css       # Global styles
+```bash
+npm run build
 ```
 
-## Usage
+### 7. Do A Full Docker Smoke Test Before Push
 
-### Creating a Project
+Stop the npm frontend/backend first, then run:
 
-1. Click "New Project" on dashboard
-2. Enter project name
-3. Import audio files (WAV, MP3, or FLAC)
-4. Assign track roles (instrument, lead, choir parts)
-5. Edit, record, and export
-
-### Track Roles
-
-Tracks must be assigned one of these roles:
-- `instrument` - Instrumental backing tracks
-- `lead` - Lead vocal tracks
-- `choir-part-1` through `choir-part-5` - Individual choir parts
-- `other` - Miscellaneous tracks
-
-### Volume & Pan Controls
-
-- **Volume:** Slider 0-100 maps to -60dB to 0dB
-  - 0 = -60dB (near silence)
-  - 100 = 0dB (unity gain)
-- **Pan:** Slider -100 to +100 using equal-power panning law
-
-### Keyboard Shortcuts
-
-- `Space` - Play/Pause
-- `R` - Record
-- `Ctrl/Cmd + Z` - Undo
-- `Ctrl/Cmd + Y` - Redo
-
-### Export Presets
-
-1. **Instrumental** - Instrument tracks only
-2. **All** - All tracks (leads +3dB)
-3. **Lead** - Lead + instrumental
-4. **Leads Separate** - One WAV per lead (+6dB target, others -3dB)
-5. **Only Whole Choir** - Choir tracks only
-6. **Separate Choir Parts (practice)** - Target +6dB/+30 pan, others -6dB/-30 pan
-7. **Separate Choir Parts Omitted** - Target muted, others normal
-
-All exports are 44.1kHz, 16-bit PCM WAV files.
-
-## Data Model
-
-Projects are stored as JSON with this structure:
-
-```json
-{
-  "version": "1.0.0",
-  "projectId": "uuid",
-  "projectName": "string",
-  "sampleRate": 44100,
-  "masterVolume": 0,
-  "tracks": [
-    {
-      "id": "uuid",
-      "name": "Tenor",
-      "role": "choir-part-1",
-      "locked": true,
-      "volume": 85,
-      "pan": 0,
-      "muted": false,
-      "soloed": false,
-      "clips": [...]
-    }
-  ],
-  "loop": { "enabled": false, "startMs": 0, "endMs": 0 },
-  "undoStackSize": 100
-}
+```bash
+npm run dev:full
 ```
 
-**All time values are in milliseconds.**
+For the fuller explanation of when to use npm vs Docker, read [`docs/WORKFLOW.md`](/Users/johan/PycharmProjects/Apollo/docs/WORKFLOW.md).
 
-## Browser Compatibility
+## Full Docker Stack
 
-Requires modern browser with:
-- Web Audio API
-- IndexedDB
-- MediaDevices API (for recording)
-- ES2020+ support
+For a production-like local run, Apollo includes a Docker Compose stack with:
 
-Tested on Chrome 90+, Firefox 88+, Safari 14+, Edge 90+
+- `db` for PostgreSQL
+- `api` for the backend
+- `web` for the built frontend and proxy layer
 
-## Implementation Status
+Start it with:
 
-### ✅ **ALL PHASES COMPLETE - MVP READY**
+```bash
+npm run dev:full
+```
 
-- ✅ **Phase 0 - Setup** (Complete)
-  - Project scaffold
-  - IndexedDB wrapper
-  - Zustand store
-  - Basic dashboard
-  
-- ✅ **Phase 1 - Core Import & Playback** (Complete)
-  - File import with drag/drop
-  - Audio decoding and resampling
-  - Track list with controls
-  - Basic playback engine
-  - Keyboard shortcuts
-  
-- ✅ **Phase 2 - Timeline & Editing** (Complete)
-  - Timeline visualization with wavesurfer.js
-  - Waveform rendering
-  - Clip editing (move, crop, gain drag)
-  - Copy/paste/duplicate/delete
-  - Timeline scrubbing
-  - Zoom controls
-  - Multi-clip playback
-  
-- ✅ **Phase 3 - Recording & Export** (Complete)
-  - Recording via MediaDevices API
-  - All 7 export presets
-  - WAV 16-bit PCM output
-  - Project portability (JSON + ZIP)
-  - Cross-machine compatibility
+Default example credentials in the checked-in env/docker config are:
 
-**Apollo is production-ready for creating choir practice files.**
+- username: `admin`
+- password: `changemechangeme`
 
-See `IMPLEMENTATION.md` for technical details and `SPEC_CHANGES.md` for any deviations from spec.
+Change secrets and default credentials before any real deployment.
 
----
+## Verification
 
-## 🤖 Working with LLMs on This Project
+Useful commands:
 
-**Need to make changes using an LLM?** We've created comprehensive guides:
+```bash
+npm run build
+npm run dev:full
+```
 
-- **[LLM_CONTEXT.md](docs/LLM_CONTEXT.md)** ⭐ - Paste this at the start of every new chat
-- **[PROMPT_TEMPLATES.md](docs/old/PROMPT_TEMPLATES.md)** - Ready-to-use prompt examples  
-- **[WORKING_WITH_LLMS.md](docs/WORKING_WITH_LLMS.md)** - Complete workflow guide
-
-**Quick start:** Start a fresh chat, paste `LLM_CONTEXT.md`, then describe what you need. This is **30-50x cheaper** than continuing long conversations and gives better results.
-
-See the [parent directory README](docs/README_LLM_GUIDE.md) for more details.
+`npm test` exists, but the current Vitest setup still needs `jsdom` before that command is reliable in this repo.
 
 ## License
 
 MIT
-
-## Acknowledgments
-
-Built according to the Apollo specification v1.0
