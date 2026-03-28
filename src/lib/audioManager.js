@@ -9,6 +9,7 @@ import { SAMPLE_RATE } from '../types/project';
 import { getEffectiveTrackMix } from '../utils/trackTree';
 import { reportUserError } from '../utils/errorReporter';
 import { applySinkIdToMediaElement } from '../utils/playbackOutput';
+import { audioBufferToLocalWavBlob } from './mediaEncoding';
 
 /**
  * Audio Manager
@@ -115,60 +116,7 @@ class AudioManager {
    * Convert AudioBuffer to Blob (WAV format)
    */
   audioBufferToBlob(audioBuffer) {
-    const numberOfChannels = audioBuffer.numberOfChannels;
-    const length = audioBuffer.length;
-    const sampleRate = audioBuffer.sampleRate;
-    const bytesPerSample = 4; // 32-bit float
-
-    // Calculate sizes
-    const dataSize = numberOfChannels * length * bytesPerSample;
-    const bufferSize = 44 + dataSize;
-
-    // Create buffer
-    const buffer = new ArrayBuffer(bufferSize);
-    const view = new DataView(buffer);
-
-    // Write WAV header
-    let offset = 0;
-
-    // "RIFF" chunk descriptor
-    this.writeString(view, offset, 'RIFF'); offset += 4;
-    view.setUint32(offset, bufferSize - 8, true); offset += 4;
-    this.writeString(view, offset, 'WAVE'); offset += 4;
-
-    // "fmt " sub-chunk
-    this.writeString(view, offset, 'fmt '); offset += 4;
-    view.setUint32(offset, 16, true); offset += 4; // fmt chunk size
-    view.setUint16(offset, 3, true); offset += 2; // format = 3 (IEEE float)
-    view.setUint16(offset, numberOfChannels, true); offset += 2;
-    view.setUint32(offset, sampleRate, true); offset += 4;
-    view.setUint32(offset, sampleRate * numberOfChannels * bytesPerSample, true); offset += 4;
-    view.setUint16(offset, numberOfChannels * bytesPerSample, true); offset += 2;
-    view.setUint16(offset, bytesPerSample * 8, true); offset += 2;
-
-    // "data" sub-chunk
-    this.writeString(view, offset, 'data'); offset += 4;
-    view.setUint32(offset, dataSize, true); offset += 4;
-
-    // Write audio data (interleaved)
-    for (let i = 0; i < length; i++) {
-      for (let channel = 0; channel < numberOfChannels; channel++) {
-        const sample = audioBuffer.getChannelData(channel)[i];
-        view.setFloat32(offset, sample, true);
-        offset += 4;
-      }
-    }
-
-    return new Blob([buffer], { type: 'audio/wav' });
-  }
-
-  /**
-   * Helper to write string to DataView
-   */
-  writeString(view, offset, string) {
-    for (let i = 0; i < string.length; i++) {
-      view.setUint8(offset + i, string.charCodeAt(i));
-    }
+    return audioBufferToLocalWavBlob(audioBuffer);
   }
 
   /**

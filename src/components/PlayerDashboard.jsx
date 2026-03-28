@@ -65,6 +65,7 @@ import { normalizeExportSettings } from '../types/project';
 import { TRACK_ROLE_METRONOME } from '../utils/trackRoles';
 import { usePlaybackDeviceSettings } from '../hooks/usePlaybackDeviceSettings';
 import { applySinkIdToMediaElement } from '../utils/playbackOutput';
+import { cacheRemoteBlobAsLocalWav } from '../lib/mediaEncoding';
 
 const PRACTICE_FOCUS_STEPS = [
   'omitted',
@@ -181,6 +182,18 @@ function selectFromPrompt(label, options) {
   }
   const byValue = selectableOptions.find((option) => option.value === trimmed);
   return byValue ? byValue.value : null;
+}
+
+function createEphemeralMediaEntry(blobId, fileName, audioBuffer, blob) {
+  return {
+    blobId,
+    fileName,
+    sampleRate: audioBuffer.sampleRate,
+    durationMs: audioBuffer.duration * 1000,
+    channels: audioBuffer.numberOfChannels,
+    blob,
+    createdAt: Date.now(),
+  };
 }
 
 function buildDefaultMixName(projectLike, mixLabel) {
@@ -817,11 +830,22 @@ function PlayerDashboard({
           media = await getMediaBlob(blobId);
         } catch {
           const remoteBlob = await downloadMediaBlob(blobId, session);
-          const arrayBuffer = await remoteBlob.arrayBuffer();
-          const decodedBuffer = await audioManager.decodeAudioFile(arrayBuffer);
-          const fallbackName = `${blobId}.${remoteBlob.type?.split('/')[1] || 'bin'}`;
-          await storeMediaBlob(fallbackName, decodedBuffer, remoteBlob, blobId);
-          media = await getMediaBlob(blobId);
+          const cachedRemoteMedia = await cacheRemoteBlobAsLocalWav({
+            blobId,
+            remoteBlob,
+            decodeAudioFile: audioManager.decodeAudioFile.bind(audioManager),
+            storeMediaBlob,
+            fileName: `${blobId}.wav`,
+          });
+          audioManager.mediaCache.set(blobId, cachedRemoteMedia.audioBuffer);
+          media = cachedRemoteMedia.storedLocally
+            ? await getMediaBlob(blobId)
+            : createEphemeralMediaEntry(
+              blobId,
+              cachedRemoteMedia.localCacheFileName,
+              cachedRemoteMedia.audioBuffer,
+              cachedRemoteMedia.fallbackBlob
+            );
         }
         await audioManager.loadAudioBuffer(blobId, media.blob);
       }

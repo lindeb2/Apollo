@@ -7,6 +7,8 @@ import PlayerDashboard from './components/PlayerDashboard';
 import { audioManager } from './lib/audioManager';
 import { importFromZIP } from './lib/projectPortability';
 import { deleteProject as deleteCachedProject, getMediaBlob, saveRemoteProjectMeta, storeMediaBlob } from './lib/db';
+import { prepareMediaForImportSource } from './lib/mediaEncoding';
+import { registerAndUploadMediaBlob } from './lib/mediaUpload';
 import { normalizeProjectName } from './utils/naming';
 import { createId } from './utils/id';
 import {
@@ -21,9 +23,7 @@ import {
   logout,
   renameServerProject,
   updateServerProjectMusicalNumber,
-  registerMedia,
   saveServerSession,
-  uploadMedia,
 } from './lib/serverApi';
 
 function collectBlobIds(project) {
@@ -36,21 +36,41 @@ function collectBlobIds(project) {
   return Array.from(ids);
 }
 
-async function hashBlob(blob) {
-  const arrayBuffer = await blob.arrayBuffer();
-  if (globalThis?.crypto?.subtle?.digest) {
-    const digest = await globalThis.crypto.subtle.digest('SHA-256', arrayBuffer);
-    return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, '0')).join('');
+function remapProjectBlobIds(project, idMap) {
+  if (!project || typeof project !== 'object' || !idMap || idMap.size === 0) {
+    return project;
   }
 
-  // Fallback for non-secure contexts (e.g. LAN http) where SubtleCrypto is unavailable.
-  const bytes = new Uint8Array(arrayBuffer);
-  let hash = 2166136261;
-  for (let i = 0; i < bytes.length; i += 1) {
-    hash ^= bytes[i];
-    hash = Math.imul(hash, 16777619);
+  let changed = false;
+  const nextTracks = (project.tracks || []).map((track) => {
+    let trackChanged = false;
+    const nextClips = (track.clips || []).map((clip) => {
+      const mappedBlobId = idMap.get(clip?.blobId);
+      if (!mappedBlobId || mappedBlobId === clip?.blobId) {
+        return clip;
+      }
+      trackChanged = true;
+      changed = true;
+      return {
+        ...clip,
+        blobId: mappedBlobId,
+      };
+    });
+    if (!trackChanged) return track;
+    return {
+      ...track,
+      clips: nextClips,
+    };
+  });
+
+  if (!changed) {
+    return project;
   }
-  return `fnv1a-${(hash >>> 0).toString(16)}`;
+
+  return {
+    ...project,
+    tracks: nextTracks,
+  };
 }
 
 function App() {
@@ -188,36 +208,45 @@ function App() {
         || normalizeProjectName(file.name.replace(/\.zip$/i, ''))
         || 'Imported Project';
       const importedProjectId = createId();
-      const snapshot = {
+      let snapshot = {
         ...importedProject,
         projectId: importedProjectId,
         projectName: importedName,
       };
 
-      const created = await createServerProject(importedName, serverSession, {
+      const blobIds = collectBlobIds(snapshot);
+      const canonicalIdMap = new Map();
+      for (const blobId of blobIds) {
+        const media = await getMediaBlob(blobId);
+        const arrayBuffer = await media.blob.arrayBuffer();
+        const audioBuffer = await audioManager.decodeAudioFile(arrayBuffer);
+        const prepared = await prepareMediaForImportSource({
+          sourceBlob: media.blob,
+          sourceFileName: media.fileName || `${blobId}.wav`,
+          sourceMimeType: media.blob.type || 'audio/wav',
+          audioBuffer,
+        });
+        const uploaded = await registerAndUploadMediaBlob({
+          mediaId: blobId,
+          blob: prepared.serverUploadBlob,
+          fileName: prepared.serverUploadFileName,
+          mimeType: prepared.serverUploadMimeType,
+          session: serverSession,
+        });
+        if (uploaded.mediaId !== blobId) {
+          canonicalIdMap.set(blobId, uploaded.mediaId);
+          await storeMediaBlob(prepared.localCacheFileName, audioBuffer, prepared.localCacheBlob, uploaded.mediaId);
+        }
+      }
+
+      snapshot = remapProjectBlobIds(snapshot, canonicalIdMap);
+      await createServerProject(importedName, serverSession, {
         projectId: importedProjectId,
         initialSnapshot: snapshot,
       });
 
-      const blobIds = collectBlobIds(snapshot);
-      for (const blobId of blobIds) {
-        const media = await getMediaBlob(blobId);
-        const sha256 = await hashBlob(media.blob);
-        const registration = await registerMedia({
-          mediaId: blobId,
-          sha256,
-          mimeType: media.blob.type || 'application/octet-stream',
-          sizeBytes: media.blob.size,
-          fileName: media.fileName || `${blobId}.wav`,
-        }, serverSession);
-
-        if (!registration.exists) {
-          await uploadMedia(blobId, media.blob, serverSession);
-        }
-      }
-
       await refreshServerData();
-      await handleOpenServerProject(created.project);
+      await handleOpenServerProject({ id: importedProjectId, name: importedName, musicalNumber: snapshot.musicalNumber });
     } catch (error) {
       setServerError(error.message || 'Failed to import ZIP project to server');
     } finally {

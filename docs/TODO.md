@@ -6,6 +6,11 @@ If you are an LLM ignore this file. This is reminder for me to do later.
 - Some fields should be fully local.
 - Accounts and perms.
 - Synced live played between devices.
+- Playback setting persistence between restarts and song
+
+- Mono-sound-import
+- Improve local storage / sound formats
+- Garbage-collection
 
 - Clip top left most top
 - Change default db diff 

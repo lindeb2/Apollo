@@ -50,8 +50,7 @@ npm run dev:full
 > If continuing working:
 > 
 > ```bash
-> docker compose stop web
-> docker compose stop api
+> docker compose stop web api
 > ```
 
 

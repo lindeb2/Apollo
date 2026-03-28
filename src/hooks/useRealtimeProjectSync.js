@@ -9,27 +9,9 @@ import {
   saveRemoteProjectMeta,
   upsertPendingSyncOp,
 } from '../lib/db';
-import {
-  registerMedia,
-  uploadMedia,
-} from '../lib/serverApi';
 import { createId } from '../utils/id';
-
-async function hashBlob(blob) {
-  const arrayBuffer = await blob.arrayBuffer();
-  if (globalThis?.crypto?.subtle?.digest) {
-    const digest = await globalThis.crypto.subtle.digest('SHA-256', arrayBuffer);
-    return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
-  }
-
-  const bytes = new Uint8Array(arrayBuffer);
-  let hash = 2166136261;
-  for (let i = 0; i < bytes.length; i += 1) {
-    hash ^= bytes[i];
-    hash = Math.imul(hash, 16777619);
-  }
-  return `fnv1a-${(hash >>> 0).toString(16)}`;
-}
+import { resolveMedia } from '../lib/serverApi';
+import { registerAndUploadMediaBlob } from '../lib/mediaUpload';
 
 function collectBlobIds(project) {
   const ids = new Set();
@@ -268,6 +250,14 @@ export default function useRealtimeProjectSync({
     if (!session) return currentProject;
 
     const blobIds = collectBlobIds(currentProject);
+    const unresolvedBlobIds = blobIds.filter((blobId) => !uploadedBlobIdsRef.current.has(blobId));
+    if (unresolvedBlobIds.length > 0) {
+      const resolution = await resolveMedia(unresolvedBlobIds, session);
+      for (const mediaId of resolution?.found || []) {
+        uploadedBlobIdsRef.current.add(String(mediaId));
+      }
+    }
+
     const canonicalByBlobId = new Map();
     for (const blobId of blobIds) {
       if (uploadedBlobIdsRef.current.has(blobId)) continue;
@@ -283,22 +273,17 @@ export default function useRealtimeProjectSync({
         }
         throw error;
       }
-      const sha256 = await hashBlob(media.blob);
-      const registration = await registerMedia({
+      const uploaded = await registerAndUploadMediaBlob({
         mediaId: blobId,
-        sha256,
-        mimeType: media.blob.type || 'application/octet-stream',
-        sizeBytes: media.blob.size,
+        blob: media.blob,
         fileName: media.fileName || blobId,
-      }, session);
-      const canonicalMediaId = String(registration?.mediaId || blobId);
+        mimeType: media.blob.type || 'application/octet-stream',
+        session,
+      });
+      const canonicalMediaId = String(uploaded?.mediaId || blobId);
       if (canonicalMediaId !== blobId) {
         canonicalByBlobId.set(blobId, canonicalMediaId);
         uploadedBlobIdsRef.current.add(canonicalMediaId);
-      }
-
-      if (!registration.exists) {
-        await uploadMedia(blobId, media.blob, session);
       }
 
       uploadedBlobIdsRef.current.add(blobId);
@@ -352,6 +337,9 @@ export default function useRealtimeProjectSync({
       }
 
       applyingRemoteRef.current = true;
+      collectBlobIds(snapshot).forEach((blobId) => {
+        uploadedBlobIdsRef.current.add(blobId);
+      });
       const snapshotString = JSON.stringify(snapshot);
       lastSyncedSnapshotRef.current = snapshotString;
       updateProject(snapshot, 'Apply remote sync update', {

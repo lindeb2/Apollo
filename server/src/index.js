@@ -2214,7 +2214,7 @@ app.get('/api/media/:mediaId', requireAuth, async (req, res) => {
     }
 
     const stat = await fs.stat(media.path);
-    const totalSize = Number(media.sizeBytes || stat.size || 0);
+    const totalSize = Number(stat.size || 0);
 
     const range = req.headers.range;
     if (range) {

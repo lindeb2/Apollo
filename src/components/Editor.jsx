@@ -22,6 +22,13 @@ import useRealtimeProjectSync from '../hooks/useRealtimeProjectSync';
 import { downloadMediaBlob, forceCheckpoint } from '../lib/serverApi';
 import { createId } from '../utils/id';
 import {
+  cacheRemoteBlobAsLocalWav,
+  prepareMediaForImportSource,
+  prepareRecordedMedia,
+  SUPPORTED_IMPORT_EXTENSIONS,
+} from '../lib/mediaEncoding';
+import { registerAndUploadMediaBlob } from '../lib/mediaUpload';
+import {
   GROUP_ROLE_CHOIRS,
   isChoirRole,
   isGroupParentRole,
@@ -46,7 +53,6 @@ import {
 } from '../utils/trackTree';
 import { usePlaybackDeviceSettings } from '../hooks/usePlaybackDeviceSettings';
 
-const SUPPORTED_IMPORT_EXTENSIONS = new Set(['wav', 'mp3', 'flac']);
 const TRACK_CONFIG_COLUMN_WIDTH_PX = 384;
 const VALUE_ANIMATION_DURATION_MS = 800;
 
@@ -126,7 +132,6 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   const isTrackListScrollingRef = useRef(false);
   const isTimelineScrollingRef = useRef(false);
   const timelineRowsScrollAreaRef = useRef(null);
-  const missingRemoteBlobIdsRef = useRef(new Set());
   const recordingLockTrackIdRef = useRef(null);
   const lockByTrackIdRef = useRef({});
   const isHostedSession = Boolean(remoteSession?.session && remoteSession?.serverProjectId);
@@ -156,6 +161,69 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     outputChannelCount,
     playbackPanLawDb,
   ]);
+
+  const createEphemeralMediaEntry = useCallback((blobId, fileName, audioBuffer, blob) => ({
+    blobId,
+    fileName,
+    sampleRate: audioBuffer.sampleRate,
+    durationMs: audioBuffer.duration * 1000,
+    channels: audioBuffer.numberOfChannels,
+    blob,
+    createdAt: Date.now(),
+  }), []);
+
+  const persistImportedMedia = useCallback(async (file, audioBuffer) => {
+    const prepared = await prepareMediaForImportSource({
+      sourceBlob: file,
+      sourceFileName: file?.name || 'audio.wav',
+      sourceMimeType: file?.type || '',
+      audioBuffer,
+    });
+
+    let blobId = createId();
+    if (isHostedSession) {
+      const uploaded = await registerAndUploadMediaBlob({
+        mediaId: blobId,
+        blob: prepared.serverUploadBlob,
+        fileName: prepared.serverUploadFileName,
+        mimeType: prepared.serverUploadMimeType,
+        session: remoteSession.session,
+      });
+      blobId = uploaded.mediaId;
+    }
+
+    await storeMediaBlob(prepared.localCacheFileName, audioBuffer, prepared.localCacheBlob, blobId);
+    audioManager.mediaCache.set(blobId, audioBuffer);
+
+    return {
+      blobId,
+      durationMs: audioBuffer.duration * 1000,
+    };
+  }, [isHostedSession, remoteSession?.session]);
+
+  const persistRecordedMedia = useCallback(async (audioBuffer, fileNameBase) => {
+    const prepared = await prepareRecordedMedia({ audioBuffer, fileNameBase });
+
+    let blobId = createId();
+    if (isHostedSession) {
+      const uploaded = await registerAndUploadMediaBlob({
+        mediaId: blobId,
+        blob: prepared.serverUploadBlob,
+        fileName: prepared.serverUploadFileName,
+        mimeType: prepared.serverUploadMimeType,
+        session: remoteSession.session,
+      });
+      blobId = uploaded.mediaId;
+    }
+
+    await storeMediaBlob(prepared.localCacheFileName, audioBuffer, prepared.localCacheBlob, blobId);
+    audioManager.mediaCache.set(blobId, audioBuffer);
+
+    return {
+      blobId,
+      durationMs: audioBuffer.duration * 1000,
+    };
+  }, [isHostedSession, remoteSession?.session]);
 
   const {
     connected: syncConnected,
@@ -333,27 +401,42 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
           try {
             media = await getMediaBlob(blobId);
           } catch (localError) {
-            if (!isHostedSession || missingRemoteBlobIdsRef.current.has(blobId)) {
+            if (!isHostedSession) {
               throw localError;
             }
 
             try {
               const remoteBlob = await downloadMediaBlob(blobId, remoteSession.session);
-              const remoteArrayBuffer = await remoteBlob.arrayBuffer();
-              const decodedBuffer = await audioManager.decodeAudioFile(remoteArrayBuffer);
-              const fallbackFileName = `${blobId}.${remoteBlob.type?.split('/')[1] || 'bin'}`;
-              await storeMediaBlob(fallbackFileName, decodedBuffer, remoteBlob, blobId);
-              media = await getMediaBlob(blobId);
-              missingRemoteBlobIdsRef.current.delete(blobId);
+              const cachedRemoteMedia = await cacheRemoteBlobAsLocalWav({
+                blobId,
+                remoteBlob,
+                decodeAudioFile: audioManager.decodeAudioFile.bind(audioManager),
+                storeMediaBlob,
+                fileName: `${blobId}.wav`,
+              });
+              audioManager.mediaCache.set(blobId, cachedRemoteMedia.audioBuffer);
+              if (cachedRemoteMedia.storedLocally) {
+                media = await getMediaBlob(blobId);
+              } else {
+                media = createEphemeralMediaEntry(
+                  blobId,
+                  cachedRemoteMedia.localCacheFileName,
+                  cachedRemoteMedia.audioBuffer,
+                  cachedRemoteMedia.fallbackBlob
+                );
+                reportUserError(
+                  'Failed to persist downloaded media locally. Using in-memory audio for this session.',
+                  cachedRemoteMedia.storeError,
+                  { onceKey: `editor:cache-remote-media:${blobId}` }
+                );
+              }
             } catch (remoteError) {
-              missingRemoteBlobIdsRef.current.add(blobId);
               throw remoteError;
             }
           }
 
           await audioManager.loadAudioBuffer(blobId, media.blob);
           newMediaMap.set(blobId, media);
-          console.log(`Loaded audio buffer for ${blobId}`);
         } catch (error) {
           reportUserError(
             buildBlobReferenceErrorMessage(currentProject, blobId, 'clip audio'),
@@ -375,7 +458,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       }
     }
     setMediaMap(newMediaMap);
-  }, [isHostedSession, remoteSession?.session]);
+  }, [createEphemeralMediaEntry, isHostedSession, remoteSession?.session]);
 
   // Initialize audio context on mount
   useEffect(() => {
@@ -843,10 +926,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       // Process the audio
       const arrayBuffer = await result.blob.arrayBuffer();
       const audioBuffer = await audioManager.decodeAudioFile(arrayBuffer);
-      const wavBlob = audioManager.audioBufferToBlob(audioBuffer);
-      const fileName = `recording_segment_${Date.now()}.wav`;
-      const blobId = await storeMediaBlob(fileName, audioBuffer, wavBlob);
-      audioManager.mediaCache.set(blobId, audioBuffer);
+      const { blobId } = await persistRecordedMedia(audioBuffer, `recording_segment_${Date.now()}`);
       
       // Create clip for this segment
       const duration = audioBuffer.duration * 1000;
@@ -965,13 +1045,10 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       
       const arrayBuffer = await result.blob.arrayBuffer();
       const audioBuffer = await audioManager.decodeAudioFile(arrayBuffer);
-      const wavBlob = audioManager.audioBufferToBlob(audioBuffer);
-      const fileName = `recording_final_${Date.now()}.wav`;
-      const blobId = await storeMediaBlob(fileName, audioBuffer, wavBlob);
-
-      audioManager.mediaCache.set(blobId, audioBuffer);
-
-      const totalDurationMs = audioBuffer.duration * 1000;
+      const { blobId, durationMs: totalDurationMs } = await persistRecordedMedia(
+        audioBuffer,
+        `recording_final_${Date.now()}`
+      );
 
       // Create clip for final segment
       const finalClip = createClip(blobId, recordingStart, totalDurationMs);
@@ -1169,15 +1246,10 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
 
         console.log(`Decoded ${file.name}: ${audioBuffer.duration.toFixed(2)}s, ${audioBuffer.sampleRate}Hz`);
 
-        const blob = audioManager.audioBufferToBlob(audioBuffer);
-        const blobId = await storeMediaBlob(file.name, audioBuffer, blob);
-
-        audioManager.mediaCache.set(blobId, audioBuffer);
+        const { blobId, durationMs } = await persistImportedMedia(file, audioBuffer);
 
         const trackName = file.name.replace(/\.[^/.]+$/, '');
         const track = createTrack(trackName, role || TRACK_ROLES.INSTRUMENT);
-
-        const durationMs = audioBuffer.duration * 1000;
         const clip = createClip(blobId, 0, durationMs);
 
         track.clips.push(clip);
@@ -1220,13 +1292,11 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       try {
         const arrayBuffer = await file.arrayBuffer();
         const audioBuffer = await audioManager.decodeAudioFile(arrayBuffer);
-        const blob = audioManager.audioBufferToBlob(audioBuffer);
-        const blobId = await storeMediaBlob(file.name, audioBuffer, blob);
-        audioManager.mediaCache.set(blobId, audioBuffer);
+        const { blobId, durationMs } = await persistImportedMedia(file, audioBuffer);
         importedFiles.push({
           name: file.name.replace(/\.[^/.]+$/, ''),
           blobId,
-          durationMs: audioBuffer.duration * 1000,
+          durationMs,
         });
       } catch (error) {
         console.error(`Failed to import ${file.name}:`, error);
@@ -1330,13 +1400,11 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       try {
         const arrayBuffer = await file.arrayBuffer();
         const audioBuffer = await audioManager.decodeAudioFile(arrayBuffer);
-        const blob = audioManager.audioBufferToBlob(audioBuffer);
-        const blobId = await storeMediaBlob(file.name, audioBuffer, blob);
-        audioManager.mediaCache.set(blobId, audioBuffer);
+        const { blobId, durationMs } = await persistImportedMedia(file, audioBuffer);
         importedFiles.push({
           name: file.name.replace(/\.[^/.]+$/, ''),
           blobId,
-          durationMs: audioBuffer.duration * 1000,
+          durationMs,
         });
       } catch (error) {
         console.error(`Failed to import ${file.name}:`, error);

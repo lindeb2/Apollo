@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Download, FileAudio, X } from 'lucide-react';
 import { TRACK_ROLES } from '../types/project';
+import { SUPPORTED_IMPORT_ACCEPT } from '../lib/mediaEncoding';
 
 function FileImport({ onImport, onClose, manualChoirPartsEnabled = false }) {
   const [files, setFiles] = useState([]);
@@ -24,7 +25,7 @@ function FileImport({ onImport, onClose, manualChoirPartsEnabled = false }) {
 
     const droppedFiles = Array.from(e.dataTransfer.files).filter(file => {
       const ext = file.name.toLowerCase().split('.').pop();
-      return ['wav', 'mp3', 'flac'].includes(ext);
+      return ['wav', 'mp3', 'flac', 'ogg'].includes(ext);
     });
 
     handleFiles(droppedFiles);
@@ -138,12 +139,12 @@ function FileImport({ onImport, onClose, manualChoirPartsEnabled = false }) {
               <input
                 type="file"
                 multiple
-                accept=".wav,.mp3,.flac,audio/wav,audio/mpeg,audio/flac"
+                accept={SUPPORTED_IMPORT_ACCEPT}
                 onChange={handleFileInput}
                 className="hidden"
               />
             </label>
-            <p className="text-xs text-gray-500 mt-4">Supported: WAV, MP3, FLAC</p>
+            <p className="text-xs text-gray-500 mt-4">Supported: WAV, FLAC, MP3, OGG/Vorbis</p>
           </div>
 
           {/* File List */}
