@@ -1,6 +1,5 @@
 import fs from 'fs/promises';
 import fssync from 'fs';
-import path from 'path';
 import { randomUUID } from 'crypto';
 import http from 'http';
 import express from 'express';
@@ -11,6 +10,7 @@ import { WebSocketServer } from 'ws';
 import bcrypt from 'bcryptjs';
 
 import { config } from './config.js';
+import { buildStoredMediaPath, resolveMediaPath } from './mediaPaths.js';
 import { pool, runMigrations, ensureDefaultAdmin, closeDb } from './db.js';
 import {
   authenticateCredentials,
@@ -880,7 +880,7 @@ app.delete('/api/projects/:id', requireAuth, async (req, res) => {
   await Promise.all(orphanMedia.map(async (row) => {
     if (!row?.path) return;
     try {
-      await fs.unlink(row.path);
+      await fs.unlink(resolveMediaPath(row.path));
     } catch {
       // ignore missing file/delete errors
     }
@@ -2150,7 +2150,7 @@ app.post('/api/media/register', requireAuth, async (req, res) => {
       return;
     }
 
-    const diskPath = path.join(config.mediaRoot, `${mediaId}_${fileName}`);
+    const diskPath = buildStoredMediaPath(mediaId, fileName);
     await pool.query(
       `INSERT INTO media_objects(id, sha256, mime_type, size_bytes, path, created_by)
        VALUES($1, $2, $3, $4, $5, $6)`,
@@ -2192,7 +2192,8 @@ app.put('/api/media/:mediaId/content', requireAuth, express.raw({ type: '*/*', l
       return;
     }
 
-    await fs.writeFile(record.path, buffer);
+    const diskPath = resolveMediaPath(record.path);
+    await fs.writeFile(diskPath, buffer);
     res.json({ ok: true, mediaId });
   } catch (error) {
     console.error(error);
@@ -2216,12 +2217,13 @@ app.get('/api/media/:mediaId', requireAuth, async (req, res) => {
     }
 
     const media = result.rows[0];
-    if (!fssync.existsSync(media.path)) {
+    const diskPath = resolveMediaPath(media.path);
+    if (!fssync.existsSync(diskPath)) {
       res.status(404).json({ error: 'Media file is missing on disk' });
       return;
     }
 
-    const stat = await fs.stat(media.path);
+    const stat = await fs.stat(diskPath);
     const totalSize = Number(stat.size || 0);
 
     const range = req.headers.range;
@@ -2243,13 +2245,13 @@ app.get('/api/media/:mediaId', requireAuth, async (req, res) => {
       res.setHeader('Accept-Ranges', 'bytes');
       res.setHeader('Content-Length', end - start + 1);
       res.setHeader('Content-Range', `bytes ${start}-${end}/${totalSize}`);
-      fssync.createReadStream(media.path, { start, end }).pipe(res);
+      fssync.createReadStream(diskPath, { start, end }).pipe(res);
       return;
     }
 
     res.setHeader('Content-Type', media.mimeType || 'application/octet-stream');
     res.setHeader('Content-Length', totalSize);
-    fssync.createReadStream(media.path).pipe(res);
+    fssync.createReadStream(diskPath).pipe(res);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to stream media' });

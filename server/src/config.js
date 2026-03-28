@@ -9,6 +9,12 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 actionValidate();
 
+function resolveConfigPath(value, fallback) {
+  const target = value || fallback;
+  if (path.isAbsolute(target)) return target;
+  return path.resolve(path.join(__dirname, '..'), target);
+}
+
 function actionValidate() {
   const required = ['DATABASE_URL', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'];
   const missing = required.filter((key) => !process.env[key]);
@@ -16,6 +22,9 @@ function actionValidate() {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
   }
 }
+
+const mediaRoot = resolveConfigPath(process.env.MEDIA_ROOT, 'media');
+const mediaDbRoot = resolveConfigPath(process.env.MEDIA_DB_ROOT, mediaRoot);
 
 export const config = {
   port: Number(process.env.PORT || 8787),
@@ -25,7 +34,8 @@ export const config = {
   accessTokenTtl: process.env.ACCESS_TOKEN_TTL || '15m',
   refreshTokenTtlDays: Number(process.env.REFRESH_TOKEN_TTL_DAYS || 7),
   corsOrigin: process.env.CORS_ORIGIN || '*',
-  mediaRoot: process.env.MEDIA_ROOT || path.join(__dirname, '..', 'media'),
+  mediaRoot,
+  mediaDbRoot,
   maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES || 524288000),
   defaultAdminUsername: process.env.DEFAULT_ADMIN_USERNAME || 'admin',
   defaultAdminPassword: process.env.DEFAULT_ADMIN_PASSWORD || 'changemechangeme',
