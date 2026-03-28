@@ -67,6 +67,7 @@ import { TRACK_ROLE_METRONOME } from '../utils/trackRoles';
 import { usePlaybackDeviceSettings } from '../hooks/usePlaybackDeviceSettings';
 import { applySinkIdToMediaElement } from '../utils/playbackOutput';
 import { cacheRemoteBlobAsLocalWav } from '../lib/mediaEncoding';
+import { reportUserError } from '../utils/errorReporter';
 
 const PRACTICE_FOCUS_STEPS = [
   'omitted',
@@ -98,6 +99,30 @@ const PRACTICE_FOCUS_DEFAULT_INDEX = PRACTICE_FOCUS_STEPS.findIndex((step) => st
 const PRACTICE_FOCUS_NUMERIC_STEPS = PRACTICE_FOCUS_STEPS.filter((step) => typeof step === 'number');
 const PAN_TRACK_WIDTH_PX = 160;
 const PAN_INNER_TRACK_WIDTH_PX = 134;
+const APP_SETTINGS_STORAGE_KEY = 'apollo.settings';
+const DEFAULT_PLAYER_PLAYBACK_PREFERENCES = {
+  practicePanRange: 100,
+  practiceFocusControl: PRACTICE_FOCUS_DEFAULT_INDEX,
+  metronomeMuted: false,
+};
+
+function normalizePlayerPlaybackPreferences(settings = {}) {
+  const practicePanRange = Number(
+    settings.playerPracticePanRange ?? settings.practicePanRange
+  );
+  const practiceFocusControl = Number(
+    settings.playerPracticeFocusControl ?? settings.practiceFocusControl
+  );
+  return {
+    practicePanRange: Number.isFinite(practicePanRange)
+      ? Math.max(0, Math.min(200, Math.round(practicePanRange)))
+      : DEFAULT_PLAYER_PLAYBACK_PREFERENCES.practicePanRange,
+    practiceFocusControl: Number.isFinite(practiceFocusControl)
+      ? Math.max(PRACTICE_FOCUS_MIN_INDEX, Math.min(PRACTICE_FOCUS_MAX_INDEX, Math.round(practiceFocusControl)))
+      : DEFAULT_PLAYER_PLAYBACK_PREFERENCES.practiceFocusControl,
+    metronomeMuted: settings.playerMetronomeMuted === true || settings.metronomeMuted === true,
+  };
+}
 
 function formatClock(seconds) {
   const safe = Math.max(0, Number(seconds) || 0);
@@ -162,12 +187,6 @@ function getSnapshotMetronomeTracks(snapshot) {
 
 function hasSnapshotMetronome(snapshot) {
   return getSnapshotMetronomeTracks(snapshot).length > 0;
-}
-
-function isSnapshotMetronomeMuted(snapshot) {
-  const metronomeTracks = getSnapshotMetronomeTracks(snapshot);
-  if (!metronomeTracks.length) return false;
-  return metronomeTracks.every((track) => Boolean(track?.muted));
 }
 
 function withSnapshotMetronomeMuted(snapshot, muted) {
@@ -372,10 +391,11 @@ function PlayerDashboard({
   const [loopMode, setLoopMode] = useState(PLAYER_LOOP_MODES.OFF);
   const [nowPlayingLabel, setNowPlayingLabel] = useState('');
   const [playbackEngine, setPlaybackEngine] = useState('html');
-  const [practicePanRange, setPracticePanRange] = useState(100);
-  const [practiceFocusControl, setPracticeFocusControl] = useState(PRACTICE_FOCUS_DEFAULT_INDEX);
+  const [practicePanRange, setPracticePanRange] = useState(DEFAULT_PLAYER_PLAYBACK_PREFERENCES.practicePanRange);
+  const [practiceFocusControl, setPracticeFocusControl] = useState(DEFAULT_PLAYER_PLAYBACK_PREFERENCES.practiceFocusControl);
   const [hasRealtimeMetronome, setHasRealtimeMetronome] = useState(false);
-  const [isRealtimeMetronomeMuted, setIsRealtimeMetronomeMuted] = useState(false);
+  const [isRealtimeMetronomeMuted, setIsRealtimeMetronomeMuted] = useState(DEFAULT_PLAYER_PLAYBACK_PREFERENCES.metronomeMuted);
+  const [preferredMetronomeMuted, setPreferredMetronomeMuted] = useState(DEFAULT_PLAYER_PLAYBACK_PREFERENCES.metronomeMuted);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [mainPanelView, setMainPanelView] = useState('library');
   const [isLibraryCollapsed, setIsLibraryCollapsed] = useState(false);
@@ -404,6 +424,8 @@ function PlayerDashboard({
   const realtimeEndInFlightRef = useRef(false);
   const lastNonZeroVolumeRef = useRef(Math.max(5, volume));
   const playQueueItemRef = useRef(null);
+  const preferredMetronomeMutedRef = useRef(DEFAULT_PLAYER_PLAYBACK_PREFERENCES.metronomeMuted);
+  const hasHydratedPlayerPlaybackPreferencesRef = useRef(false);
   const profileMenuRef = useRef(null);
   const libraryCreateMenuRef = useRef(null);
   const libraryContextMenuRef = useRef(null);
@@ -664,6 +686,64 @@ function PlayerDashboard({
   }, [volume]);
 
   useEffect(() => {
+    preferredMetronomeMutedRef.current = preferredMetronomeMuted;
+  }, [preferredMetronomeMuted]);
+
+  useEffect(() => {
+    const saved = localStorage.getItem(APP_SETTINGS_STORAGE_KEY);
+    if (!saved) {
+      hasHydratedPlayerPlaybackPreferencesRef.current = true;
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(saved);
+      const normalized = normalizePlayerPlaybackPreferences(parsed);
+      setPracticePanRange(normalized.practicePanRange);
+      setPracticeFocusControl(normalized.practiceFocusControl);
+      setPreferredMetronomeMuted(normalized.metronomeMuted);
+      setIsRealtimeMetronomeMuted(normalized.metronomeMuted);
+    } catch (error) {
+      reportUserError(
+        'Failed to read player playback preferences from local storage. Defaults will be used.',
+        error,
+        { onceKey: 'player-dashboard:playback-preferences-parse' }
+      );
+    } finally {
+      hasHydratedPlayerPlaybackPreferencesRef.current = true;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hasHydratedPlayerPlaybackPreferencesRef.current) return;
+
+    let existing = {};
+    try {
+      existing = JSON.parse(localStorage.getItem(APP_SETTINGS_STORAGE_KEY) || '{}');
+    } catch (error) {
+      reportUserError(
+        'Failed to parse existing player playback preferences from local storage. They will be replaced.',
+        error,
+        { onceKey: 'player-dashboard:playback-preferences-merge-parse' }
+      );
+      existing = {};
+    }
+
+    const normalized = normalizePlayerPlaybackPreferences({
+      playerPracticePanRange: practicePanRange,
+      playerPracticeFocusControl: practiceFocusControl,
+      playerMetronomeMuted: preferredMetronomeMuted,
+    });
+
+    localStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify({
+      ...existing,
+      playerPracticePanRange: normalized.practicePanRange,
+      playerPracticeFocusControl: normalized.practiceFocusControl,
+      playerMetronomeMuted: normalized.metronomeMuted,
+    }));
+  }, [practiceFocusControl, practicePanRange, preferredMetronomeMuted]);
+
+  useEffect(() => {
     const handleDocumentClick = (event) => {
       if (!profileMenuRef.current?.contains(event.target)) {
         setProfileMenuOpen(false);
@@ -916,12 +996,14 @@ function PlayerDashboard({
       }
       setNowPlayingLabel(item.name || item.projectName || 'Mix');
 
+      const snapshotHasMetronome = hasSnapshotMetronome(snapshot);
+      const metronomeMuted = snapshotHasMetronome ? preferredMetronomeMutedRef.current : false;
+      const playbackSnapshot = withSnapshotMetronomeMuted(snapshot, metronomeMuted);
+      setHasRealtimeMetronome(snapshotHasMetronome);
+      setIsRealtimeMetronomeMuted(snapshotHasMetronome ? metronomeMuted : false);
+
       if (isPracticePresetId(item.presetId)) {
-        const metronomeMuted = isSnapshotMetronomeMuted(snapshot);
-        const playbackSnapshot = withSnapshotMetronomeMuted(snapshot, metronomeMuted);
         const durationMs = computeSnapshotDurationMs(snapshot);
-        setHasRealtimeMetronome(hasSnapshotMetronome(snapshot));
-        setIsRealtimeMetronomeMuted(metronomeMuted);
         await applyPlaybackOutputConfig();
         audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
         await audioManager.play(playbackSnapshot, 0, { useProjectMasterVolume: false });
@@ -938,10 +1020,6 @@ function PlayerDashboard({
         return;
       }
 
-      const metronomeMuted = isSnapshotMetronomeMuted(snapshot);
-      const playbackSnapshot = withSnapshotMetronomeMuted(snapshot, metronomeMuted);
-      setHasRealtimeMetronome(hasSnapshotMetronome(snapshot));
-      setIsRealtimeMetronomeMuted(metronomeMuted);
       realtimePlaybackRef.current = {
         project: playbackSnapshot,
         item,
@@ -1171,6 +1249,7 @@ function PlayerDashboard({
       ...current,
       project: nextProject,
     };
+    setPreferredMetronomeMuted(nextMuted);
     setIsRealtimeMetronomeMuted(nextMuted);
 
     try {
