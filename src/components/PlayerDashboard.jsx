@@ -41,6 +41,7 @@ import {
   fetchPlayerGlobalMixes,
   fetchPlayerMyDevice,
   fetchPlayerTuttiMixes,
+  reorderPlayerPlaylistItems,
   updatePlayerFolder,
   updatePlayerPlaylist,
   updateVirtualMix,
@@ -117,6 +118,26 @@ function pickRandomQueueIndex(currentIndex, totalCount) {
     candidate = (currentIndex + 1) % totalCount;
   }
   return candidate;
+}
+
+function isNoopPlaylistDropSlot(fromIndex, slotIndex) {
+  return slotIndex === fromIndex || slotIndex === fromIndex + 1;
+}
+
+function reorderPlaylistItems(items, fromIndex, slotIndex) {
+  if (!Array.isArray(items) || fromIndex < 0 || fromIndex >= items.length) {
+    return Array.isArray(items) ? items : [];
+  }
+  const nextItems = [...items];
+  const [movedItem] = nextItems.splice(fromIndex, 1);
+  if (!movedItem) return items;
+  const adjustedIndex = slotIndex > fromIndex ? slotIndex - 1 : slotIndex;
+  const targetIndex = Math.max(0, Math.min(nextItems.length, adjustedIndex));
+  nextItems.splice(targetIndex, 0, movedItem);
+  return nextItems.map((item, index) => ({
+    ...item,
+    orderIndex: index,
+  }));
 }
 
 function computeSnapshotDurationMs(snapshot) {
@@ -365,6 +386,8 @@ function PlayerDashboard({
   const [sliderDragTooltip, setSliderDragTooltip] = useState(null);
   const [sliderEditTooltip, setSliderEditTooltip] = useState(null);
   const [mixDialog, setMixDialog] = useState(null);
+  const [playlistDragState, setPlaylistDragState] = useState(null);
+  const [playlistReorderPendingId, setPlaylistReorderPendingId] = useState(null);
 
   const audioRef = useRef(null);
   const objectUrlRef = useRef(null);
@@ -749,11 +772,16 @@ function PlayerDashboard({
   const playlistQueue = useMemo(() => (
     selectedPlaylistItems
       .filter((item) => !item.unavailable && item.mix)
-      .map((item) => createQueueItemFromMix(
-        item.mix,
-        PLAYER_COLLECTION_TYPES.PLAYLIST,
-        selectedPlaylistId
-      ))
+      .map((item) => {
+        const queueItem = createQueueItemFromMix(
+          item.mix,
+          PLAYER_COLLECTION_TYPES.PLAYLIST,
+          selectedPlaylistId
+        );
+        return queueItem
+          ? { ...queueItem, playlistItemId: String(item.id) }
+          : null;
+      })
       .filter(Boolean)
   ), [selectedPlaylistItems, selectedPlaylistId]);
 
@@ -1753,6 +1781,10 @@ function PlayerDashboard({
     }
   }, [panControlDisabled, sliderDragTooltip]);
 
+  useEffect(() => {
+    setPlaylistDragState(null);
+  }, [selectedPlaylistId]);
+
   const handleCycleLoopMode = useCallback(() => {
     setLoopMode((previous) => {
       if (previous === PLAYER_LOOP_MODES.OFF) return PLAYER_LOOP_MODES.ALL;
@@ -1966,6 +1998,97 @@ function PlayerDashboard({
       queueIndex: playableItems.findIndex((candidate) => candidate.id === item.id),
     }));
   }, [selectedPlaylist, selectedPlaylistItems]);
+
+  const handlePlaylistDropHover = useCallback((event, slotIndex) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setPlaylistDragState((previous) => {
+      if (!previous) return previous;
+      if (isNoopPlaylistDropSlot(previous.fromIndex, slotIndex)) {
+        return previous.overSlotIndex === null
+          ? previous
+          : { ...previous, overSlotIndex: null };
+      }
+      return previous.overSlotIndex === slotIndex
+        ? previous
+        : { ...previous, overSlotIndex: slotIndex };
+    });
+  }, []);
+
+  const handleCommitPlaylistDrop = useCallback(async (slotIndex) => {
+    if (!selectedPlaylist?.id) {
+      setPlaylistDragState(null);
+      return;
+    }
+    if (playlistReorderPendingId === selectedPlaylist.id) {
+      setPlaylistDragState(null);
+      return;
+    }
+
+    const dragState = playlistDragState;
+    if (!dragState || dragState.playlistId !== selectedPlaylist.id) return;
+    if (isNoopPlaylistDropSlot(dragState.fromIndex, slotIndex)) {
+      setPlaylistDragState(null);
+      return;
+    }
+
+    const currentItems = selectedPlaylistItems;
+    const nextItems = reorderPlaylistItems(currentItems, dragState.fromIndex, slotIndex);
+    const nextItemIds = nextItems.map((item) => String(item.id));
+    const currentOrderKey = currentItems.map((item) => String(item.id)).join('|');
+    const nextOrderKey = nextItemIds.join('|');
+
+    setPlaylistDragState(null);
+    if (!nextItems.length || currentOrderKey === nextOrderKey) {
+      return;
+    }
+
+    const activePlaylistItemId = (
+      activeCollectionType === PLAYER_COLLECTION_TYPES.PLAYLIST
+      && activeCollectionId === selectedPlaylist.id
+    )
+      ? String(playlistQueue[activeIndex]?.playlistItemId || '')
+      : '';
+    const previousActiveIndex = activeIndex;
+    const nextPlayableItems = nextItems.filter((item) => !item.unavailable && item.mix);
+    const nextActiveIndex = activePlaylistItemId
+      ? nextPlayableItems.findIndex((item) => String(item.id) === activePlaylistItemId)
+      : previousActiveIndex;
+
+    setPlaylistItemsByPlaylistId((previous) => ({
+      ...previous,
+      [selectedPlaylist.id]: nextItems,
+    }));
+    if (activePlaylistItemId) {
+      setActiveIndex(nextActiveIndex);
+    }
+    setPlaylistReorderPendingId(selectedPlaylist.id);
+
+    try {
+      await reorderPlayerPlaylistItems(selectedPlaylist.id, nextItemIds, session);
+    } catch (reorderError) {
+      setPlaylistItemsByPlaylistId((previous) => ({
+        ...previous,
+        [selectedPlaylist.id]: currentItems,
+      }));
+      if (activePlaylistItemId) {
+        setActiveIndex(previousActiveIndex);
+      }
+      setError(reorderError.message || 'Failed to reorder playlist items');
+    } finally {
+      setPlaylistReorderPendingId(null);
+    }
+  }, [
+    activeCollectionId,
+    activeCollectionType,
+    activeIndex,
+    playlistDragState,
+    playlistQueue,
+    playlistReorderPendingId,
+    selectedPlaylist,
+    selectedPlaylistItems,
+    session,
+  ]);
 
   const handlePlayPlaylistRow = useCallback(async (row) => {
     if (!selectedPlaylist || !row || row.unavailable || row.queueIndex < 0 || !row.mix) return;
@@ -2249,86 +2372,163 @@ function PlayerDashboard({
                   <div className="flex-1 overflow-auto">
                     {selectedPlaylist && activeCollectionType === PLAYER_COLLECTION_TYPES.PLAYLIST ? (
                       <>
+                        {(() => {
+                          const activeDrag = playlistDragState?.playlistId === selectedPlaylist.id
+                            ? playlistDragState
+                            : null;
+                          const playlistRowDragEnabled = activePlaylistRows.length > 1
+                            && playlistReorderPendingId !== selectedPlaylist.id;
+                          return (
+                            <>
                         {activePlaylistRows.map((row, index) => {
                           const rowTitle = row.unavailable
                             ? '[Unavailable]'
                             : `${row.mix?.name || row.mix?.projectName || 'Mix'}`;
                           const isActive = !row.unavailable && row.queueIndex >= 0 && activeIndex === row.queueIndex;
+                          const isDraggedRow = activeDrag?.itemId === row.id;
+                          const slotIndexBeforeRow = index;
+                          const beforeSlotActive = (
+                            activeDrag
+                            && !isNoopPlaylistDropSlot(activeDrag.fromIndex, slotIndexBeforeRow)
+                            && activeDrag.overSlotIndex === slotIndexBeforeRow
+                          );
+                          const bottomSlotActive = (
+                            activeDrag
+                            && index === activePlaylistRows.length - 1
+                            && !isNoopPlaylistDropSlot(activeDrag.fromIndex, activePlaylistRows.length)
+                            && activeDrag.overSlotIndex === activePlaylistRows.length
+                          );
                           return (
                             <div
                               key={row.id}
-                              onContextMenu={(event) => {
-                                if (row.unavailable || !row.mix) return;
-                                event.preventDefault();
-                                setLibraryContextMenu({
-                                  entry: {
-                                    kind: 'mix',
-                                    mix: row.mix,
-                                    sourcePlaylistId: selectedPlaylist.id,
-                                    sourcePlaylistItemId: row.id,
-                                  },
-                                  x: event.clientX,
-                                  y: event.clientY,
-                                });
-                              }}
-                              onClick={() => {
-                                if (row.unavailable || row.queueIndex < 0) return;
-                                handleSelectItem(PLAYER_COLLECTION_TYPES.PLAYLIST, selectedPlaylist.id, row.queueIndex);
-                              }}
-                              onDoubleClick={async () => {
-                                await handlePlayPlaylistRow(row);
-                              }}
-                              className={`group grid grid-cols-[56px_minmax(0,1fr)_96px_34px] items-center px-4 py-2.5 text-sm transition-colors ${
-                                row.unavailable
-                                  ? 'text-gray-500'
-                                  : (isActive ? 'bg-blue-700/20 cursor-pointer' : 'hover:bg-gray-700/60 cursor-pointer')
-                              }`}
+                              className="relative"
                             >
-                              <div className="flex items-center pl-0.5 text-gray-300">
-                                <span className="group-hover:hidden">{index + 1}</span>
-                                {!row.unavailable ? (
-                                  <button
-                                    type="button"
-                                    onClick={async (event) => {
-                                      event.stopPropagation();
-                                      await handlePlayPlaylistRow(row);
-                                    }}
-                                    className="hidden group-hover:flex items-center justify-center rounded text-gray-300 hover:text-white focus:text-white"
-                                    title={`Play ${rowTitle}`}
-                                  >
-                                    <Play size={14} />
-                                  </button>
-                                ) : null}
-                              </div>
-                              <div className="truncate">{rowTitle}</div>
-                              <div className="text-right text-gray-400">--:--</div>
-                              <div className="flex justify-end">
-                                {!row.unavailable && row.mix ? (
-                                  <button
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      const rect = event.currentTarget.getBoundingClientRect();
-                                      setLibraryContextMenu({
-                                        entry: {
-                                          kind: 'mix',
-                                          mix: row.mix,
-                                          sourcePlaylistId: selectedPlaylist.id,
-                                          sourcePlaylistItemId: row.id,
-                                        },
-                                        x: rect.right,
-                                        y: rect.bottom + 4,
-                                      });
-                                    }}
-                                    className="rounded p-1 text-gray-400 hover:text-white hover:bg-gray-700 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
-                                    title="Options"
-                                  >
-                                    <MoreHorizontal size={14} />
-                                  </button>
-                                ) : null}
+                              {beforeSlotActive ? (
+                                <div className="pointer-events-none absolute left-4 right-4 top-0 z-20 h-px bg-blue-400 shadow-[0_0_0_1px_rgba(96,165,250,0.28)]" />
+                              ) : null}
+                              {bottomSlotActive ? (
+                                <div className="pointer-events-none absolute left-4 right-4 bottom-0 z-20 h-px bg-blue-400 shadow-[0_0_0_1px_rgba(96,165,250,0.28)]" />
+                              ) : null}
+                              <div
+                                draggable={playlistRowDragEnabled}
+                                onDragStart={(event) => {
+                                  if (!playlistRowDragEnabled) return;
+                                  event.dataTransfer.effectAllowed = 'move';
+                                  event.dataTransfer.setData('text/plain', row.id);
+                                  setLibraryContextMenu(null);
+                                  setProjectContextMenu(null);
+                                  setPlaylistDragState({
+                                    playlistId: selectedPlaylist.id,
+                                    itemId: row.id,
+                                    fromIndex: index,
+                                    overSlotIndex: null,
+                                  });
+                                }}
+                                onDragEnd={() => {
+                                  setPlaylistDragState((previous) => (
+                                    previous?.playlistId === selectedPlaylist.id ? null : previous
+                                  ));
+                                }}
+                                onDragOver={(event) => {
+                                  if (!playlistRowDragEnabled || !activeDrag) return;
+                                  event.preventDefault();
+                                  const rect = event.currentTarget.getBoundingClientRect();
+                                  const slotIndex = event.clientY < rect.top + (rect.height / 2)
+                                    ? index
+                                    : index + 1;
+                                  handlePlaylistDropHover(event, slotIndex);
+                                }}
+                                onDrop={(event) => {
+                                  if (!playlistRowDragEnabled || !activeDrag) return;
+                                  event.preventDefault();
+                                  const rect = event.currentTarget.getBoundingClientRect();
+                                  const slotIndex = event.clientY < rect.top + (rect.height / 2)
+                                    ? index
+                                    : index + 1;
+                                  void handleCommitPlaylistDrop(slotIndex);
+                                }}
+                                onContextMenu={(event) => {
+                                  if (row.unavailable || !row.mix) return;
+                                  event.preventDefault();
+                                  setLibraryContextMenu({
+                                    entry: {
+                                      kind: 'mix',
+                                      mix: row.mix,
+                                      sourcePlaylistId: selectedPlaylist.id,
+                                      sourcePlaylistItemId: row.id,
+                                    },
+                                    x: event.clientX,
+                                    y: event.clientY,
+                                  });
+                                }}
+                                onClick={() => {
+                                  if (row.unavailable || row.queueIndex < 0) return;
+                                  handleSelectItem(PLAYER_COLLECTION_TYPES.PLAYLIST, selectedPlaylist.id, row.queueIndex);
+                                }}
+                                onDoubleClick={async () => {
+                                  await handlePlayPlaylistRow(row);
+                                }}
+                                className={`group relative grid grid-cols-[56px_minmax(0,1fr)_96px_34px] items-center px-4 py-2.5 text-sm transition-colors ${
+                                  row.unavailable
+                                    ? 'text-gray-500'
+                                    : (isActive ? 'bg-blue-700/20' : 'hover:bg-gray-700/60')
+                                } ${
+                                  playlistRowDragEnabled ? 'cursor-grab active:cursor-grabbing' : ''
+                                } ${
+                                  isDraggedRow ? 'opacity-40' : ''
+                                }`}
+                              >
+                                <div className="flex items-center pl-0.5 text-gray-300">
+                                  <span className="group-hover:hidden">{index + 1}</span>
+                                  {!row.unavailable ? (
+                                    <button
+                                      type="button"
+                                      draggable={false}
+                                      onClick={async (event) => {
+                                        event.stopPropagation();
+                                        await handlePlayPlaylistRow(row);
+                                      }}
+                                      className="hidden group-hover:flex items-center justify-center rounded text-gray-300 hover:text-white focus:text-white"
+                                      title={`Play ${rowTitle}`}
+                                    >
+                                      <Play size={14} />
+                                    </button>
+                                  ) : null}
+                                </div>
+                                <div className="truncate">{rowTitle}</div>
+                                <div className="text-right text-gray-400">--:--</div>
+                                <div className="flex justify-end">
+                                  {!row.unavailable && row.mix ? (
+                                    <button
+                                      draggable={false}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        const rect = event.currentTarget.getBoundingClientRect();
+                                        setLibraryContextMenu({
+                                          entry: {
+                                            kind: 'mix',
+                                            mix: row.mix,
+                                            sourcePlaylistId: selectedPlaylist.id,
+                                            sourcePlaylistItemId: row.id,
+                                          },
+                                          x: rect.right,
+                                          y: rect.bottom + 4,
+                                        });
+                                      }}
+                                      className="rounded p-1 text-gray-400 hover:text-white hover:bg-gray-700 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                                      title="Options"
+                                    >
+                                      <MoreHorizontal size={14} />
+                                    </button>
+                                  ) : null}
+                                </div>
                               </div>
                             </div>
                           );
                         })}
+                            </>
+                          );
+                        })()}
                         {!activePlaylistRows.length ? (
                           <div className="text-xs text-gray-500 px-4 py-3">No playlist items.</div>
                         ) : null}

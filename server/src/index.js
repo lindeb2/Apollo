@@ -2030,6 +2030,14 @@ app.patch('/api/player/playlists/:id/items/reorder', requireAuth, async (req, re
           `UPDATE player_playlist_items
            SET order_index = $3
            WHERE playlist_id = $1 AND id = $2`,
+          [playlist.id, orderedItemIds[i], -(i + 1)]
+        );
+      }
+      for (let i = 0; i < orderedItemIds.length; i += 1) {
+        await client.query(
+          `UPDATE player_playlist_items
+           SET order_index = $3
+           WHERE playlist_id = $1 AND id = $2`,
           [playlist.id, orderedItemIds[i], i]
         );
       }
