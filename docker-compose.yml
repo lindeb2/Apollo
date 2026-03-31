@@ -8,6 +8,11 @@ services:
       POSTGRES_DB: apollo
       POSTGRES_USER: apollo
       POSTGRES_PASSWORD: apollo
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apollo -d apollo"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     ports:
       - "5432:5432"
     volumes:
@@ -20,7 +25,7 @@ services:
     restart: unless-stopped
     environment:
       PORT: 8787
-      DATABASE_URL: postgres://apollo:apollo@db:5432/apollo
+      DATABASE_URL: "${DATABASE_URL:-postgres://apollo:apollo@db:5432/apollo}"
       JWT_ACCESS_SECRET: change-this-access-secret
       JWT_REFRESH_SECRET: change-this-refresh-secret
       ACCESS_TOKEN_TTL: 15m
@@ -36,8 +41,6 @@ services:
       CHECKPOINT_EVERY_SECONDS: 30
     ports:
       - "8787:8787"
-    depends_on:
-      - db
     volumes:
       - ./server/media:/data/media
 

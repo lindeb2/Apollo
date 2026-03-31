@@ -53,6 +53,18 @@ npm run dev:full
 > docker compose stop web api
 > ```
 
+### Docker-only local run
+
+```bash
+# use local postgres in Docker
+docker compose up
+```
+
+```bash
+# use an external postgres and skip the local db container
+DATABASE_URL=postgres://user:password@host:5432/database docker compose up api web
+```
+
 
 ## When You Should Use Docker Immediately
 
@@ -230,7 +242,12 @@ Use this when:
 #
 ### Where the backend looks for the database
 
-The backend reads `DATABASE_URL` from `server/.env`.
+The backend reads `DATABASE_URL` from `server/.env` when you run it directly with npm.
+
+When you run the backend through Docker Compose, the `api` service uses:
+
+- your shell's `DATABASE_URL`, if you set one before `docker compose up`
+- otherwise the local Compose fallback `postgres://apollo:apollo@db:5432/apollo`
 
 That value tells it where Postgres lives.
 

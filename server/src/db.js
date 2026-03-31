@@ -8,10 +8,40 @@ import { config } from './config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const DB_CONNECT_MAX_ATTEMPTS = 30;
+const DB_CONNECT_RETRY_DELAY_MS = 1000;
 
 export const pool = new Pool({
   connectionString: config.databaseUrl,
 });
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function waitForDatabase() {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= DB_CONNECT_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      await pool.query('SELECT 1');
+      if (attempt > 1) {
+        console.log(`Connected to database after ${attempt} attempts`);
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+      const isLastAttempt = attempt === DB_CONNECT_MAX_ATTEMPTS;
+      console.warn(
+        `Database not ready (attempt ${attempt}/${DB_CONNECT_MAX_ATTEMPTS}): ${error.message}`
+      );
+      if (isLastAttempt) break;
+      await sleep(DB_CONNECT_RETRY_DELAY_MS);
+    }
+  }
+
+  throw lastError;
+}
 
 export async function runMigrations() {
   const migrationDir = path.join(__dirname, 'migrations');

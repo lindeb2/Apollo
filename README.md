@@ -160,12 +160,35 @@ Start it with:
 npm run dev:full
 ```
 
+Or run it directly:
+
+```bash
+docker compose up
+```
+
+If you want Docker to use an external database instead of the local `db` container, set
+`DATABASE_URL` in your shell and start only the app services:
+
+```bash
+DATABASE_URL=postgres://user:password@host:5432/database docker compose up api web
+```
+
 Default example credentials in the checked-in env/docker config are:
 
 - username: `admin`
 - password: `changemechangeme`
 
 Change secrets and default credentials before any real deployment.
+
+## Release Images
+
+On release tags like `v1.2.3`, GitHub Actions publishes Docker images to GHCR for:
+
+- `api`
+- `web`
+
+Those published images are the deployment artifact. The automatic GitHub release source archives
+(`zip` / `tar.gz`) are only source code snapshots.
 
 ## Verification
 

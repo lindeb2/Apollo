@@ -11,7 +11,7 @@ import bcrypt from 'bcryptjs';
 
 import { config } from './config.js';
 import { buildStoredMediaPath, resolveMediaPath } from './mediaPaths.js';
-import { pool, runMigrations, ensureDefaultAdmin, closeDb } from './db.js';
+import { pool, waitForDatabase, runMigrations, ensureDefaultAdmin, closeDb } from './db.js';
 import {
   authenticateCredentials,
   getProjectPermission,
@@ -2561,6 +2561,7 @@ server.on('upgrade', (req, socket, head) => {
 
 async function start() {
   await ensureMediaRoot();
+  await waitForDatabase();
   await runMigrations();
   await ensureDefaultAdmin();
 
