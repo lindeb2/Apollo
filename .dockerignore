@@ -1,0 +1,16 @@
+.git
+.github
+.idea
+.codex
+.DS_Store
+.env
+node_modules
+dist
+backups
+certs
+coverage
+*.log
+
+server/node_modules
+server/media
+server/.DS_Store

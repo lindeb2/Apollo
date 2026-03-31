@@ -5,11 +5,11 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: apollo
-      POSTGRES_USER: apollo
-      POSTGRES_PASSWORD: apollo
+      POSTGRES_DB: "${DB_NAME:-apollo}"
+      POSTGRES_USER: "${DB_USER:-apollo}"
+      POSTGRES_PASSWORD: "${DB_PASSWORD:-apollo}"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U apollo -d apollo"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-apollo} -d ${DB_NAME:-apollo}"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -24,21 +24,21 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      PORT: 8787
-      DATABASE_URL: "${DATABASE_URL:-postgres://apollo:apollo@db:5432/apollo}"
-      JWT_ACCESS_SECRET: change-this-access-secret
-      JWT_REFRESH_SECRET: change-this-refresh-secret
-      ACCESS_TOKEN_TTL: 15m
-      REFRESH_TOKEN_TTL_DAYS: 7
-      DEFAULT_ADMIN_USERNAME: admin
-      DEFAULT_ADMIN_PASSWORD: changemechangeme
-      CORS_ORIGIN: http://localhost:3000
+      PORT: "${PORT:-8787}"
+      DATABASE_URL: "${DATABASE_URL:-${DB_PROTOCOL:-postgres}://${DB_USER:-apollo}:${DB_PASSWORD:-apollo}@${DB_HOST_DOCKER:-db}:${DB_PORT:-5432}/${DB_NAME:-apollo}}"
+      JWT_ACCESS_SECRET: "${JWT_ACCESS_SECRET:-change-this-access-secret}"
+      JWT_REFRESH_SECRET: "${JWT_REFRESH_SECRET:-change-this-refresh-secret}"
+      ACCESS_TOKEN_TTL: "${ACCESS_TOKEN_TTL:-15m}"
+      REFRESH_TOKEN_TTL_DAYS: "${REFRESH_TOKEN_TTL_DAYS:-7}"
+      DEFAULT_ADMIN_USERNAME: "${DEFAULT_ADMIN_USERNAME:-admin}"
+      DEFAULT_ADMIN_PASSWORD: "${DEFAULT_ADMIN_PASSWORD:-changemechangeme}"
+      CORS_ORIGIN: "${CORS_ORIGIN:-http://localhost:3000}"
       MEDIA_ROOT: /data/media
       MEDIA_DB_ROOT: /data/media
-      MAX_UPLOAD_BYTES: 524288000
-      RECORD_LOCK_TIMEOUT_SECONDS: 30
-      CHECKPOINT_EVERY_OPS: 100
-      CHECKPOINT_EVERY_SECONDS: 30
+      MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-524288000}"
+      RECORD_LOCK_TIMEOUT_SECONDS: "${RECORD_LOCK_TIMEOUT_SECONDS:-30}"
+      CHECKPOINT_EVERY_OPS: "${CHECKPOINT_EVERY_OPS:-100}"
+      CHECKPOINT_EVERY_SECONDS: "${CHECKPOINT_EVERY_SECONDS:-30}"
     ports:
       - "8787:8787"
     volumes:

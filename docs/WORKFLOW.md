@@ -3,7 +3,7 @@
 ### Instant feedback during work
 
 ```bash
-# start postgres, can also be done in the dashboard
+# start postgres, not needed if external pg
 docker compose up -d db
 ```
 
@@ -18,8 +18,8 @@ npm run dev:https
 ```
 
 - npm processes only need to be restarted if config/env/startup is changed.
-- if done working: 
-  - stop the npm procceses with `Ctrl + C`
+- if done working:
+  - stop the npm processes with `Ctrl + C`
   - stop postgres with `docker compose stop db`
 
 ### Before commit
@@ -35,7 +35,6 @@ npm run build
 - start whole docker stack with:
 
 ```bash
-# can also be done in the dashboard
 npm run dev:full
 ```
 
@@ -242,19 +241,34 @@ Use this when:
 #
 ### Where the backend looks for the database
 
-The backend reads `DATABASE_URL` from `server/.env` when you run it directly with npm.
+Default value in the root `.env`, but it can be overridden with `DATABASE_URL` in your shell.
 
-When you run the backend through Docker Compose, the `api` service uses:
+By default, both npm and Docker Compose read the same shared DB settings from the root `.env`:
 
-- your shell's `DATABASE_URL`, if you set one before `docker compose up`
-- otherwise the local Compose fallback `postgres://apollo:apollo@db:5432/apollo`
+- `DB_USER`
+- `DB_PASSWORD`
+- `DB_NAME`
+- `DB_PORT`
+
+The normal local difference is only the host:
+
+- npm/backend uses `DB_HOST_LOCAL`
+- Docker Compose uses `DB_HOST_DOCKER`
+
+Docker Compose can still be temporarily overridden with `DATABASE_URL` in your shell.
 
 That value tells it where Postgres lives.
 
 Example:
 
 ```env
-DATABASE_URL=postgres://apollo:apollo@localhost:5432/apollo
+DB_PROTOCOL=postgres
+DB_USER=apollo
+DB_PASSWORD=apollo
+DB_NAME=apollo
+DB_PORT=5432
+DB_HOST_LOCAL=localhost
+DB_HOST_DOCKER=db
 ```
 
 This means:
@@ -262,7 +276,6 @@ This means:
 - use PostgreSQL
 - username is `apollo`
 - password is `apollo`
-- database host is `localhost`
 - port is `5432`
 - database name is `apollo`
 
@@ -271,14 +284,7 @@ If the backend is running on your machine, `localhost` means your machine.
 If the backend is inside Docker Compose, the host is different. In Docker Compose it uses:
 
 ```env
-DATABASE_URL=postgres://apollo:apollo@db:5432/apollo
+DB_HOST_DOCKER=db
 ```
 
 There, `db` is the Docker service name.
-
-So the app is **not** hardcoded to Docker.
-
-It is only hardcoded to:
-
-- need a Postgres database
-- read the location from `DATABASE_URL`

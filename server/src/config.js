@@ -4,10 +4,30 @@ import dotenv from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const projectRoot = path.resolve(path.join(__dirname, '..', '..'));
 
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
+// Load the shared root .env for direct local runs; shell env still overrides file values.
+dotenv.config({ path: path.join(projectRoot, '.env') });
 
 actionValidate();
+
+function firstDefined(...values) {
+  return values.find((value) => value != null && String(value).trim() !== '');
+}
+
+function buildDatabaseUrl() {
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+
+  const protocol = firstDefined(process.env.DB_PROTOCOL, 'postgres');
+  const user = firstDefined(process.env.DB_USER);
+  const password = firstDefined(process.env.DB_PASSWORD);
+  const host = firstDefined(process.env.DB_HOST_LOCAL);
+  const port = firstDefined(process.env.DB_PORT, '5432');
+  const name = firstDefined(process.env.DB_NAME);
+
+  if (!user || !password || !host || !name) return null;
+  return `${protocol}://${user}:${password}@${host}:${port}/${name}`;
+}
 
 function resolveConfigPath(value, fallback) {
   const target = value || fallback;
@@ -16,6 +36,11 @@ function resolveConfigPath(value, fallback) {
 }
 
 function actionValidate() {
+  const databaseUrl = buildDatabaseUrl();
+  if (databaseUrl) {
+    process.env.DATABASE_URL = databaseUrl;
+  }
+
   const required = ['DATABASE_URL', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'];
   const missing = required.filter((key) => !process.env[key]);
   if (missing.length > 0) {

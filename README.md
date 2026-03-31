@@ -7,6 +7,37 @@ Apollo is a rehearsal tool for musical numbers before performance. It works both
 
 The goal is to make rehearsal easier, more musical, and more flexible. Arranger-made virtual instrument tracks can be the baseline, but musicians are encouraged to record and add their own material as well. That helps reduce group-sync problems and makes practice more enjoyable. Apollo is useful for everyone, but especially helpful for performers who learn more by ear than by reading notation.
 
+## Running
+
+The fastest way to run locally is via the compose file:
+
+```
+docker compose up
+```
+
+This starts the application (frontend + backend) and a local PostgreSQL instance.
+
+During development the recommended [workflow](docs/WORKFLOW.md) is to run via npm for a faster feedback loop.
+
+## Tech Stack
+
+- React + Vite
+- Tailwind CSS
+- Zustand
+- Dexie / IndexedDB
+- Express
+- WebSocket (`ws`)
+- PostgreSQL
+- Web Audio API
+- JSZip
+
+## Repository Layout
+
+```text
+src/                 frontend app
+server/src/          backend API, WebSocket server, migrations
+```
+
 ## What Apollo Does
 
 Apollo lets users:
@@ -61,28 +92,6 @@ The main app surfaces are:
 - recording locks to avoid conflicting edits
 - local browser caching to support smoother hosted workflows
 
-## Tech Stack
-
-- React + Vite
-- Tailwind CSS
-- Zustand
-- Dexie / IndexedDB
-- Express
-- WebSocket (`ws`)
-- PostgreSQL
-- Web Audio API
-- JSZip
-
-## Repository Layout
-
-```text
-src/                 frontend app
-server/src/          backend API, WebSocket server, migrations
-docker-compose.yml   local full-stack Docker setup
-docs/WORKFLOW.md     recommended development workflow
-docs/old/            historical docs only, not source of truth
-```
-
 ## Local Development
 
 The recommended local workflow is:
@@ -101,16 +110,20 @@ npm install
 ### 2. Create Backend Env
 
 ```bash
-cp server/.env.example server/.env
+cp .env.example .env
 ```
 
 The backend requires at least:
 
-- `DATABASE_URL`
+- `DATABASE_URL` or the shared `DB_*` variables in the root `.env`
 - `JWT_ACCESS_SECRET`
 - `JWT_REFRESH_SECRET`
 
-The example env points the backend at a local Postgres instance on `localhost:5432`.
+The shared root `.env` is used for local npm runs and Docker Compose interpolation.
+The example file uses shared database credentials with:
+
+- `DB_HOST_LOCAL=localhost` for direct npm backend runs
+- `DB_HOST_DOCKER=db` for Docker Compose
 
 ### 3. Start Only The Database
 
@@ -166,7 +179,8 @@ Or run it directly:
 docker compose up
 ```
 
-If you want Docker to use an external database instead of the local `db` container, set
+If you want both npm and Docker to use an external database, update the shared DB values in the
+root `.env` and set both hosts to that server. For a temporary Docker-only override, set
 `DATABASE_URL` in your shell and start only the app services:
 
 ```bash
