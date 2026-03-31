@@ -9,12 +9,12 @@ docker compose up -d db
 
 ```bash
 # start backend
-npm run dev:server
+npm run dev:api
 ```
 
 ```bash
 # start frontend
-npm run dev:https
+npm run dev:web
 ```
 
 - npm processes only need to be restarted if config/env/startup is changed.
@@ -99,86 +99,43 @@ You usually do not need Docker for every edit if you are changing:
 npm install
 ```
 
-What it does:
-
+- Reads `package.json`
 - Downloads the JavaScript packages the app needs.
 - Creates the `node_modules` folder.
-- You usually run this after cloning the repo or after dependencies change.
 
 #
 ```bash
-npm run dev:server
+npm run dev:api # npm --workspaces=false --prefix server run dev
 ```
 
 - Starts the backend server from the `server` folder.
 - Watches for file changes.
 - Restarts the backend automatically when backend code changes.
-- Connects to PostgreSQL using `DATABASE_URL`.
 
 #
 ```bash
-npm run dev:https
+npm run dev:web # ./scripts/dev-web.sh
 ```
 
-What it does:
-
-- Starts the frontend Vite dev server
-- serves it over HTTPS
-- sets the frontend env vars needed for server mode
-- proxies `/api` and `/ws` traffic to the backend
-
-#
-```bash
-npm run dev
-```
-
-What it does:
-
-- Starts the plain Vite frontend dev server
-
-Important:
-
-- this is only useful if you already provided the needed frontend env vars yourself
-- for this repo, `npm run dev:https` is usually the safer default
+- runs `generate-lan-cert.sh`
+- starts the frontend Vite dev server over HTTPS
+- reads frontend settings from the shared root `.env`
+- proxies `/api` and `/ws` traffic to the backend using those env values
 
 #
 ```bash
 npm run build
 ```
 
-What it does:
-
-- Builds the frontend for production
-- creates the `dist/` folder
-- catches many frontend build errors before you commit / push
+- Builds the frontend for production in the `dist/` folder
 
 #
 ```bash
-npm run preview
+npm run dev:full # scripts/dev-full.sh
 ```
 
-What it does:
-
-- serves the already-built `dist/` folder locally
-- lets you inspect the frontend production build in a browser
-
-Use this when:
-
-- you want to see what the built frontend looks like
-- you already ran `npm run build`
-
-#
-```bash
-npm run dev:full
-```
-
-What it does:
-
-- runs the helper script at `scripts/dev-full.sh`
-- generates local certs if needed
+- runs `generate-lan-cert.sh`
 - starts the full Docker Compose stack
-- builds containers if needed
-- starts:
   - `web`
   - `api`
   - `db`
@@ -189,8 +146,6 @@ Use this when:
 - you want to catch Docker, proxy, or container-related problems
 - you want a final confidence check before pushing
 
-This is slower than the normal `npm` workflow, so do not use it for every tiny edit.
-
 #
 ```bash
 npm test
@@ -200,50 +155,17 @@ What it does:
 
 - runs the Vitest test suite
 
-Important note:
-
-- at the moment this repo is missing `jsdom`, so this command may fail until the test setup is fixed
-
-That means:
-
-- `npm run build` is currently the more reliable quick verification command
-
 #
 ```bash
-npm run server:start
+npm run cert:lan # generate-lan-cert.sh
 ```
 
-What it does:
-
-- starts the backend once without watch mode
-- this is closer to how a normal production process runs
-
-Use this when:
-
-- you want to run the backend without automatic restarts
-
-#
-```bash
-npm run cert:lan
-```
-
-What it does:
-
-- generates local certificates for HTTPS development
-
-Use this when:
-
-- local certs are missing
-- you want to test on another device on your network
-
 #
 #
 #
-### Where the backend looks for the database
+### Database
 
-Default value in the root `.env`, but it can be overridden with `DATABASE_URL` in your shell.
-
-By default, both npm and Docker Compose read the same shared DB settings from the root `.env`:
+By default, both npm and Docker Compose read the same shared DB settings from the root `.env`, but it can be overridden with `DATABASE_URL` in your shell.:
 
 - `DB_USER`
 - `DB_PASSWORD`

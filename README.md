@@ -134,13 +134,13 @@ docker compose up -d db
 ### 4. Start The Backend
 
 ```bash
-npm run dev:server
+npm run dev:api
 ```
 
 ### 5. Start The Frontend
 
 ```bash
-npm run dev:https
+npm run dev:web
 ```
 
 ### 6. Build Before Commit Or Push

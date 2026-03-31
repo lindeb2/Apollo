@@ -3,14 +3,11 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:server": "npm --workspaces=false --prefix server run dev",
+    "dev:web": "./scripts/dev-web.sh",
+    "dev:api": "npm --workspaces=false --prefix server run dev",
     "dev:full": "./scripts/dev-full.sh",
     "build": "vite build",
-    "preview": "vite preview",
     "test": "vitest",
-    "server:start": "npm --workspaces=false --prefix server run start",
-    "dev:https": "./scripts/dev-https.sh",
     "cert:lan": "./scripts/generate-lan-cert.sh"
   },
   "dependencies": {
