@@ -3,8 +3,7 @@ import { createId } from '../utils/id';
 
 const API_BASE = import.meta.env.VITE_SERVER_API_BASE || '';
 const WS_BASE = import.meta.env.VITE_SERVER_WS_BASE || '';
-
-const SESSION_KEY = 'apollo.server.session';
+let currentServerSession = null;
 
 function isObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
@@ -16,6 +15,19 @@ export function isServerModeEnabled() {
 
 export function getApiBase() {
   return API_BASE;
+}
+
+function buildApiPath(path) {
+  const normalizedBase = (API_BASE || '').replace(/\/+$/, '');
+  let normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  if (normalizedBase.endsWith('/api') && normalizedPath.startsWith('/api/')) {
+    normalizedPath = normalizedPath.slice(4);
+  }
+  return `${normalizedBase}${normalizedPath}`;
+}
+
+function dispatchSession(session) {
+  window.dispatchEvent(new CustomEvent('apollo:server-session-updated', { detail: session }));
 }
 
 export function getWsUrl() {
@@ -39,30 +51,23 @@ export function getWsUrl() {
 }
 
 export function saveServerSession(session) {
-  localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  window.dispatchEvent(new CustomEvent('apollo:server-session-updated', { detail: session }));
+  currentServerSession = session && isObject(session) ? session : null;
+  dispatchSession(currentServerSession);
 }
 
 export function loadServerSession() {
-  try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!isObject(parsed)) return null;
-    if (!parsed.accessToken || !parsed.refreshToken || !parsed.user) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
+  return currentServerSession;
 }
 
 export function clearServerSession() {
-  localStorage.removeItem(SESSION_KEY);
-  window.dispatchEvent(new CustomEvent('apollo:server-session-updated', { detail: null }));
+  currentServerSession = null;
+  dispatchSession(null);
 }
 
-function isInvalidRefreshTokenError(error) {
-  return /invalid refresh token/i.test(String(error?.message || ''));
+export function isSessionRecoveryError(error) {
+  return /(invalid refresh token|missing refresh token|user is not active|invalid or expired access token|missing access token|session expired)/i.test(
+    String(error?.message || '')
+  );
 }
 
 async function apiFetch(path, options = {}, session = null, retryOnAuth = true) {
@@ -74,27 +79,25 @@ async function apiFetch(path, options = {}, session = null, retryOnAuth = true) 
     headers.set('Authorization', `Bearer ${session.accessToken}`);
   }
 
-  const normalizedBase = (API_BASE || '').replace(/\/+$/, '');
-  let normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  if (normalizedBase.endsWith('/api') && normalizedPath.startsWith('/api/')) {
-    normalizedPath = normalizedPath.slice(4);
-  }
-
-  const response = await fetch(`${normalizedBase}${normalizedPath}`, {
+  const response = await fetch(buildApiPath(path), {
     ...options,
+    credentials: 'include',
     headers,
     body: options.body instanceof Blob || options.body instanceof ArrayBuffer || options.body instanceof FormData
       ? options.body
       : (typeof options.body === 'string' ? options.body : (options.body ? JSON.stringify(options.body) : undefined)),
   });
 
-  if (response.status === 401 && session?.refreshToken && retryOnAuth) {
+  if (response.status === 401 && retryOnAuth && !String(path).includes('/api/auth/refresh')) {
+    const hadSession = Boolean(session?.user || loadServerSession()?.user);
     try {
-      const refreshed = await refreshSession(session.refreshToken);
-      saveServerSession(refreshed);
+      const refreshed = await refreshSession();
+      if (refreshed?.user) {
+        saveServerSession(refreshed);
+      }
       return await apiFetch(path, options, refreshed, false);
     } catch (error) {
-      if (isInvalidRefreshTokenError(error)) {
+      if (hadSession && isSessionRecoveryError(error)) {
         clearServerSession();
         throw new Error('Session expired. Please log in again.');
       }
@@ -121,6 +124,22 @@ async function apiFetch(path, options = {}, session = null, retryOnAuth = true) 
   return response;
 }
 
+export async function getAuthConfig() {
+  return await apiFetch('/api/auth/config', {
+    method: 'GET',
+  }, null, false);
+}
+
+export async function getCurrentSession() {
+  return await apiFetch('/api/me', {
+    method: 'GET',
+  }, null, true);
+}
+
+export function beginOidcLogin() {
+  window.location.assign(buildApiPath('/api/auth/oidc/start'));
+}
+
 export async function login(username, password) {
   const payload = await apiFetch('/api/auth/login', {
     method: 'POST',
@@ -129,19 +148,27 @@ export async function login(username, password) {
   return payload;
 }
 
-export async function refreshSession(refreshToken) {
-  const payload = await apiFetch('/api/auth/refresh', {
+export async function bootstrapLogin(username, password) {
+  const payload = await apiFetch('/api/auth/bootstrap/login', {
     method: 'POST',
-    body: { refreshToken },
+    body: { username, password },
   }, null, false);
   return payload;
 }
 
-export async function logout(session) {
-  await apiFetch('/api/auth/logout', {
+export async function refreshSession() {
+  const payload = await apiFetch('/api/auth/refresh', {
     method: 'POST',
-    body: { refreshToken: session?.refreshToken || null },
-  }, session, false);
+    body: {},
+  }, null, false);
+  return payload;
+}
+
+export async function logout() {
+  return await apiFetch('/api/auth/logout', {
+    method: 'POST',
+    body: {},
+  }, null, false);
 }
 
 export async function listServerProjects(session) {
@@ -217,8 +244,10 @@ async function submitProjectOpViaWebSocket(projectId, op, session, allowRefresh 
 
     ws.onopen = () => {
       ws.send(JSON.stringify({
-        type: 'auth.hello',
-        accessToken: session?.accessToken || '',
+        type: 'op.submit',
+        projectId,
+        clientOpId,
+        op,
       }));
     };
 
@@ -227,16 +256,6 @@ async function submitProjectOpViaWebSocket(projectId, op, session, allowRefresh 
       try {
         message = JSON.parse(event.data);
       } catch {
-        return;
-      }
-
-      if (message.type === 'auth.ok') {
-        ws.send(JSON.stringify({
-          type: 'op.submit',
-          projectId,
-          clientOpId,
-          op,
-        }));
         return;
       }
 
@@ -250,13 +269,15 @@ async function submitProjectOpViaWebSocket(projectId, op, session, allowRefresh 
       }
 
       if (message.type === 'error') {
-        if (message.code === 'AUTH_REQUIRED' && allowRefresh && session?.refreshToken) {
+        if (message.code === 'AUTH_REQUIRED' && allowRefresh) {
           try {
-            const refreshed = await refreshSession(session.refreshToken);
-            saveServerSession(refreshed);
+            const refreshed = await refreshSession();
+            if (refreshed?.user) {
+              saveServerSession(refreshed);
+            }
             succeed(await submitProjectOpViaWebSocket(projectId, op, refreshed, false));
           } catch (error) {
-            if (isInvalidRefreshTokenError(error)) {
+            if (isSessionRecoveryError(error)) {
               clearServerSession();
               fail(new Error('Session expired. Please log in again.'));
               return;
@@ -323,6 +344,13 @@ export async function updateUser(userId, updates, session) {
   return await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}`, {
     method: 'PATCH',
     body: updates,
+  }, session);
+}
+
+export async function linkOidcIdentity(targetUserId, sourceUserId, session) {
+  return await apiFetch(`/api/admin/users/${encodeURIComponent(targetUserId)}/link-oidc`, {
+    method: 'POST',
+    body: { sourceUserId },
   }, session);
 }
 

@@ -1,6 +1,7 @@
 import {
   clearServerSession,
   getWsUrl,
+  isSessionRecoveryError,
   loadServerSession,
   refreshSession,
   saveServerSession,
@@ -43,9 +44,6 @@ export function createRealtimeSyncClient({
     ws.onopen = () => {
       connected = true;
       onConnected?.();
-      const latestSession = loadServerSession();
-      const accessToken = latestSession?.accessToken || '';
-      send('auth.hello', { accessToken });
       send('project.join', {
         projectId,
         knownSeq: currentKnownSeq,
@@ -74,32 +72,27 @@ export function createRealtimeSyncClient({
           case 'error':
             if (message?.code === 'AUTH_REQUIRED' && !authRefreshInFlight) {
               authRefreshInFlight = true;
-              const activeSession = loadServerSession();
-              const refreshToken = activeSession?.refreshToken || '';
-              if (refreshToken) {
-                refreshSession(refreshToken)
-                  .then((refreshed) => {
-                    if (!refreshed?.accessToken || !refreshed?.refreshToken) return;
+              refreshSession()
+                .then((refreshed) => {
+                  if (refreshed?.user) {
                     saveServerSession(refreshed);
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                      ws.close();
-                    }
-                  })
-                  .catch((error) => {
-                    if (/invalid refresh token/i.test(String(error?.message || ''))) {
-                      clearServerSession();
-                      onError?.({
-                        code: 'AUTH_EXPIRED',
-                        message: 'Session expired. Please log in again. Local edits continue unsynced.',
-                      });
-                    }
-                  })
-                  .finally(() => {
-                    authRefreshInFlight = false;
-                  });
-              } else {
-                authRefreshInFlight = false;
-              }
+                  }
+                  if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.close();
+                  }
+                })
+                .catch((error) => {
+                  if (isSessionRecoveryError(error)) {
+                    clearServerSession();
+                    onError?.({
+                      code: 'AUTH_EXPIRED',
+                      message: 'Session expired. Please log in again. Local edits continue unsynced.',
+                    });
+                  }
+                })
+                .finally(() => {
+                  authRefreshInFlight = false;
+                });
             }
             onError?.(message);
             break;
@@ -114,7 +107,7 @@ export function createRealtimeSyncClient({
     ws.onclose = () => {
       connected = false;
       onDisconnected?.();
-      if (!disposed && loadServerSession()?.accessToken) {
+      if (!disposed && loadServerSession()?.user) {
         reconnectTimer = setTimeout(connect, 2000);
       }
     };

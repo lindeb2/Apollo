@@ -23,9 +23,33 @@ import {
   revokeRefreshToken,
   signAccessToken,
   signRefreshToken,
-  verifyAccessToken,
+  tryAuthenticateRequest,
   verifyRefreshToken,
 } from './auth.js';
+import {
+  buildOidcAuthorizationRequest,
+  buildProviderLogoutUrl,
+  completeOidcAuthorization,
+} from './oidc.js';
+import {
+  clearOidcTransactionCookie,
+  clearSessionCookies,
+  getOidcIdTokenCookie,
+  getRefreshCookieLifetimeMs,
+  getRefreshTokenCookie,
+  parseCookieHeader,
+  readOidcTransactionCookie,
+  setOidcTransactionCookie,
+  setSessionCookies,
+} from './sessionCookies.js';
+import {
+  findOrCreatePendingOidcUser,
+  findUserById,
+  linkPendingOidcIdentityToUser,
+  listUsersWithAuthDetails,
+  toAdminUser,
+  touchUserLogin,
+} from './userAccounts.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -36,6 +60,44 @@ const projectRooms = new Map();
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function toSessionUser(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    isAdmin: Boolean(user.is_admin ?? user.isAdmin),
+  };
+}
+
+function buildSessionPayload(user) {
+  return {
+    user: toSessionUser(user),
+  };
+}
+
+async function issueApolloSession(res, user, options = {}) {
+  const accessToken = signAccessToken(user);
+  const refreshToken = signRefreshToken(user);
+  await persistRefreshToken(refreshToken, user.id);
+  await touchUserLogin(user.id);
+  setSessionCookies(res, {
+    accessToken,
+    refreshToken,
+    refreshMaxAgeMs: getRefreshCookieLifetimeMs(),
+    oidcIdToken: options.oidcIdToken || '',
+  });
+  return buildSessionPayload(user);
+}
+
+function readRefreshToken(req) {
+  return String(req.body?.refreshToken || getRefreshTokenCookie(req) || '').trim();
+}
+
+function buildAuthErrorRedirect(message) {
+  const url = new URL('http://apollo.invalid/');
+  url.searchParams.set('auth_error', message);
+  return `${url.pathname}${url.search}`;
 }
 
 function toSafeName(name, fallback = 'file') {
@@ -498,7 +560,83 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', now: nowIso() });
 });
 
+app.get('/api/auth/config', (_req, res) => {
+  res.json({
+    oidcEnabled: Boolean(config.oidcEnabled),
+    bootstrapLocalLoginEnabled: Boolean(config.bootstrapLocalLoginEnabled),
+    localPasswordLoginEnabled: !config.oidcEnabled,
+  });
+});
+
+app.get('/api/auth/oidc/start', async (req, res) => {
+  if (!config.oidcEnabled) {
+    res.status(404).json({ error: 'OIDC is not enabled' });
+    return;
+  }
+
+  try {
+    const { url, transaction } = await buildOidcAuthorizationRequest(req);
+    setOidcTransactionCookie(res, transaction);
+    res.redirect(url.href);
+  } catch (error) {
+    console.error(error);
+    res.redirect(buildAuthErrorRedirect('Failed to start SSO login'));
+  }
+});
+
+app.get('/api/auth/oidc/callback', async (req, res) => {
+  if (!config.oidcEnabled) {
+    clearOidcTransactionCookie(res);
+    res.redirect(buildAuthErrorRedirect('OIDC is not enabled'));
+    return;
+  }
+
+  const providerError = String(req.query?.error || '').trim();
+  if (providerError) {
+    const description = String(req.query?.error_description || providerError).trim();
+    clearOidcTransactionCookie(res);
+    res.redirect(buildAuthErrorRedirect(description || 'SSO login failed'));
+    return;
+  }
+
+  const transaction = readOidcTransactionCookie(req);
+  clearOidcTransactionCookie(res);
+  if (!transaction?.codeVerifier || !transaction?.state || !transaction?.nonce) {
+    res.redirect(buildAuthErrorRedirect('Missing or expired OIDC login transaction'));
+    return;
+  }
+
+  try {
+    const { tokens, claims } = await completeOidcAuthorization(req, transaction);
+    if (!claims.subject || !claims.issuer) {
+      res.redirect(buildAuthErrorRedirect('OIDC response did not include a stable subject'));
+      return;
+    }
+
+    const user = await findOrCreatePendingOidcUser(claims);
+    if (!user?.is_active) {
+      clearSessionCookies(res);
+      res.redirect(buildAuthErrorRedirect('Your account is pending admin activation'));
+      return;
+    }
+
+    await issueApolloSession(res, user, {
+      oidcIdToken: tokens.id_token || '',
+    });
+    res.redirect('/');
+  } catch (error) {
+    console.error(error);
+    clearSessionCookies(res);
+    res.redirect(buildAuthErrorRedirect(error.message || 'SSO login failed'));
+  }
+});
+
 app.post('/api/auth/login', async (req, res) => {
+  if (config.oidcEnabled) {
+    res.status(403).json({ error: 'Local login is disabled. Use SSO or bootstrap login.' });
+    return;
+  }
+
   try {
     const username = String(req.body?.username || '').trim();
     const password = String(req.body?.password || '');
@@ -513,35 +651,52 @@ app.post('/api/auth/login', async (req, res) => {
       return;
     }
 
-    const accessToken = signAccessToken(user);
-    const refreshToken = signRefreshToken(user);
-    await persistRefreshToken(refreshToken, user.id);
-
-    res.json({
-      accessToken,
-      refreshToken,
-      user: {
-        id: user.id,
-        username: user.username,
-        isAdmin: Boolean(user.is_admin),
-      },
-    });
+    res.json(await issueApolloSession(res, user));
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to login' });
   }
 });
 
+app.post('/api/auth/bootstrap/login', async (req, res) => {
+  if (!config.bootstrapLocalLoginEnabled) {
+    res.status(403).json({ error: 'Bootstrap local login is disabled' });
+    return;
+  }
+
+  try {
+    const username = String(req.body?.username || '').trim();
+    const password = String(req.body?.password || '');
+    if (!username || !password) {
+      res.status(400).json({ error: 'Username and password are required' });
+      return;
+    }
+
+    const user = await authenticateCredentials(username, password);
+    if (!user || !user.is_admin) {
+      res.status(401).json({ error: 'Invalid bootstrap admin credentials' });
+      return;
+    }
+
+    res.json(await issueApolloSession(res, user));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to login with bootstrap admin' });
+  }
+});
+
 app.post('/api/auth/refresh', async (req, res) => {
   try {
-    const refreshToken = req.body?.refreshToken;
+    const refreshToken = readRefreshToken(req);
     if (!refreshToken) {
+      clearSessionCookies(res);
       res.status(400).json({ error: 'Missing refresh token' });
       return;
     }
 
     const persisted = await isRefreshTokenPersisted(refreshToken);
     if (!persisted) {
+      clearSessionCookies(res);
       res.status(401).json({ error: 'Invalid refresh token' });
       return;
     }
@@ -552,50 +707,42 @@ app.post('/api/auth/refresh', async (req, res) => {
       [payload.sub]
     );
     if (userResult.rowCount === 0 || !userResult.rows[0].is_active) {
+      await revokeRefreshToken(refreshToken);
+      clearSessionCookies(res);
       res.status(401).json({ error: 'User is not active' });
       return;
     }
 
     const user = userResult.rows[0];
-    const newAccess = signAccessToken(user);
-    const newRefresh = signRefreshToken(user);
     await revokeRefreshToken(refreshToken);
-    await persistRefreshToken(newRefresh, user.id);
-
-    res.json({
-      accessToken: newAccess,
-      refreshToken: newRefresh,
-      user: {
-        id: user.id,
-        username: user.username,
-        isAdmin: Boolean(user.is_admin),
-      },
-    });
+    res.json(await issueApolloSession(res, user, {
+      oidcIdToken: getOidcIdTokenCookie(req),
+    }));
   } catch (error) {
+    clearSessionCookies(res);
     res.status(401).json({ error: 'Invalid refresh token' });
   }
 });
 
 app.post('/api/auth/logout', async (req, res) => {
   try {
-    const refreshToken = req.body?.refreshToken;
+    const refreshToken = readRefreshToken(req);
     if (refreshToken) {
       await revokeRefreshToken(refreshToken);
     }
-    res.json({ ok: true });
+    const redirectUrl = await buildProviderLogoutUrl(req, getOidcIdTokenCookie(req));
+    clearOidcTransactionCookie(res);
+    clearSessionCookies(res);
+    res.json({ ok: true, redirectUrl: redirectUrl || null });
   } catch (error) {
+    clearOidcTransactionCookie(res);
+    clearSessionCookies(res);
     res.status(500).json({ error: 'Failed to logout' });
   }
 });
 
 app.get('/api/me', requireAuth, async (req, res) => {
-  res.json({
-    user: {
-      id: req.user.id,
-      username: req.user.username,
-      isAdmin: req.user.isAdmin,
-    },
-  });
+  res.json(buildSessionPayload(req.user));
 });
 
 app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
@@ -629,12 +776,7 @@ app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
 });
 
 app.get('/api/admin/users', requireAuth, requireAdmin, async (_req, res) => {
-  const result = await pool.query(
-    `SELECT id, username, is_admin AS "isAdmin", is_active AS "isActive", created_at AS "createdAt"
-     FROM users
-     ORDER BY username ASC`
-  );
-  res.json({ users: result.rows });
+  res.json({ users: await listUsersWithAuthDetails() });
 });
 
 app.patch('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
@@ -674,7 +816,7 @@ app.patch('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) =>
       `UPDATE users
        SET ${updates.join(', ')}
        WHERE id = $${idx}
-       RETURNING id, username, is_admin AS "isAdmin", is_active AS "isActive"`,
+       RETURNING id`,
       values
     );
 
@@ -683,10 +825,39 @@ app.patch('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) =>
       return;
     }
 
-    res.json({ user: result.rows[0] });
+    const updatedUser = await findUserById(userId);
+    res.json({ user: toAdminUser(updatedUser) });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to update user' });
+  }
+});
+
+app.post('/api/admin/users/:id/link-oidc', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const linkedUser = await linkPendingOidcIdentityToUser({
+      sourceUserId: String(req.body?.sourceUserId || ''),
+      targetUserId: req.params.id,
+    });
+    res.json({ user: toAdminUser(linkedUser) });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to link OIDC identity');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (
+      /required/i.test(message)
+      || /already has/i.test(message)
+      || /must be different/i.test(message)
+      || /pending/i.test(message)
+      || /not an oidc/i.test(message)
+    ) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to link OIDC identity' });
   }
 });
 
@@ -2282,11 +2453,12 @@ app.post('/api/media/batch-resolve', requireAuth, async (req, res) => {
   }
 });
 
-wsServer.on('connection', (ws) => {
+wsServer.on('connection', (ws, req) => {
+  const authenticatedUser = req.user || null;
   ws.session = {
-    userId: null,
-    username: null,
-    isAdmin: false,
+    userId: authenticatedUser?.id || null,
+    username: authenticatedUser?.username || null,
+    isAdmin: Boolean(authenticatedUser?.isAdmin),
     joinedProjects: new Set(),
   };
   clients.add(ws);
@@ -2303,15 +2475,10 @@ wsServer.on('connection', (ws) => {
     try {
       switch (message.type) {
         case 'auth.hello': {
-          const token = String(message.accessToken || '');
-          if (!token) {
-            sendWs(ws, 'error', { code: 'AUTH_REQUIRED', message: 'accessToken is required', retryable: false });
+          if (!ws.session.userId) {
+            sendWs(ws, 'error', { code: 'AUTH_REQUIRED', message: 'Authenticate first', retryable: false });
             return;
           }
-          const payload = verifyAccessToken(token);
-          ws.session.userId = payload.sub;
-          ws.session.username = payload.username;
-          ws.session.isAdmin = Boolean(payload.isAdmin);
           sendWs(ws, 'auth.ok', {
             user: {
               id: ws.session.userId,
@@ -2553,6 +2720,9 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy();
     return;
   }
+
+  req.cookies = parseCookieHeader(req.headers.cookie || '');
+  req.user = tryAuthenticateRequest(req);
 
   wsServer.handleUpgrade(req, socket, head, (ws) => {
     wsServer.emit('connection', ws, req);

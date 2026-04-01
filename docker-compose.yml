@@ -18,6 +18,28 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  oidc-mock:
+    image: ghcr.io/geigerzaehler/oidc-provider-mock:latest
+    restart: unless-stopped
+    command:
+      - --host
+      - 0.0.0.0
+      - --require-nonce
+      - "true"
+      - --user-claims
+      - '{"sub":"alice@example.com","email":"alice@example.com","name":"Alice Apollo"}'
+      - --user-claims
+      - '{"sub":"bob@example.com","email":"bob@example.com","name":"Bob Apollo"}'
+    ports:
+      - "${OIDC_MOCK_PORT:-9400}:9400"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://localhost:9400/.well-known/openid-configuration').read()"
+      interval: 30s
+      timeout: 3s
+      retries: 10
+
   api:
     build:
       context: ./server
@@ -32,13 +54,27 @@ services:
       REFRESH_TOKEN_TTL_DAYS: "${REFRESH_TOKEN_TTL_DAYS:-7}"
       DEFAULT_ADMIN_USERNAME: "${DEFAULT_ADMIN_USERNAME:-admin}"
       DEFAULT_ADMIN_PASSWORD: "${DEFAULT_ADMIN_PASSWORD:-changemechangeme}"
-      CORS_ORIGIN: "${CORS_ORIGIN:-http://localhost:3000}"
+      APP_ORIGIN: "${APP_ORIGIN:-}"
+      CORS_ORIGIN: "${CORS_ORIGIN:-}"
+      COOKIE_SECURE: "${COOKIE_SECURE:-false}"
+      BOOTSTRAP_LOCAL_LOGIN_ENABLED: "${BOOTSTRAP_LOCAL_LOGIN_ENABLED:-true}"
+      OIDC_ENABLED: "${OIDC_ENABLED:-false}"
+      OIDC_ISSUER: "${OIDC_ISSUER_DOCKER:-${OIDC_ISSUER:-}}"
+      OIDC_PUBLIC_ISSUER: "${OIDC_PUBLIC_ISSUER:-${OIDC_ISSUER_LOCAL:-${OIDC_ISSUER:-}}}"
+      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID:-}"
+      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET:-}"
+      OIDC_REDIRECT_URI: "${OIDC_REDIRECT_URI:-}"
+      OIDC_SCOPES: "${OIDC_SCOPES:-openid profile email}"
+      OIDC_POST_LOGOUT_REDIRECT_URI: "${OIDC_POST_LOGOUT_REDIRECT_URI:-}"
+      OIDC_ALLOW_INSECURE_HTTP: "${OIDC_ALLOW_INSECURE_HTTP:-false}"
       MEDIA_ROOT: /data/media
       MEDIA_DB_ROOT: /data/media
       MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-524288000}"
       RECORD_LOCK_TIMEOUT_SECONDS: "${RECORD_LOCK_TIMEOUT_SECONDS:-30}"
       CHECKPOINT_EVERY_OPS: "${CHECKPOINT_EVERY_OPS:-100}"
       CHECKPOINT_EVERY_SECONDS: "${CHECKPOINT_EVERY_SECONDS:-30}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8787:8787"
     volumes:
@@ -48,15 +84,19 @@ services:
     build:
       context: .
       dockerfile: docker/web.Dockerfile
-      args:
-        VITE_SERVER_API_BASE: /api
-        VITE_SERVER_WS_BASE: /ws
     restart: unless-stopped
+    environment:
+      WEB_RUNTIME_MODE: "${WEB_RUNTIME_MODE:-dev}"
+      WEB_PORT: "${WEB_PORT:-3000}"
+      VITE_DEV_HOST: "${VITE_DEV_HOST:-0.0.0.0}"
+      VITE_USE_HTTPS: "${VITE_USE_HTTPS:-true}"
+      VITE_SSL_KEY_PATH: "${VITE_SSL_KEY_PATH:-certs/dev.key}"
+      VITE_SSL_CERT_PATH: "${VITE_SSL_CERT_PATH:-certs/dev.crt}"
+      VITE_BACKEND_ORIGIN: "${VITE_BACKEND_ORIGIN_DOCKER:-http://api:8787}"
+      VITE_SERVER_API_BASE: "${VITE_SERVER_API_BASE:-/api}"
+      VITE_SERVER_WS_BASE: "${VITE_SERVER_WS_BASE:-/ws}"
     ports:
-      - "3000:443"
-    volumes:
-      - ./certs/dev.crt:/etc/nginx/certs/dev.crt:ro
-      - ./certs/dev.key:/etc/nginx/certs/dev.key:ro
+      - "${WEB_PORT:-3000}:3000"
     depends_on:
       - api
 

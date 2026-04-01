@@ -3,6 +3,7 @@ import { Plus, Download, FileAudio, CircleUserRound } from 'lucide-react';
 import { isValidMusicalNumber, normalizeMusicalNumber, normalizeProjectName } from '../utils/naming';
 import { PlaybackDevicesSettingsPanel } from './SettingsPanels';
 import { usePlaybackDeviceSettings } from '../hooks/usePlaybackDeviceSettings';
+import AdminPanel from './AdminPanel';
 
 function HostedDashboard({
   session,
@@ -27,6 +28,7 @@ function HostedDashboard({
   const [editingProjectName, setEditingProjectName] = useState('');
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
   const profileMenuRef = useRef(null);
   const {
     audioInputs,
@@ -197,6 +199,17 @@ function HostedDashboard({
                 >
                   Settings
                 </button>
+                {session?.user?.isAdmin ? (
+                  <button
+                    onClick={() => {
+                      setProfileMenuOpen(false);
+                      setAdminOpen(true);
+                    }}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+                  >
+                    Admin
+                  </button>
+                ) : null}
                 <button
                   onClick={() => {
                     setProfileMenuOpen(false);
@@ -427,6 +440,13 @@ function HostedDashboard({
           </div>
         </div>
       ) : null}
+
+      <AdminPanel
+        open={adminOpen}
+        session={session}
+        projects={projects}
+        onClose={() => setAdminOpen(false)}
+      />
     </div>
   );
 }

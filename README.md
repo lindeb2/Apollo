@@ -12,7 +12,7 @@ The goal is to make rehearsal easier, more musical, and more flexible. Arranger-
 The fastest way to run locally is via the compose file:
 
 ```
-docker compose up
+npm run dev:full
 ```
 
 This starts the application (frontend + backend) and a local PostgreSQL instance.
@@ -119,6 +119,15 @@ The backend requires at least:
 - `JWT_ACCESS_SECRET`
 - `JWT_REFRESH_SECRET`
 
+If you enable OIDC / SSO, also set:
+
+- `OIDC_ENABLED=true`
+- `OIDC_ISSUER`
+- `OIDC_CLIENT_ID`
+- `OIDC_REDIRECT_URI`
+- `OIDC_CLIENT_SECRET` when your provider requires it
+- `OIDC_POST_LOGOUT_REDIRECT_URI` if you want provider logout redirects
+
 The shared root `.env` is used for local npm runs and Docker Compose interpolation.
 The example file uses shared database credentials with:
 
@@ -130,6 +139,57 @@ The example file uses shared database credentials with:
 ```bash
 docker compose up -d db
 ```
+
+### Local OIDC Sandbox
+
+If you want to learn or test OIDC before you have a real provider, Apollo can run against a local mock OpenID Connect provider.
+
+Start the dev dependencies with:
+
+```bash
+npm run dev:oidc:deps
+```
+
+That starts:
+
+- `db`
+- `oidc-mock` on `http://localhost:9400`
+
+The mock provider is intended for development only. By default it accepts any client ID / secret / redirect URI, and shows a simple login form where you can authorize a test user. Apollo's current Compose setup uses this mock only for local development via the `dev-oidc` profile.
+The mock provider is intended for development only. By default it accepts any client ID / secret / redirect URI, and shows a simple login form where you can authorize a test user.
+
+Use these local `.env` values for the sandbox:
+
+```env
+APP_ORIGIN=
+OIDC_ENABLED=true
+OIDC_ISSUER_LOCAL=http://localhost:9400
+OIDC_ISSUER_DOCKER=http://host.docker.internal:9400
+OIDC_PUBLIC_ISSUER=
+OIDC_CLIENT_ID=apollo-dev
+OIDC_CLIENT_SECRET=apollo-dev-secret
+BOOTSTRAP_LOCAL_LOGIN_ENABLED=true
+COOKIE_SECURE=false
+OIDC_ALLOW_INSECURE_HTTP=true
+```
+
+Then run Apollo in npm dev mode:
+
+```bash
+npm run dev:api
+npm run dev:web
+```
+
+Open your actual app URL, for example `https://localhost:3000` or `https://192.168.x.x:3000`, and click `Sign in with SSO`.
+
+The mock provider has two predefined users:
+
+- `alice@example.com`
+- `bob@example.com`
+
+You can also type any `sub` value into the provider form and authorize it directly.
+
+Important: even though `docker compose up` now starts `oidc-mock` locally too, the recommended OIDC flow is still the npm frontend/backend flow above. In this mode both the browser and Apollo backend can consistently reach the mock issuer at `http://localhost:9400`.
 
 ### 4. Start The Backend
 
@@ -164,8 +224,9 @@ For the fuller explanation of when to use npm vs Docker, read [`docs/WORKFLOW.md
 For a production-like local run, Apollo includes a Docker Compose stack with:
 
 - `db` for PostgreSQL
+- `oidc-mock` for local OIDC testing
 - `api` for the backend
-- `web` for the built frontend and proxy layer
+- `web` for the frontend runtime selected by `WEB_RUNTIME_MODE`
 
 Start it with:
 
@@ -178,6 +239,8 @@ Or run it directly:
 ```bash
 docker compose up
 ```
+
+`oidc-mock` is part of the local Compose stack for convenience, but it is still a local development dependency, not something intended to be packaged or shipped as part of the production app release.
 
 If you want both npm and Docker to use an external database, update the shared DB values in the
 root `.env` and set both hosts to that server. For a temporary Docker-only override, set
@@ -193,6 +256,31 @@ Default example credentials in the checked-in env/docker config are:
 - password: `changemechangeme`
 
 Change secrets and default credentials before any real deployment.
+
+## OIDC / SSO
+
+Apollo now supports generic OpenID Connect login with discovery-based configuration.
+
+- normal hosted sign-in can be handled by OIDC
+- Apollo still keeps app-local authorization in Postgres (`is_admin`, project permissions, ownership)
+- first OIDC login creates a disabled local Apollo user until an admin activates or links that identity
+- a local bootstrap admin login can stay enabled for first activation and recovery
+
+Recommended rollout order:
+
+1. learn the flow with the local mock provider
+2. activate and link users through Apollo's admin UI
+3. switch to a real provider only after the login and approval flow feels clear
+
+Important production notes:
+
+- OIDC and cookie-based sessions should be run behind real HTTPS
+- set `WEB_RUNTIME_MODE=prod` so the web container serves frontend only and leaves `/api` + `/ws` to the external reverse proxy
+- set `VITE_USE_HTTPS=false` in prod because HTTPS should terminate at the shared reverse proxy
+- set `COOKIE_SECURE=true` in production
+- set `CORS_ORIGIN` to your real Apollo origin, for example `https://apollo.example.com`
+- make sure your OIDC provider redirect URI matches `/api/auth/oidc/callback`
+- WebSocket auth now relies on the same session cookies as the REST API
 
 ## Release Images
 

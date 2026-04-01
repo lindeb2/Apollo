@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { config } from './config.js';
 import { pool } from './db.js';
+import { getAccessTokenCookie } from './sessionCookies.js';
 
 export function signAccessToken(user) {
   return jwt.sign(
@@ -47,6 +48,7 @@ export async function authenticateCredentials(username, password) {
 
   const user = result.rows[0];
   if (!user.is_active) return null;
+  if (!user.password_hash) return null;
   const valid = await bcrypt.compare(password, user.password_hash);
   if (!valid) return null;
   return user;
@@ -81,23 +83,42 @@ export function parseBearerToken(req) {
   return header.slice('Bearer '.length).trim();
 }
 
+export function getAccessTokenFromRequest(req) {
+  return parseBearerToken(req) || getAccessTokenCookie(req) || null;
+}
+
+function toAuthenticatedUser(payload) {
+  return {
+    id: payload.sub,
+    username: payload.username,
+    isAdmin: Boolean(payload.isAdmin),
+  };
+}
+
+export function tryAuthenticateRequest(req) {
+  const token = getAccessTokenFromRequest(req);
+  if (!token) return null;
+  try {
+    const payload = verifyAccessToken(token);
+    return toAuthenticatedUser(payload);
+  } catch {
+    return null;
+  }
+}
+
 export function requireAuth(req, res, next) {
-  const token = parseBearerToken(req);
+  const token = getAccessTokenFromRequest(req);
   if (!token) {
     res.status(401).json({ error: 'Missing access token' });
     return;
   }
-  try {
-    const payload = verifyAccessToken(token);
-    req.user = {
-      id: payload.sub,
-      username: payload.username,
-      isAdmin: Boolean(payload.isAdmin),
-    };
-    next();
-  } catch (error) {
+  const user = tryAuthenticateRequest(req);
+  if (!user) {
     res.status(401).json({ error: 'Invalid or expired access token' });
+    return;
   }
+  req.user = user;
+  next();
 }
 
 export function requireAdmin(req, res, next) {

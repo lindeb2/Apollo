@@ -3,8 +3,8 @@
 ### Instant feedback during work
 
 ```bash
-# start postgres, not needed if external pg
-docker compose up -d db
+# start local postgres and local openidconnect-mock
+docker compose up -d db oidc-mock
 ```
 
 ```bash
@@ -55,8 +55,8 @@ npm run dev:full
 ### Docker-only local run
 
 ```bash
-# use local postgres in Docker
-docker compose up
+# use local postgres and mock-oidc in docker
+npm run dev:full
 ```
 
 ```bash
@@ -69,7 +69,7 @@ DATABASE_URL=postgres://user:password@host:5432/database docker compose up api w
 
 Use Docker earlier if your change touches:
 
-- nginx or proxy behavior
+- proxy behavior
 - Dockerfiles
 - Docker Compose
 - environment variables
@@ -117,8 +117,8 @@ npm run dev:api # npm --workspaces=false --prefix server run dev
 npm run dev:web # ./scripts/dev-web.sh
 ```
 
-- runs `generate-lan-cert.sh`
-- starts the frontend Vite dev server over HTTPS
+- runs `generate-lan-cert.sh` only when `VITE_USE_HTTPS=true`
+- starts the frontend Vite dev server
 - reads frontend settings from the shared root `.env`
 - proxies `/api` and `/ws` traffic to the backend using those env values
 
@@ -134,7 +134,7 @@ npm run build
 npm run dev:full # scripts/dev-full.sh
 ```
 
-- runs `generate-lan-cert.sh`
+- runs `generate-lan-cert.sh` only when `VITE_USE_HTTPS=true`
 - starts the full Docker Compose stack
   - `web`
   - `api`
@@ -159,6 +159,11 @@ What it does:
 ```bash
 npm run cert:lan # generate-lan-cert.sh
 ```
+
+Use this when:
+
+- local dev runs with `VITE_USE_HTTPS=true`
+- you want mic/OIDC to work from another device on your network
 
 #
 #

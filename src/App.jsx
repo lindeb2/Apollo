@@ -12,10 +12,15 @@ import { registerAndUploadMediaBlob } from './lib/mediaUpload';
 import { normalizeProjectName } from './utils/naming';
 import { createId } from './utils/id';
 import {
+  beginOidcLogin,
+  bootstrapLogin,
   bootstrapServerProject,
   clearServerSession,
   createServerProject,
   deleteServerProject,
+  getAuthConfig,
+  getCurrentSession,
+  isSessionRecoveryError,
   isServerModeEnabled,
   listServerProjects,
   loadServerSession,
@@ -76,6 +81,8 @@ function remapProjectBlobIds(project, idMap) {
 function App() {
   const [view, setView] = useState('player'); // 'player' | 'daw' | 'editor'
   const [serverSession, setServerSession] = useState(loadServerSession());
+  const [authConfig, setAuthConfig] = useState(null);
+  const [authBootstrapping, setAuthBootstrapping] = useState(true);
   const [serverProjects, setServerProjects] = useState([]);
   const [serverError, setServerError] = useState('');
   const [serverLoading, setServerLoading] = useState(false);
@@ -104,6 +111,64 @@ function App() {
   }, [serverSession]);
 
   useEffect(() => {
+    if (!isServerModeEnabled()) {
+      setAuthBootstrapping(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const bootstrapAuth = async () => {
+      setAuthBootstrapping(true);
+
+      const params = new URLSearchParams(window.location.search);
+      const authError = params.get('auth_error');
+      if (authError) {
+        setServerError(authError);
+        params.delete('auth_error');
+        const nextSearch = params.toString();
+        window.history.replaceState({}, '', `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`);
+      }
+
+      try {
+        const nextAuthConfig = await getAuthConfig();
+        if (!cancelled) {
+          setAuthConfig(nextAuthConfig);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setServerError(error.message || 'Failed to load auth configuration');
+        }
+      }
+
+      try {
+        const session = await getCurrentSession();
+        saveServerSession(session);
+        if (!cancelled) {
+          setServerSession(session);
+        }
+      } catch (error) {
+        clearServerSession();
+        if (!cancelled) {
+          setServerSession(null);
+          if (!isSessionRecoveryError(error) && !/401\s+Unauthorized/i.test(String(error?.message || ''))) {
+            setServerError((previous) => previous || error.message || 'Failed to load session');
+          }
+        }
+      } finally {
+        if (!cancelled) {
+          setAuthBootstrapping(false);
+        }
+      }
+    };
+
+    bootstrapAuth();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const handleSessionUpdated = () => {
       setServerSession(loadServerSession());
     };
@@ -117,7 +182,9 @@ function App() {
     setServerError('');
     setServerLoading(true);
     try {
-      const session = await login(username, password);
+      const session = authConfig?.oidcEnabled
+        ? await bootstrapLogin(username, password)
+        : await login(username, password);
       saveServerSession(session);
       setServerSession(session);
       await refreshServerData(session);
@@ -129,11 +196,16 @@ function App() {
     }
   };
 
+  const handleSsoLogin = () => {
+    setServerError('');
+    beginOidcLogin();
+  };
+
   const handleServerLogout = async () => {
+    let redirectUrl = '';
     try {
-      if (serverSession) {
-        await logout(serverSession);
-      }
+      const response = await logout();
+      redirectUrl = String(response?.redirectUrl || '');
     } catch {
       // ignore logout errors
     }
@@ -142,6 +214,9 @@ function App() {
     setServerProjects([]);
     setRemoteEditorSession(null);
     setView('player');
+    if (redirectUrl) {
+      window.location.assign(redirectUrl);
+    }
   };
 
   const handleOpenServerProject = async (projectMeta) => {
@@ -325,11 +400,23 @@ function App() {
     );
   }
 
+  if (authBootstrapping) {
+    return (
+      <div className="h-screen w-screen overflow-hidden bg-gray-900 text-white flex items-center justify-center p-6">
+        <div className="rounded border border-gray-700 bg-gray-800 px-6 py-4 text-sm text-gray-300">
+          Restoring Apollo session...
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-screen w-screen overflow-hidden bg-gray-900 text-white">
       {!serverSession ? (
         <HostedLogin
+          authConfig={authConfig}
           onLogin={handleServerLogin}
+          onSsoLogin={handleSsoLogin}
           loading={serverLoading}
           error={serverError}
         />

@@ -1,16 +1,12 @@
-FROM node:20-alpine AS build
+FROM node:20-alpine
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
 COPY . .
-ARG VITE_SERVER_API_BASE=/api
-ARG VITE_SERVER_WS_BASE=/ws
-ENV VITE_SERVER_API_BASE=${VITE_SERVER_API_BASE}
-ENV VITE_SERVER_WS_BASE=${VITE_SERVER_WS_BASE}
-RUN npm run build --workspaces=false
-
-FROM nginx:1.27-alpine
-COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 80 443
-CMD ["nginx", "-g", "daemon off;"]
+ENV WEB_RUNTIME_MODE=dev
+ENV WEB_PORT=3000
+ENV VITE_DEV_HOST=0.0.0.0
+ENV VITE_SERVER_API_BASE=/api
+ENV VITE_SERVER_WS_BASE=/ws
+EXPOSE 3000
+CMD ["sh", "-lc", "set -eu; if [ \"${WEB_RUNTIME_MODE:-dev}\" = \"prod\" ]; then npm run build --workspaces=false; exec npx vite preview --host 0.0.0.0 --port \"${WEB_PORT:-3000}\"; fi; exec npx vite --host 0.0.0.0 --port \"${WEB_PORT:-3000}\""]

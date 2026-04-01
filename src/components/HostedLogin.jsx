@@ -1,8 +1,22 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
-function HostedLogin({ onLogin, loading = false, error = '' }) {
+function HostedLogin({
+  authConfig = null,
+  onLogin,
+  onSsoLogin,
+  loading = false,
+  error = '',
+}) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [bootstrapOpen, setBootstrapOpen] = useState(false);
+
+  const showSsoButton = authConfig?.oidcEnabled !== false;
+  const showLocalLogin = useMemo(() => {
+    if (!authConfig) return false;
+    return Boolean(authConfig.localPasswordLoginEnabled || authConfig.bootstrapLocalLoginEnabled);
+  }, [authConfig]);
+  const localLoginLabel = authConfig?.oidcEnabled ? 'Bootstrap admin login' : 'Local login';
 
   const submit = async (e) => {
     e.preventDefault();
@@ -12,40 +26,105 @@ function HostedLogin({ onLogin, loading = false, error = '' }) {
 
   return (
     <div className="h-full flex items-center justify-center bg-gray-900 text-white p-6">
-      <form
-        onSubmit={submit}
-        className="w-full max-w-sm rounded-lg border border-gray-700 bg-gray-800 p-6 space-y-4"
-      >
-        <h1 className="text-xl font-semibold">Apollo Server Login</h1>
-        <div>
-          <label className="block text-sm text-gray-300 mb-1">Username</label>
-          <input
-            className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            autoComplete="username"
-            autoFocus
-          />
+      <div className="w-full max-w-sm rounded-lg border border-gray-700 bg-gray-800 p-6 space-y-4">
+        <div className="space-y-2">
+          <h1 className="text-xl font-semibold">Apollo Sign In</h1>
+          <p className="text-sm text-gray-300">
+            {authConfig?.oidcEnabled
+              ? 'Sign in with your organization account. Bootstrap admin login is only for recovery and first activation.'
+              : 'Sign in with your Apollo server account.'}
+          </p>
         </div>
-        <div>
-          <label className="block text-sm text-gray-300 mb-1">Password</label>
-          <input
-            type="password"
-            className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-          />
-        </div>
+
+        {showSsoButton ? (
+          <button
+            type="button"
+            onClick={onSsoLogin}
+            disabled={loading}
+            className="w-full rounded bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 px-3 py-2 text-sm font-medium"
+          >
+            {loading ? 'Redirecting...' : 'Sign in with SSO'}
+          </button>
+        ) : null}
+
+        {showLocalLogin ? (
+          authConfig?.oidcEnabled ? (
+            <div className="rounded border border-gray-700 bg-gray-900/40">
+              <button
+                type="button"
+                onClick={() => setBootstrapOpen((value) => !value)}
+                className="w-full px-3 py-2 text-left text-sm font-medium hover:bg-gray-800"
+              >
+                {bootstrapOpen ? 'Hide bootstrap admin login' : 'Use bootstrap admin login'}
+              </button>
+              {bootstrapOpen ? (
+                <form onSubmit={submit} className="border-t border-gray-700 px-3 py-3 space-y-3">
+                  <div>
+                    <label className="block text-sm text-gray-300 mb-1">Username</label>
+                    <input
+                      className="w-full rounded bg-gray-950 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      autoComplete="username"
+                      autoFocus
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm text-gray-300 mb-1">Password</label>
+                    <input
+                      type="password"
+                      className="w-full rounded bg-gray-950 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      autoComplete="current-password"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full rounded bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 px-3 py-2 text-sm font-medium"
+                  >
+                    {loading ? 'Signing in...' : 'Sign in as bootstrap admin'}
+                  </button>
+                </form>
+              ) : null}
+            </div>
+          ) : (
+            <form onSubmit={submit} className="space-y-4 border-t border-gray-700 pt-4">
+              <div className="text-sm font-medium text-gray-200">{localLoginLabel}</div>
+              <div>
+                <label className="block text-sm text-gray-300 mb-1">Username</label>
+                <input
+                  className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoComplete="username"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-300 mb-1">Password</label>
+                <input
+                  type="password"
+                  className="w-full rounded bg-gray-900 border border-gray-700 px-3 py-2 text-sm focus:outline-none"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full rounded bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 px-3 py-2 text-sm font-medium"
+              >
+                {loading ? 'Signing in...' : 'Sign in'}
+              </button>
+            </form>
+          )
+        ) : null}
+
         {error ? <p className="text-sm text-red-300">{error}</p> : null}
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full rounded bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 px-3 py-2 text-sm font-medium"
-        >
-          {loading ? 'Signing in...' : 'Sign in'}
-        </button>
-      </form>
+      </div>
     </div>
   );
 }
