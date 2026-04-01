@@ -160,10 +160,10 @@ The mock provider is intended for development only. By default it accepts any cl
 Use these local `.env` values for the sandbox:
 
 ```env
-APP_ORIGIN=
+PUBLIC_BASE_URL=
 OIDC_ENABLED=true
-OIDC_ISSUER_LOCAL=http://localhost:9400
-OIDC_ISSUER_DOCKER=http://host.docker.internal:9400
+OIDC_MOCK_PORT=9400
+OIDC_ISSUER=
 OIDC_PUBLIC_ISSUER=
 OIDC_CLIENT_ID=apollo-dev
 OIDC_CLIENT_SECRET=apollo-dev-secret

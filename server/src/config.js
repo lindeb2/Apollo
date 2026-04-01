@@ -37,16 +37,16 @@ function buildDatabaseUrl() {
 }
 
 function buildOidcIssuer() {
-  return firstDefined(
-    process.env.OIDC_ISSUER,
-    process.env.OIDC_ISSUER_LOCAL
-  ) || '';
+  const explicitIssuer = firstDefined(process.env.OIDC_ISSUER);
+  if (explicitIssuer) return explicitIssuer;
+
+  const mockPort = firstDefined(process.env.OIDC_MOCK_PORT, '9400');
+  return `http://localhost:${mockPort}`;
 }
 
 function buildOidcPublicIssuer(oidcIssuer) {
   return firstDefined(
     process.env.OIDC_PUBLIC_ISSUER,
-    process.env.OIDC_ISSUER_LOCAL,
     oidcIssuer
   ) || '';
 }
@@ -55,26 +55,20 @@ function normalizeOrigin(value) {
   return String(value || '').trim().replace(/\/+$/, '');
 }
 
-function buildAppOrigin() {
-  return normalizeOrigin(process.env.APP_ORIGIN);
+function buildPublicBaseUrl() {
+  return normalizeOrigin(process.env.PUBLIC_BASE_URL);
 }
 
-function buildCorsOrigin(appOrigin) {
-  return firstDefined(process.env.CORS_ORIGIN, appOrigin) || '*';
+function buildCorsOrigin() {
+  return firstDefined(process.env.CORS_ORIGIN) || '*';
 }
 
-function buildOidcRedirectUri(appOrigin) {
-  return firstDefined(
-    process.env.OIDC_REDIRECT_URI,
-    appOrigin ? `${appOrigin}/api/auth/oidc/callback` : ''
-  ) || '';
+function buildOidcRedirectUri() {
+  return firstDefined(process.env.OIDC_REDIRECT_URI) || '';
 }
 
-function buildOidcPostLogoutRedirectUri(appOrigin) {
-  return firstDefined(
-    process.env.OIDC_POST_LOGOUT_REDIRECT_URI,
-    appOrigin ? `${appOrigin}/` : ''
-  ) || '';
+function buildOidcPostLogoutRedirectUri() {
+  return firstDefined(process.env.OIDC_POST_LOGOUT_REDIRECT_URI) || '';
 }
 
 function resolveConfigPath(value, fallback) {
@@ -114,17 +108,17 @@ const mediaRoot = resolveConfigPath(process.env.MEDIA_ROOT, 'media');
 const mediaDbRoot = resolveConfigPath(process.env.MEDIA_DB_ROOT, mediaRoot);
 const oidcIssuer = buildOidcIssuer();
 const oidcPublicIssuer = buildOidcPublicIssuer(oidcIssuer);
-const appOrigin = buildAppOrigin();
+const publicBaseUrl = buildPublicBaseUrl();
 
 export const config = {
   port: Number(process.env.API_PORT || 8787),
-  appOrigin,
+  publicBaseUrl,
   databaseUrl: process.env.DATABASE_URL,
   jwtAccessSecret: process.env.JWT_ACCESS_SECRET,
   jwtRefreshSecret: process.env.JWT_REFRESH_SECRET,
   accessTokenTtl: process.env.ACCESS_TOKEN_TTL || '15m',
   refreshTokenTtlDays: Number(process.env.REFRESH_TOKEN_TTL_DAYS || 7),
-  corsOrigin: buildCorsOrigin(appOrigin),
+  corsOrigin: buildCorsOrigin(),
   mediaRoot,
   mediaDbRoot,
   maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES || 524288000),
@@ -140,8 +134,8 @@ export const config = {
   oidcPublicIssuer,
   oidcClientId: process.env.OIDC_CLIENT_ID || '',
   oidcClientSecret: process.env.OIDC_CLIENT_SECRET || '',
-  oidcRedirectUri: buildOidcRedirectUri(appOrigin),
+  oidcRedirectUri: buildOidcRedirectUri(),
   oidcScopes: process.env.OIDC_SCOPES || 'openid profile email',
-  oidcPostLogoutRedirectUri: buildOidcPostLogoutRedirectUri(appOrigin),
+  oidcPostLogoutRedirectUri: buildOidcPostLogoutRedirectUri(),
   oidcAllowInsecureHttp: parseBoolean(process.env.OIDC_ALLOW_INSECURE_HTTP, false),
 };

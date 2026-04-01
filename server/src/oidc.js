@@ -15,7 +15,7 @@ function stringClaim(value) {
 }
 
 function resolveAppOrigin(req) {
-  return choosePreferredOrigin(config.appOrigin, getRequestOrigin(req));
+  return choosePreferredOrigin(config.publicBaseUrl, getRequestOrigin(req));
 }
 
 function resolveRedirectUri(req) {
