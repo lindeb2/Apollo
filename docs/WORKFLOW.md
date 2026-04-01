@@ -142,7 +142,7 @@ npm run dev:full # scripts/dev-full.sh
 
 Use this when:
 
-- you want to test the app the way the full stack runs
+- you want to test the app the way the local Docker stack runs
 - you want to catch Docker, proxy, or container-related problems
 - you want a final confidence check before pushing
 
@@ -172,6 +172,7 @@ Use this when:
 
 By default, both npm and Docker Compose read the same shared DB settings from the root `.env`, but it can be overridden with `DATABASE_URL` in your shell.:
 
+- `API_PORT`
 - `DB_USER`
 - `DB_PASSWORD`
 - `DB_NAME`
@@ -179,10 +180,10 @@ By default, both npm and Docker Compose read the same shared DB settings from th
 
 The normal local difference is only the host:
 
-- npm/backend uses `DB_HOST_LOCAL`
-- Docker Compose uses `DB_HOST_DOCKER`
+- npm/backend assumes `localhost`
+- Docker Compose assumes `db`
 
-Docker Compose can still be temporarily overridden with `DATABASE_URL` in your shell.
+Either mode can still be overridden with `DATABASE_URL` in your shell.
 
 That value tells it where Postgres lives.
 
@@ -194,8 +195,6 @@ DB_USER=apollo
 DB_PASSWORD=apollo
 DB_NAME=apollo
 DB_PORT=5432
-DB_HOST_LOCAL=localhost
-DB_HOST_DOCKER=db
 ```
 
 This means:
@@ -206,12 +205,6 @@ This means:
 - port is `5432`
 - database name is `apollo`
 
-If the backend is running on your machine, `localhost` means your machine.
+If the backend is running on your machine, Apollo assumes `localhost`.
 
-If the backend is inside Docker Compose, the host is different. In Docker Compose it uses:
-
-```env
-DB_HOST_DOCKER=db
-```
-
-There, `db` is the Docker service name.
+If the backend is inside Docker Compose, Apollo assumes `db`, which is the Docker service name.

@@ -17,12 +17,14 @@ function attachForwardedHeaders(proxy, forwardedProto) {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  const serverHost = env.VITE_DEV_HOST || '0.0.0.0';
+  const serverHost = env.WEB_LISTEN_HOST || '0.0.0.0';
   const serverPort = Number(env.WEB_PORT || env.VITE_DEV_PORT || 3000);
   const useHttps = env.VITE_USE_HTTPS === 'true';
-  const sslKeyPath = env.VITE_SSL_KEY_PATH || path.join(process.cwd(), 'certs/dev.key');
-  const sslCertPath = env.VITE_SSL_CERT_PATH || path.join(process.cwd(), 'certs/dev.crt');
-  const backendOrigin = env.VITE_BACKEND_ORIGIN || 'http://localhost:8787';
+  const sslKeyPath = path.join(process.cwd(), 'certs/dev.key');
+  const sslCertPath = path.join(process.cwd(), 'certs/dev.crt');
+  const backendHost = env.BACKEND_HOST || 'localhost';
+  const backendPort = Number(env.BACKEND_PORT || env.API_PORT || 8787);
+  const backendOrigin = `http://${backendHost}:${backendPort}`;
 
   let https = false;
   if (useHttps) {

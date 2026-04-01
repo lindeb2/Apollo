@@ -46,8 +46,8 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      PORT: "${PORT:-8787}"
-      DATABASE_URL: "${DATABASE_URL:-${DB_PROTOCOL:-postgres}://${DB_USER:-apollo}:${DB_PASSWORD:-apollo}@${DB_HOST_DOCKER:-db}:${DB_PORT:-5432}/${DB_NAME:-apollo}}"
+      API_PORT: "${API_PORT:-8787}"
+      DATABASE_URL: "${DATABASE_URL:-${DB_PROTOCOL:-postgres}://${DB_USER:-apollo}:${DB_PASSWORD:-apollo}@db:${DB_PORT:-5432}/${DB_NAME:-apollo}}"
       JWT_ACCESS_SECRET: "${JWT_ACCESS_SECRET:-change-this-access-secret}"
       JWT_REFRESH_SECRET: "${JWT_REFRESH_SECRET:-change-this-refresh-secret}"
       ACCESS_TOKEN_TTL: "${ACCESS_TOKEN_TTL:-15m}"
@@ -86,15 +86,11 @@ services:
       dockerfile: docker/web.Dockerfile
     restart: unless-stopped
     environment:
-      WEB_RUNTIME_MODE: "${WEB_RUNTIME_MODE:-dev}"
       WEB_PORT: "${WEB_PORT:-3000}"
-      VITE_DEV_HOST: "${VITE_DEV_HOST:-0.0.0.0}"
+      WEB_LISTEN_HOST: "${WEB_LISTEN_HOST:-0.0.0.0}"
       VITE_USE_HTTPS: "${VITE_USE_HTTPS:-true}"
-      VITE_SSL_KEY_PATH: "${VITE_SSL_KEY_PATH:-certs/dev.key}"
-      VITE_SSL_CERT_PATH: "${VITE_SSL_CERT_PATH:-certs/dev.crt}"
-      VITE_BACKEND_ORIGIN: "${VITE_BACKEND_ORIGIN_DOCKER:-http://api:8787}"
-      VITE_SERVER_API_BASE: "${VITE_SERVER_API_BASE:-/api}"
-      VITE_SERVER_WS_BASE: "${VITE_SERVER_WS_BASE:-/ws}"
+      BACKEND_HOST: api
+      BACKEND_PORT: "${API_PORT:-8787}"
     ports:
       - "${WEB_PORT:-3000}:3000"
     depends_on:

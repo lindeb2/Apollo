@@ -28,7 +28,7 @@ function buildDatabaseUrl() {
   const protocol = firstDefined(process.env.DB_PROTOCOL, 'postgres');
   const user = firstDefined(process.env.DB_USER);
   const password = firstDefined(process.env.DB_PASSWORD);
-  const host = firstDefined(process.env.DB_HOST_LOCAL);
+  const host = 'localhost';
   const port = firstDefined(process.env.DB_PORT, '5432');
   const name = firstDefined(process.env.DB_NAME);
 
@@ -117,7 +117,7 @@ const oidcPublicIssuer = buildOidcPublicIssuer(oidcIssuer);
 const appOrigin = buildAppOrigin();
 
 export const config = {
-  port: Number(process.env.PORT || 8787),
+  port: Number(process.env.API_PORT || 8787),
   appOrigin,
   databaseUrl: process.env.DATABASE_URL,
   jwtAccessSecret: process.env.JWT_ACCESS_SECRET,

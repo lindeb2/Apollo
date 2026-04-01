@@ -390,10 +390,10 @@ function App() {
         <div className="max-w-xl rounded border border-gray-700 bg-gray-800 p-6">
           <h1 className="text-lg font-semibold mb-2">Server Mode Required</h1>
           <p className="text-sm text-gray-300 mb-2">
-            This build is now server-only. Configure `VITE_SERVER_API_BASE` (and optional `VITE_SERVER_WS_BASE`) in your frontend env.
+            This build is now server-only and expects the built-in `/api` and `/ws` routes to be available.
           </p>
           <p className="text-xs text-gray-400">
-            Example: `VITE_SERVER_API_BASE=/api` when using docker compose web proxy.
+            Example: run the frontend with the local proxy so `/api` and `/ws` forward to the backend automatically.
           </p>
         </div>
       </div>

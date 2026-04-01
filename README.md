@@ -116,6 +116,7 @@ cp .env.example .env
 The backend requires at least:
 
 - `DATABASE_URL` or the shared `DB_*` variables in the root `.env`
+- `API_PORT`
 - `JWT_ACCESS_SECRET`
 - `JWT_REFRESH_SECRET`
 
@@ -129,10 +130,8 @@ If you enable OIDC / SSO, also set:
 - `OIDC_POST_LOGOUT_REDIRECT_URI` if you want provider logout redirects
 
 The shared root `.env` is used for local npm runs and Docker Compose interpolation.
-The example file uses shared database credentials with:
-
-- `DB_HOST_LOCAL=localhost` for direct npm backend runs
-- `DB_HOST_DOCKER=db` for Docker Compose
+The example file uses shared database credentials. Apollo uses `localhost` for direct npm backend
+runs and `db` inside Docker Compose by default. If you need anything else, set `DATABASE_URL`.
 
 ### 3. Start Only The Database
 
@@ -221,12 +220,12 @@ For the fuller explanation of when to use npm vs Docker, read [`docs/WORKFLOW.md
 
 ## Full Docker Stack
 
-For a production-like local run, Apollo includes a Docker Compose stack with:
+For a full local Docker run, Apollo includes a Compose stack with:
 
 - `db` for PostgreSQL
 - `oidc-mock` for local OIDC testing
 - `api` for the backend
-- `web` for the frontend runtime selected by `WEB_RUNTIME_MODE`
+- `web` for the frontend on the Node/Vite port
 
 Start it with:
 
@@ -275,7 +274,6 @@ Recommended rollout order:
 Important production notes:
 
 - OIDC and cookie-based sessions should be run behind real HTTPS
-- set `WEB_RUNTIME_MODE=prod` so the web container serves frontend only and leaves `/api` + `/ws` to the external reverse proxy
 - set `VITE_USE_HTTPS=false` in prod because HTTPS should terminate at the shared reverse proxy
 - set `COOKIE_SECURE=true` in production
 - set `CORS_ORIGIN` to your real Apollo origin, for example `https://apollo.example.com`
@@ -289,8 +287,8 @@ On release tags like `v1.2.3`, GitHub Actions publishes Docker images to GHCR fo
 - `api`
 - `web`
 
-Those published images are the deployment artifact. The automatic GitHub release source archives
-(`zip` / `tar.gz`) are only source code snapshots.
+Those published images are the release container images. The automatic GitHub release source
+archives (`zip` / `tar.gz`) are only source code snapshots.
 
 ## Verification
 
