@@ -21,7 +21,7 @@ function defaultBackendHost() {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  const serverHost = env.WEB_LISTEN_HOST || '0.0.0.0';
+  const serverHost = env.WEB_BIND_HOST || '0.0.0.0';
   const serverPort = Number(env.WEB_PORT || 3000);
   const useHttps = env.VITE_USE_HTTPS === 'true';
   const sslKeyPath = path.join(process.cwd(), 'certs/dev.key');

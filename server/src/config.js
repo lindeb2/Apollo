@@ -85,10 +85,10 @@ function resolveMediaRoot() {
     return '/data/media';
   }
 
-  const configured = firstDefined(process.env.MEDIA_HOST_ROOT);
+  const configured = firstDefined(process.env.ABSOLUTE_MEDIA_ROOT);
   if (configured) {
     if (!path.isAbsolute(configured)) {
-      throw new Error('MEDIA_HOST_ROOT must be an absolute path when set');
+      throw new Error('ABSOLUTE_MEDIA_ROOT must be an absolute path when set');
     }
     return configured;
   }
@@ -97,9 +97,9 @@ function resolveMediaRoot() {
 }
 
 function validateDockerMediaRootSource() {
-  const configured = firstDefined(process.env.MEDIA_HOST_ROOT);
+  const configured = firstDefined(process.env.ABSOLUTE_MEDIA_ROOT);
   if (configured && !path.isAbsolute(configured)) {
-    throw new Error('MEDIA_HOST_ROOT must be an absolute host path when used with Docker');
+    throw new Error('ABSOLUTE_MEDIA_ROOT must be an absolute host path when used with Docker');
   }
 }
 
