@@ -170,18 +170,10 @@ Use this when:
 #
 ### Database
 
-By default, both npm and Docker Compose read the same shared DB settings from the root `.env`, but it can be overridden with `DATABASE_URL` in your shell.:
+By default, Apollo uses built-in local DB settings and only reads `DB_PORT` from the root `.env`:
 
-- `API_PORT`
-- `DB_USER`
-- `DB_PASSWORD`
-- `DB_NAME`
-- `DB_PORT`
-
-The normal local difference is only the host:
-
-- npm/backend assumes `localhost`
-- Docker Compose assumes `db`
+- npm/backend assumes `postgres://apollo:apollo@localhost:DB_PORT/apollo`
+- Docker Compose assumes `postgres://apollo:apollo@db:DB_PORT/apollo`
 
 Either mode can still be overridden with `DATABASE_URL` in your shell.
 
@@ -190,20 +182,12 @@ That value tells it where Postgres lives.
 Example:
 
 ```env
-DB_PROTOCOL=postgres
-DB_USER=apollo
-DB_PASSWORD=apollo
-DB_NAME=apollo
 DB_PORT=5432
 ```
 
 This means:
 
-- use PostgreSQL
-- username is `apollo`
-- password is `apollo`
-- port is `5432`
-- database name is `apollo`
+- use the built-in local `apollo` database on port `5432`
 
 If the backend is running on your machine, Apollo assumes `localhost`.
 

@@ -15,15 +15,19 @@ function attachForwardedHeaders(proxy, forwardedProto) {
   proxy.on('proxyReqWs', setHeaders);
 }
 
+function defaultBackendHost() {
+  return fs.existsSync('/.dockerenv') ? 'api' : 'localhost';
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const serverHost = env.WEB_LISTEN_HOST || '0.0.0.0';
-  const serverPort = Number(env.WEB_PORT || env.VITE_DEV_PORT || 3000);
+  const serverPort = Number(env.WEB_PORT || 3000);
   const useHttps = env.VITE_USE_HTTPS === 'true';
   const sslKeyPath = path.join(process.cwd(), 'certs/dev.key');
   const sslCertPath = path.join(process.cwd(), 'certs/dev.crt');
-  const backendHost = env.BACKEND_HOST || 'localhost';
-  const backendPort = Number(env.BACKEND_PORT || env.API_PORT || 8787);
+  const backendHost = defaultBackendHost();
+  const backendPort = Number(env.API_PORT || 8787);
   const backendOrigin = `http://${backendHost}:${backendPort}`;
 
   let https = false;

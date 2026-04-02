@@ -115,7 +115,7 @@ cp .env.example .env
 
 The backend requires at least:
 
-- `DATABASE_URL` or the shared `DB_*` variables in the root `.env`
+- `DATABASE_URL` or the built-in local Postgres default
 - `API_PORT`
 - `JWT_ACCESS_SECRET`
 - `JWT_REFRESH_SECRET`
@@ -129,8 +129,9 @@ Apollo now assumes OIDC / SSO is the primary login flow, so make sure you set:
 - `OIDC_POST_LOGOUT_REDIRECT_URI` if you want provider logout redirects
 
 The shared root `.env` is used for local npm runs and Docker Compose interpolation.
-The example file uses shared database credentials. Apollo uses `localhost` for direct npm backend
-runs and `db` inside Docker Compose by default. If you need anything else, set `DATABASE_URL`.
+Apollo uses `postgres://apollo:apollo@localhost:${DB_PORT}/apollo` for direct npm backend
+runs and `postgres://apollo:apollo@db:${DB_PORT}/apollo` inside Docker Compose by default.
+If you need anything else, set `DATABASE_URL`.
 
 ### 3. Start Only The Database
 

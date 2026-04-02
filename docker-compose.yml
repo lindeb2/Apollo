@@ -5,11 +5,11 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: "${DB_NAME:-apollo}"
-      POSTGRES_USER: "${DB_USER:-apollo}"
-      POSTGRES_PASSWORD: "${DB_PASSWORD:-apollo}"
+      POSTGRES_DB: apollo
+      POSTGRES_USER: apollo
+      POSTGRES_PASSWORD: apollo
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-apollo} -d ${DB_NAME:-apollo}"]
+      test: ["CMD-SHELL", "pg_isready -U apollo -d apollo"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -47,7 +47,7 @@ services:
     restart: unless-stopped
     environment:
       API_PORT: "${API_PORT:-8787}"
-      DATABASE_URL: "${DATABASE_URL:-${DB_PROTOCOL:-postgres}://${DB_USER:-apollo}:${DB_PASSWORD:-apollo}@db:${DB_PORT:-5432}/${DB_NAME:-apollo}}"
+      DATABASE_URL: "${DATABASE_URL:-postgres://apollo:apollo@db:${DB_PORT:-5432}/apollo}"
       JWT_ACCESS_SECRET: "${JWT_ACCESS_SECRET:-change-this-access-secret}"
       JWT_REFRESH_SECRET: "${JWT_REFRESH_SECRET:-change-this-refresh-secret}"
       ACCESS_TOKEN_TTL: "${ACCESS_TOKEN_TTL:-15m}"
@@ -65,8 +65,7 @@ services:
       OIDC_REDIRECT_URI: "${OIDC_REDIRECT_URI:-}"
       OIDC_SCOPES: "${OIDC_SCOPES:-openid profile email}"
       OIDC_POST_LOGOUT_REDIRECT_URI: "${OIDC_POST_LOGOUT_REDIRECT_URI:-}"
-      MEDIA_ROOT: /data/media
-      MEDIA_DB_ROOT: /data/media
+      MEDIA_ROOT: "${MEDIA_ROOT:-/data/media}"
       MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-524288000}"
       RECORD_LOCK_TIMEOUT_SECONDS: "${RECORD_LOCK_TIMEOUT_SECONDS:-30}"
       CHECKPOINT_EVERY_OPS: "${CHECKPOINT_EVERY_OPS:-100}"
@@ -76,7 +75,7 @@ services:
     ports:
       - "8787:8787"
     volumes:
-      - ./server/media:/data/media
+      - ./server/media:${MEDIA_ROOT:-/data/media}
 
   web:
     build:
@@ -87,8 +86,7 @@ services:
       WEB_PORT: "${WEB_PORT:-3000}"
       WEB_LISTEN_HOST: "${WEB_LISTEN_HOST:-0.0.0.0}"
       VITE_USE_HTTPS: "${VITE_USE_HTTPS:-true}"
-      BACKEND_HOST: api
-      BACKEND_PORT: "${API_PORT:-8787}"
+      API_PORT: "${API_PORT:-8787}"
     ports:
       - "${WEB_PORT:-3000}:3000"
     depends_on:

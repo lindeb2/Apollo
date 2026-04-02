@@ -1,8 +1,8 @@
 import { createEmptyProject } from '../types/project';
 import { createId } from '../utils/id';
 
-const API_BASE = import.meta.env.VITE_SERVER_API_BASE || '';
-const WS_BASE = import.meta.env.VITE_SERVER_WS_BASE || '';
+const API_BASE = '/api';
+const WS_BASE = '/ws';
 let currentServerSession = null;
 
 function isObject(value) {
@@ -10,7 +10,7 @@ function isObject(value) {
 }
 
 export function isServerModeEnabled() {
-  return Boolean(API_BASE || WS_BASE);
+  return true;
 }
 
 export function getApiBase() {
@@ -203,7 +203,7 @@ export async function deleteServerProject(projectId, session) {
 async function submitProjectOpViaWebSocket(projectId, op, session, allowRefresh = true) {
   const wsUrl = getWsUrl();
   if (!wsUrl) {
-    throw new Error('WebSocket URL is not configured. Set VITE_SERVER_WS_BASE.');
+    throw new Error('WebSocket URL is not configured.');
   }
   const clientOpId = createId();
 

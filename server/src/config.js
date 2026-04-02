@@ -25,12 +25,12 @@ function parseBoolean(value, fallback = false) {
 function buildDatabaseUrl() {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
 
-  const protocol = firstDefined(process.env.DB_PROTOCOL, 'postgres');
-  const user = firstDefined(process.env.DB_USER);
-  const password = firstDefined(process.env.DB_PASSWORD);
+  const protocol = 'postgres';
+  const user = 'apollo';
+  const password = 'apollo';
   const host = 'localhost';
   const port = firstDefined(process.env.DB_PORT, '5432');
-  const name = firstDefined(process.env.DB_NAME);
+  const name = 'apollo';
 
   if (!user || !password || !host || !name) return null;
   return `${protocol}://${user}:${password}@${host}:${port}/${name}`;
@@ -111,7 +111,6 @@ function actionValidate() {
 }
 
 const mediaRoot = resolveConfigPath(process.env.MEDIA_ROOT, 'media');
-const mediaDbRoot = resolveConfigPath(process.env.MEDIA_DB_ROOT, mediaRoot);
 const oidcIssuer = buildOidcIssuer();
 const oidcPublicIssuer = buildOidcPublicIssuer(oidcIssuer);
 const publicBaseUrl = buildPublicBaseUrl();
@@ -125,7 +124,6 @@ export const config = {
   accessTokenTtl: process.env.ACCESS_TOKEN_TTL || '15m',
   refreshTokenTtlDays: Number(process.env.REFRESH_TOKEN_TTL_DAYS || 7),
   mediaRoot,
-  mediaDbRoot,
   maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES || 524288000),
   defaultAdminUsername: process.env.DEFAULT_ADMIN_USERNAME || 'admin',
   defaultAdminPassword: process.env.DEFAULT_ADMIN_PASSWORD || 'changemechangeme',

@@ -21,7 +21,7 @@ export function createRealtimeSyncClient({
 }) {
   const wsUrl = getWsUrl();
   if (!wsUrl) {
-    throw new Error('WebSocket URL is not configured. Set VITE_SERVER_WS_BASE.');
+    throw new Error('WebSocket URL is not configured.');
   }
 
   let ws = null;

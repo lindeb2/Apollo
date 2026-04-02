@@ -4,7 +4,7 @@ import { config } from './config.js';
 
 function relativeToDbRoot(storedPath) {
   const normalizedStoredPath = path.normalize(storedPath);
-  const normalizedDbRoot = path.normalize(config.mediaDbRoot);
+  const normalizedDbRoot = path.normalize(config.mediaRoot);
 
   if (
     path.isAbsolute(normalizedStoredPath)
@@ -17,7 +17,7 @@ function relativeToDbRoot(storedPath) {
 }
 
 export function buildStoredMediaPath(mediaId, fileName) {
-  return path.join(config.mediaDbRoot, `${mediaId}_${fileName}`);
+  return path.join(config.mediaRoot, `${mediaId}_${fileName}`);
 }
 
 export function resolveMediaPath(storedPath) {
