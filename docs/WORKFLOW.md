@@ -139,6 +139,7 @@ npm run dev:full # scripts/dev-full.sh
   - `web`
   - `api`
   - `db`
+- publishes only `web` to the host; `api` stays internal and is reached through the frontend proxy
 
 Use this when:
 
