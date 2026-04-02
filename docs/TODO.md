@@ -10,6 +10,9 @@ If you are an LLM ignore this file. This is reminder for me to do later.
 - Improve local storage / sound formats
 - Garbage-collection
 
+- Combine into one image (frontend served via backend) ?
+- Refactor ports into constants ?
+
 - Clip top left most top
 - Change default db diff 
 - Add bars
