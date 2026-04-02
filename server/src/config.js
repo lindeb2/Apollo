@@ -48,7 +48,7 @@ function buildOidcMockIssuerCandidates() {
   const mockPort = firstDefined(process.env.OIDC_MOCK_PORT, '9400');
   return [
     `http://localhost:${mockPort}`,
-    `http://host.docker.internal:${mockPort}`,
+    `http://oidc-mock:${mockPort}`,
   ];
 }
 
