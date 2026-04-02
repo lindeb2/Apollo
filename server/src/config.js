@@ -1,6 +1,7 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import fs from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -79,10 +80,27 @@ function buildOidcPostLogoutRedirectUri() {
   return firstDefined(process.env.OIDC_POST_LOGOUT_REDIRECT_URI) || '';
 }
 
-function resolveConfigPath(value, fallback) {
-  const target = value || fallback;
-  if (path.isAbsolute(target)) return target;
-  return path.resolve(path.join(__dirname, '..'), target);
+function resolveMediaRoot() {
+  if (fs.existsSync('/.dockerenv')) {
+    return '/data/media';
+  }
+
+  const configured = firstDefined(process.env.MEDIA_HOST_ROOT);
+  if (configured) {
+    if (!path.isAbsolute(configured)) {
+      throw new Error('MEDIA_HOST_ROOT must be an absolute path when set');
+    }
+    return configured;
+  }
+
+  return path.resolve(path.join(__dirname, '..', 'media'));
+}
+
+function validateDockerMediaRootSource() {
+  const configured = firstDefined(process.env.MEDIA_HOST_ROOT);
+  if (configured && !path.isAbsolute(configured)) {
+    throw new Error('MEDIA_HOST_ROOT must be an absolute host path when used with Docker');
+  }
 }
 
 function actionValidate() {
@@ -90,6 +108,8 @@ function actionValidate() {
   if (databaseUrl) {
     process.env.DATABASE_URL = databaseUrl;
   }
+
+  validateDockerMediaRootSource();
 
   const required = ['DATABASE_URL', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'];
   const missing = required.filter((key) => !process.env[key]);
@@ -110,7 +130,7 @@ function actionValidate() {
   }
 }
 
-const mediaRoot = resolveConfigPath(process.env.MEDIA_ROOT, 'media');
+const mediaRoot = resolveMediaRoot();
 const oidcIssuer = buildOidcIssuer();
 const oidcPublicIssuer = buildOidcPublicIssuer(oidcIssuer);
 const publicBaseUrl = buildPublicBaseUrl();

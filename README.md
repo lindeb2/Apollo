@@ -272,7 +272,7 @@ Recommended rollout order:
 Important production notes:
 
 - OIDC and cookie-based sessions should be run behind real HTTPS
-- set `VITE_USE_HTTPS=false` in prod because HTTPS should terminate at the shared reverse proxy
+- `VITE_USE_HTTPS` is a local entrypoint toggle for npm frontend dev and full Docker web; set it to `false` behind a shared reverse proxy
 - set `COOKIE_SECURE=true` in production
 - make sure your OIDC provider redirect URI matches `/api/auth/oidc/callback`
 - WebSocket auth now relies on the same session cookies as the REST API

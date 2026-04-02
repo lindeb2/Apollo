@@ -139,7 +139,9 @@ npm run dev:full # scripts/dev-full.sh
   - `web`
   - `api`
   - `db`
+- builds the frontend and serves it through Nginx
 - publishes only `web` to the host; `api` stays internal and is reached through the frontend proxy
+- uses the same public `WEB_PORT`, `/api`, `/ws`, and `VITE_USE_HTTPS` toggle shape as the npm frontend flow
 
 Use this when:
 

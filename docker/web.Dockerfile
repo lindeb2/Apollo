@@ -1,6 +1,23 @@
-FROM node:20-alpine
+FROM node:20-alpine AS build
+
 WORKDIR /app
+
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm ci
+
 COPY . .
-CMD ["sh", "-lc", "set -eu; exec npx vite --host \"$WEB_LISTEN_HOST\" --port \"$WEB_PORT\""]
+RUN npm run build
+
+FROM nginx:1.27-alpine
+
+WORKDIR /app
+
+ENV WEB_PORT=3000
+ENV API_PORT=8787
+ENV VITE_USE_HTTPS=false
+
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY docker/web-entrypoint.sh /usr/local/bin/web-entrypoint.sh
+RUN chmod +x /usr/local/bin/web-entrypoint.sh
+
+CMD ["web-entrypoint.sh"]
