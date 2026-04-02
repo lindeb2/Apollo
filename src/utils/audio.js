@@ -176,5 +176,6 @@ export function formatTime(ms) {
  * Spec: 100 px = ±6.0 dB
  */
 export function pixelsToDbChange(deltaY) {
-  return -(deltaY / 100) * 6.0; // Negative because drag down = decrease
+  const dbChange = -(deltaY / 100) * 6.0; // Negative because drag down = decrease
+  return Object.is(dbChange, -0) ? 0 : dbChange;
 }

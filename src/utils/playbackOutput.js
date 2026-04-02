@@ -15,15 +15,17 @@ export function normalizePlaybackDeviceSettings(settings = {}) {
   };
 
   const legacyDefaultPanLawDb = settings?.defaultPanLawDb;
+  const requestedStereoPanLawDb = settings?.stereoPanLawDb;
   next.recordingOffsetMs = Number.isFinite(Number(next.recordingOffsetMs))
     ? Number(next.recordingOffsetMs)
     : DEFAULT_PLAYBACK_DEVICE_SETTINGS.recordingOffsetMs;
   next.stereoPanLawDb = normalizePanLawDb(
-    next.stereoPanLawDb ?? legacyDefaultPanLawDb ?? DEFAULT_PLAYBACK_DEVICE_SETTINGS.stereoPanLawDb
+    requestedStereoPanLawDb ?? legacyDefaultPanLawDb ?? DEFAULT_PLAYBACK_DEVICE_SETTINGS.stereoPanLawDb
   );
   next.forceMonoOutput = next.forceMonoOutput === true;
   next.inputDeviceId = String(next.inputDeviceId || '');
   next.outputDeviceId = String(next.outputDeviceId || '');
+  delete next.defaultPanLawDb;
 
   return next;
 }
