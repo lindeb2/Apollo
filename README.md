@@ -120,12 +120,11 @@ The backend requires at least:
 - `JWT_ACCESS_SECRET`
 - `JWT_REFRESH_SECRET`
 
-If you enable OIDC / SSO, also set:
+Apollo now assumes OIDC / SSO is the primary login flow, so make sure you set:
 
-- `OIDC_ENABLED=true`
-- `OIDC_ISSUER`
+- `OIDC_ISSUER` for a real provider, or leave it empty to use the local mock default
 - `OIDC_CLIENT_ID`
-- `OIDC_REDIRECT_URI`
+- `OIDC_REDIRECT_URI` only if you need an explicit override
 - `OIDC_CLIENT_SECRET` when your provider requires it
 - `OIDC_POST_LOGOUT_REDIRECT_URI` if you want provider logout redirects
 
@@ -161,7 +160,6 @@ Use these local `.env` values for the sandbox:
 
 ```env
 PUBLIC_BASE_URL=
-OIDC_ENABLED=true
 OIDC_MOCK_PORT=9400
 OIDC_ISSUER=
 OIDC_PUBLIC_ISSUER=
@@ -169,7 +167,6 @@ OIDC_CLIENT_ID=apollo-dev
 OIDC_CLIENT_SECRET=apollo-dev-secret
 BOOTSTRAP_LOCAL_LOGIN_ENABLED=true
 COOKIE_SECURE=false
-OIDC_ALLOW_INSECURE_HTTP=true
 ```
 
 Then run Apollo in npm dev mode:
@@ -276,7 +273,6 @@ Important production notes:
 - OIDC and cookie-based sessions should be run behind real HTTPS
 - set `VITE_USE_HTTPS=false` in prod because HTTPS should terminate at the shared reverse proxy
 - set `COOKIE_SECURE=true` in production
-- set `CORS_ORIGIN` to your real Apollo origin, for example `https://apollo.example.com`
 - make sure your OIDC provider redirect URI matches `/api/auth/oidc/callback`
 - WebSocket auth now relies on the same session cookies as the REST API
 

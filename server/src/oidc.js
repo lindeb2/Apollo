@@ -72,15 +72,7 @@ function buildPublicUrl(urlLike, req) {
   return url;
 }
 
-export function isOidcEnabled() {
-  return Boolean(config.oidcEnabled);
-}
-
 export async function getOidcConfiguration() {
-  if (!isOidcEnabled()) {
-    throw new Error('OIDC is not enabled');
-  }
-
   if (!cachedConfigurationPromise) {
     const metadata = {
       redirect_uris: [config.oidcRedirectUri || 'http://localhost/api/auth/oidc/callback'],
@@ -196,7 +188,6 @@ export async function completeOidcAuthorization(req, transaction) {
 }
 
 export async function buildProviderLogoutUrl(req, idTokenHint = '') {
-  if (!isOidcEnabled()) return '';
   const configuration = await getOidcConfiguration();
   if (!configuration.serverMetadata().end_session_endpoint) {
     return '';

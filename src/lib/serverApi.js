@@ -140,14 +140,6 @@ export function beginOidcLogin() {
   window.location.assign(buildApiPath('/api/auth/oidc/start'));
 }
 
-export async function login(username, password) {
-  const payload = await apiFetch('/api/auth/login', {
-    method: 'POST',
-    body: { username, password },
-  });
-  return payload;
-}
-
 export async function bootstrapLogin(username, password) {
   const payload = await apiFetch('/api/auth/bootstrap/login', {
     method: 'POST',

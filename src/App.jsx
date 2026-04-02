@@ -24,7 +24,6 @@ import {
   isServerModeEnabled,
   listServerProjects,
   loadServerSession,
-  login,
   logout,
   renameServerProject,
   updateServerProjectMusicalNumber,
@@ -182,9 +181,7 @@ function App() {
     setServerError('');
     setServerLoading(true);
     try {
-      const session = authConfig?.oidcEnabled
-        ? await bootstrapLogin(username, password)
-        : await login(username, password);
+      const session = await bootstrapLogin(username, password);
       saveServerSession(session);
       setServerSession(session);
       await refreshServerData(session);

@@ -42,6 +42,7 @@ import {
   setOidcTransactionCookie,
   setSessionCookies,
 } from './sessionCookies.js';
+import { choosePreferredOrigin, getRequestOrigin } from './requestOrigin.js';
 import {
   findOrCreatePendingOidcUser,
   findUserById,
@@ -548,9 +549,17 @@ async function loadPlaylistById(playlistId) {
   return result.rows[0] || null;
 }
 
-app.use(cors({
-  origin: config.corsOrigin === '*' ? true : config.corsOrigin,
-  credentials: true,
+app.use(cors((req, callback) => {
+  const requestOrigin = String(req.headers.origin || '').trim();
+  const allowedOrigin = choosePreferredOrigin(
+    config.publicBaseUrl,
+    getRequestOrigin(req)
+  );
+
+  callback(null, {
+    origin: !requestOrigin || !allowedOrigin || requestOrigin === allowedOrigin,
+    credentials: true,
+  });
 }));
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
@@ -562,18 +571,11 @@ app.get('/api/health', (_req, res) => {
 
 app.get('/api/auth/config', (_req, res) => {
   res.json({
-    oidcEnabled: Boolean(config.oidcEnabled),
     bootstrapLocalLoginEnabled: Boolean(config.bootstrapLocalLoginEnabled),
-    localPasswordLoginEnabled: !config.oidcEnabled,
   });
 });
 
 app.get('/api/auth/oidc/start', async (req, res) => {
-  if (!config.oidcEnabled) {
-    res.status(404).json({ error: 'OIDC is not enabled' });
-    return;
-  }
-
   try {
     const { url, transaction } = await buildOidcAuthorizationRequest(req);
     setOidcTransactionCookie(res, transaction);
@@ -585,12 +587,6 @@ app.get('/api/auth/oidc/start', async (req, res) => {
 });
 
 app.get('/api/auth/oidc/callback', async (req, res) => {
-  if (!config.oidcEnabled) {
-    clearOidcTransactionCookie(res);
-    res.redirect(buildAuthErrorRedirect('OIDC is not enabled'));
-    return;
-  }
-
   const providerError = String(req.query?.error || '').trim();
   if (providerError) {
     const description = String(req.query?.error_description || providerError).trim();
@@ -632,30 +628,7 @@ app.get('/api/auth/oidc/callback', async (req, res) => {
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  if (config.oidcEnabled) {
-    res.status(403).json({ error: 'Local login is disabled. Use SSO or bootstrap login.' });
-    return;
-  }
-
-  try {
-    const username = String(req.body?.username || '').trim();
-    const password = String(req.body?.password || '');
-    if (!username || !password) {
-      res.status(400).json({ error: 'Username and password are required' });
-      return;
-    }
-
-    const user = await authenticateCredentials(username, password);
-    if (!user) {
-      res.status(401).json({ error: 'Invalid credentials' });
-      return;
-    }
-
-    res.json(await issueApolloSession(res, user));
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to login' });
-  }
+  res.status(403).json({ error: 'Local login is disabled. Use SSO or bootstrap login.' });
 });
 
 app.post('/api/auth/bootstrap/login', async (req, res) => {

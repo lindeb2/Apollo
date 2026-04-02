@@ -44,11 +44,23 @@ function buildOidcIssuer() {
   return `http://localhost:${mockPort}`;
 }
 
+function buildOidcMockIssuerCandidates() {
+  const mockPort = firstDefined(process.env.OIDC_MOCK_PORT, '9400');
+  return [
+    `http://localhost:${mockPort}`,
+    `http://host.docker.internal:${mockPort}`,
+  ];
+}
+
 function buildOidcPublicIssuer(oidcIssuer) {
   return firstDefined(
     process.env.OIDC_PUBLIC_ISSUER,
     oidcIssuer
   ) || '';
+}
+
+function allowsInsecureOidcIssuer(oidcIssuer) {
+  return buildOidcMockIssuerCandidates().includes(String(oidcIssuer || '').trim());
 }
 
 function normalizeOrigin(value) {
@@ -57,10 +69,6 @@ function normalizeOrigin(value) {
 
 function buildPublicBaseUrl() {
   return normalizeOrigin(process.env.PUBLIC_BASE_URL);
-}
-
-function buildCorsOrigin() {
-  return firstDefined(process.env.CORS_ORIGIN) || '*';
 }
 
 function buildOidcRedirectUri() {
@@ -89,18 +97,16 @@ function actionValidate() {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
   }
 
-  if (parseBoolean(process.env.OIDC_ENABLED, false)) {
-    const oidcIssuer = buildOidcIssuer();
-    const oidcRequired = {
-      OIDC_ISSUER: oidcIssuer,
-      OIDC_CLIENT_ID: process.env.OIDC_CLIENT_ID,
-    };
-    const oidcMissing = Object.entries(oidcRequired)
-      .filter(([, value]) => !value)
-      .map(([key]) => key);
-    if (oidcMissing.length > 0) {
-      throw new Error(`Missing required OIDC environment variables: ${oidcMissing.join(', ')}`);
-    }
+  const oidcIssuer = buildOidcIssuer();
+  const oidcRequired = {
+    OIDC_ISSUER: oidcIssuer,
+    OIDC_CLIENT_ID: process.env.OIDC_CLIENT_ID,
+  };
+  const oidcMissing = Object.entries(oidcRequired)
+    .filter(([, value]) => !value)
+    .map(([key]) => key);
+  if (oidcMissing.length > 0) {
+    throw new Error(`Missing required OIDC environment variables: ${oidcMissing.join(', ')}`);
   }
 }
 
@@ -118,7 +124,6 @@ export const config = {
   jwtRefreshSecret: process.env.JWT_REFRESH_SECRET,
   accessTokenTtl: process.env.ACCESS_TOKEN_TTL || '15m',
   refreshTokenTtlDays: Number(process.env.REFRESH_TOKEN_TTL_DAYS || 7),
-  corsOrigin: buildCorsOrigin(),
   mediaRoot,
   mediaDbRoot,
   maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES || 524288000),
@@ -129,7 +134,6 @@ export const config = {
   checkpointEverySeconds: Number(process.env.CHECKPOINT_EVERY_SECONDS || 30),
   bootstrapLocalLoginEnabled: parseBoolean(process.env.BOOTSTRAP_LOCAL_LOGIN_ENABLED, true),
   cookieSecure: parseBoolean(process.env.COOKIE_SECURE, false),
-  oidcEnabled: parseBoolean(process.env.OIDC_ENABLED, false),
   oidcIssuer,
   oidcPublicIssuer,
   oidcClientId: process.env.OIDC_CLIENT_ID || '',
@@ -137,5 +141,5 @@ export const config = {
   oidcRedirectUri: buildOidcRedirectUri(),
   oidcScopes: process.env.OIDC_SCOPES || 'openid profile email',
   oidcPostLogoutRedirectUri: buildOidcPostLogoutRedirectUri(),
-  oidcAllowInsecureHttp: parseBoolean(process.env.OIDC_ALLOW_INSECURE_HTTP, false),
+  oidcAllowInsecureHttp: allowsInsecureOidcIssuer(oidcIssuer),
 };
