@@ -1,29 +1,19 @@
 import { createEmptyProject } from '../types/project';
 import { createId } from '../utils/id';
 
-const API_BASE = '/api';
-const WS_BASE = '/ws';
+const API_PREFIX = '/api';
 let currentServerSession = null;
 
 function isObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function isServerModeEnabled() {
-  return true;
-}
-
-export function getApiBase() {
-  return API_BASE;
-}
-
 function buildApiPath(path) {
-  const normalizedBase = (API_BASE || '').replace(/\/+$/, '');
-  let normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  if (normalizedBase.endsWith('/api') && normalizedPath.startsWith('/api/')) {
-    normalizedPath = normalizedPath.slice(4);
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  if (normalizedPath === API_PREFIX || normalizedPath.startsWith(`${API_PREFIX}/`)) {
+    return normalizedPath;
   }
-  return `${normalizedBase}${normalizedPath}`;
+  return `${API_PREFIX}${normalizedPath}`;
 }
 
 function dispatchSession(session) {
@@ -31,23 +21,8 @@ function dispatchSession(session) {
 }
 
 export function getWsUrl() {
-  if (WS_BASE) {
-    if (WS_BASE.startsWith('ws://') || WS_BASE.startsWith('wss://')) return WS_BASE;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const normalized = WS_BASE.startsWith('/') ? WS_BASE : `/${WS_BASE}`;
-    return `${protocol}//${window.location.host}${normalized}`;
-  }
-
-  if (!API_BASE) return '';
-  if (API_BASE.startsWith('http://') || API_BASE.startsWith('https://')) {
-    const origin = API_BASE.replace(/\/+$/, '').replace(/\/api$/, '');
-    return origin.replace(/^http/i, 'ws') + '/ws';
-  }
-
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const pathBase = API_BASE.startsWith('/') ? API_BASE : `/${API_BASE}`;
-  const normalizedBase = pathBase.replace(/\/+$/, '').replace(/\/api$/, '');
-  return `${protocol}//${window.location.host}${normalizedBase}/ws`;
+  return `${protocol}//${window.location.host}/ws`;
 }
 
 export function saveServerSession(session) {
@@ -124,12 +99,6 @@ async function apiFetch(path, options = {}, session = null, retryOnAuth = true) 
   return response;
 }
 
-export async function getAuthConfig() {
-  return await apiFetch('/api/auth/config', {
-    method: 'GET',
-  }, null, false);
-}
-
 export async function getCurrentSession() {
   return await apiFetch('/api/me', {
     method: 'GET',
@@ -138,14 +107,6 @@ export async function getCurrentSession() {
 
 export function beginOidcLogin() {
   window.location.assign(buildApiPath('/api/auth/oidc/start'));
-}
-
-export async function bootstrapLogin(username, password) {
-  const payload = await apiFetch('/api/auth/bootstrap/login', {
-    method: 'POST',
-    body: { username, password },
-  }, null, false);
-  return payload;
 }
 
 export async function refreshSession() {

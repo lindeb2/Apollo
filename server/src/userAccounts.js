@@ -1,5 +1,7 @@
 import { randomUUID } from 'crypto';
+import { config } from './config.js';
 import { pool } from './db.js';
+import { describeOidcBootstrapRule, matchesOidcBootstrapRule } from './oidcBootstrap.js';
 
 function sanitizeUsernameCandidate(value, fallback = 'user') {
   const normalized = String(value || fallback)
@@ -23,12 +25,12 @@ function baseUsernameFromClaims(claims) {
   );
 }
 
-async function generateUniqueUsername(baseCandidate, excludeUserId = null) {
+async function generateUniqueUsername(baseCandidate, excludeUserId = null, db = pool) {
   const base = sanitizeUsernameCandidate(baseCandidate);
 
   for (let attempt = 0; attempt < 10_000; attempt += 1) {
     const candidate = attempt === 0 ? base : `${base}-${attempt + 1}`;
-    const result = await pool.query(
+    const result = await db.query(
       `SELECT id
        FROM users
        WHERE username = $1
@@ -83,8 +85,8 @@ export async function listUsersWithAuthDetails() {
   return result.rows.map(mapAdminUserRow);
 }
 
-export async function findUserById(userId) {
-  const result = await pool.query(
+export async function findUserById(userId, db = pool) {
+  const result = await db.query(
     `SELECT id,
             username,
             password_hash,
@@ -103,8 +105,8 @@ export async function findUserById(userId) {
   return result.rows[0] || null;
 }
 
-export async function findUserByOidcIdentity(issuer, subject) {
-  const result = await pool.query(
+export async function findUserByOidcIdentity(issuer, subject, db = pool) {
+  const result = await db.query(
     `SELECT id,
             username,
             password_hash,
@@ -133,8 +135,8 @@ export async function touchUserLogin(userId) {
   );
 }
 
-export async function updateOidcProfile(userId, { email = '', displayName = '' }) {
-  await pool.query(
+export async function updateOidcProfile(userId, { email = '', displayName = '' }, db = pool) {
+  await db.query(
     `UPDATE users
      SET oidc_email = $2,
          oidc_display_name = $3,
@@ -144,42 +146,97 @@ export async function updateOidcProfile(userId, { email = '', displayName = '' }
   );
 }
 
-export async function findOrCreatePendingOidcUser(claims) {
-  const existing = await findUserByOidcIdentity(claims.issuer, claims.subject);
-  if (existing) {
-    await updateOidcProfile(existing.id, {
-      email: claims.email,
-      displayName: claims.displayName,
-    });
-    return await findUserById(existing.id);
-  }
+function matchesInitialAdminClaim(claims) {
+  return matchesOidcBootstrapRule(claims?.rawClaims || {}, config.oidcFirstAdminClaim);
+}
 
-  const username = await generateUniqueUsername(baseUsernameFromClaims(claims));
-  const id = randomUUID();
-  await pool.query(
-    `INSERT INTO users(
-       id,
-       username,
-       password_hash,
-       is_admin,
-       is_active,
-       oidc_issuer,
-       oidc_subject,
-       oidc_email,
-       oidc_display_name
-     )
-     VALUES($1, $2, NULL, FALSE, FALSE, $3, $4, $5, $6)`,
-    [
-      id,
-      username,
-      claims.issuer,
-      claims.subject,
-      claims.email || null,
-      claims.displayName || null,
-    ]
+function buildInitialAdminClaimError() {
+  return `The first Apollo admin must match OIDC_FIRST_ADMIN_CLAIM (${describeOidcBootstrapRule(config.oidcFirstAdminClaim)})`;
+}
+
+async function promoteUserToInitialAdmin(userId, db = pool) {
+  await db.query(
+    `UPDATE users
+     SET is_admin = TRUE,
+         is_active = TRUE,
+         updated_at = NOW()
+     WHERE id = $1`,
+    [userId]
   );
+}
 
-  return await findUserById(id);
+export async function findOrCreateOidcUser(claims) {
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+    await client.query('LOCK TABLE users IN EXCLUSIVE MODE');
+
+    const existing = await findUserByOidcIdentity(claims.issuer, claims.subject, client);
+    const adminResult = await client.query(
+      `SELECT EXISTS(
+         SELECT 1
+         FROM users
+         WHERE is_admin = TRUE
+       ) AS "hasAdmin"`
+    );
+    const hasAdmin = Boolean(adminResult.rows[0]?.hasAdmin);
+
+    if (!hasAdmin && !matchesInitialAdminClaim(claims)) {
+      throw new Error(buildInitialAdminClaimError());
+    }
+
+    if (existing) {
+      await updateOidcProfile(existing.id, {
+        email: claims.email,
+        displayName: claims.displayName,
+      }, client);
+
+      if (!hasAdmin) {
+        await promoteUserToInitialAdmin(existing.id, client);
+      }
+
+      await client.query('COMMIT');
+      return await findUserById(existing.id);
+    }
+
+    const username = await generateUniqueUsername(baseUsernameFromClaims(claims), null, client);
+    const id = randomUUID();
+    const shouldBootstrapInitialAdmin = !hasAdmin;
+
+    await client.query(
+      `INSERT INTO users(
+         id,
+         username,
+         password_hash,
+         is_admin,
+         is_active,
+         oidc_issuer,
+         oidc_subject,
+         oidc_email,
+         oidc_display_name
+       )
+       VALUES($1, $2, NULL, $3, $4, $5, $6, $7, $8)`,
+      [
+        id,
+        username,
+        shouldBootstrapInitialAdmin,
+        shouldBootstrapInitialAdmin,
+        claims.issuer,
+        claims.subject,
+        claims.email || null,
+        claims.displayName || null,
+      ]
+    );
+
+    await client.query('COMMIT');
+    return await findUserById(id);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function linkPendingOidcIdentityToUser({ sourceUserId, targetUserId }) {

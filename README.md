@@ -166,8 +166,15 @@ OIDC_ISSUER=
 OIDC_PUBLIC_ISSUER=
 OIDC_CLIENT_ID=apollo-dev
 OIDC_CLIENT_SECRET=apollo-dev-secret
-BOOTSTRAP_LOCAL_LOGIN_ENABLED=true
+OIDC_FIRST_ADMIN_CLAIM=email=alice@example.com
 COOKIE_SECURE=false
+```
+
+If you are using a provider that exposes the custom `permissions` claim, add that scope explicitly and match on the permission id you want to treat as the initial Apollo admin gate:
+
+```env
+OIDC_SCOPES=openid profile email permissions
+OIDC_FIRST_ADMIN_CLAIM=permissions.id=nyckeln-under-dormattan
 ```
 
 Then run Apollo in npm dev mode:
@@ -247,12 +254,7 @@ root `.env` and set both hosts to that server. For a temporary Docker-only overr
 DATABASE_URL=postgres://user:password@host:5432/database docker compose up api web
 ```
 
-Default example credentials in the checked-in env/docker config are:
-
-- username: `admin`
-- password: `changemechangeme`
-
-Change secrets and default credentials before any real deployment.
+Apollo no longer seeds a default local bootstrap admin account on first startup.
 
 ## OIDC / SSO
 
@@ -260,14 +262,16 @@ Apollo now supports generic OpenID Connect login with discovery-based configurat
 
 - normal hosted sign-in can be handled by OIDC
 - Apollo still keeps app-local authorization in Postgres (`is_admin`, project permissions, ownership)
-- first OIDC login creates a disabled local Apollo user until an admin activates or links that identity
-- a local bootstrap admin login can stay enabled for first activation and recovery
+- if Apollo has no admin yet, the first eligible OIDC login becomes an active Apollo admin automatically
+- set `OIDC_FIRST_ADMIN_CLAIM` to require a specific OIDC claim match before the initial admin can be created
+- once an admin exists, later OIDC logins create disabled local Apollo users until an admin activates or links that identity
 
 Recommended rollout order:
 
 1. learn the flow with the local mock provider
-2. activate and link users through Apollo's admin UI
-3. switch to a real provider only after the login and approval flow feels clear
+2. verify which OIDC account should become the initial Apollo admin
+3. activate and link later users through Apollo's admin UI
+4. switch to a real provider only after the login and approval flow feels clear
 
 Important production notes:
 
@@ -275,6 +279,8 @@ Important production notes:
 - `VITE_USE_HTTPS` is a local entrypoint toggle for npm frontend dev and full Docker web; set it to `false` behind a shared reverse proxy
 - set `COOKIE_SECURE=true` in production
 - make sure your OIDC provider redirect URI matches `/api/auth/oidc/callback`
+- `OIDC_FIRST_ADMIN_CLAIM` uses exact `claim.path=value` matching; for array claims, any element may match
+- provider-specific example: `OIDC_SCOPES=openid profile email permissions` plus `OIDC_FIRST_ADMIN_CLAIM=permissions.id=nyckeln-under-dormattan`
 - WebSocket auth now relies on the same session cookies as the REST API
 
 ## Release Images

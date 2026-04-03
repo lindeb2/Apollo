@@ -2,8 +2,6 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { Pool } from 'pg';
-import bcrypt from 'bcryptjs';
-import { randomUUID } from 'crypto';
 import { config } from './config.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -74,21 +72,6 @@ export async function runMigrations() {
       client.release();
     }
   }
-}
-
-export async function ensureDefaultAdmin() {
-  const existing = await pool.query('SELECT id FROM users LIMIT 1');
-  if (existing.rowCount > 0) return;
-
-  const id = randomUUID();
-  const hash = await bcrypt.hash(config.defaultAdminPassword, 12);
-  await pool.query(
-    `INSERT INTO users(id, username, password_hash, is_admin, is_active)
-     VALUES($1, $2, $3, TRUE, TRUE)`,
-    [id, config.defaultAdminUsername, hash]
-  );
-
-  console.log(`Created default admin user: ${config.defaultAdminUsername}`);
 }
 
 export async function closeDb() {

@@ -11,9 +11,8 @@ import bcrypt from 'bcryptjs';
 
 import { config } from './config.js';
 import { buildStoredMediaPath, resolveMediaPath } from './mediaPaths.js';
-import { pool, waitForDatabase, runMigrations, ensureDefaultAdmin, closeDb } from './db.js';
+import { pool, waitForDatabase, runMigrations, closeDb } from './db.js';
 import {
-  authenticateCredentials,
   getProjectPermission,
   isRefreshTokenPersisted,
   persistRefreshToken,
@@ -44,7 +43,7 @@ import {
 } from './sessionCookies.js';
 import { choosePreferredOrigin, getRequestOrigin } from './requestOrigin.js';
 import {
-  findOrCreatePendingOidcUser,
+  findOrCreateOidcUser,
   findUserById,
   linkPendingOidcIdentityToUser,
   listUsersWithAuthDetails,
@@ -569,12 +568,6 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', now: nowIso() });
 });
 
-app.get('/api/auth/config', (_req, res) => {
-  res.json({
-    bootstrapLocalLoginEnabled: Boolean(config.bootstrapLocalLoginEnabled),
-  });
-});
-
 app.get('/api/auth/oidc/start', async (req, res) => {
   try {
     const { url, transaction } = await buildOidcAuthorizationRequest(req);
@@ -609,7 +602,7 @@ app.get('/api/auth/oidc/callback', async (req, res) => {
       return;
     }
 
-    const user = await findOrCreatePendingOidcUser(claims);
+    const user = await findOrCreateOidcUser(claims);
     if (!user?.is_active) {
       clearSessionCookies(res);
       res.redirect(buildAuthErrorRedirect('Your account is pending admin activation'));
@@ -628,34 +621,7 @@ app.get('/api/auth/oidc/callback', async (req, res) => {
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  res.status(403).json({ error: 'Local login is disabled. Use SSO or bootstrap login.' });
-});
-
-app.post('/api/auth/bootstrap/login', async (req, res) => {
-  if (!config.bootstrapLocalLoginEnabled) {
-    res.status(403).json({ error: 'Bootstrap local login is disabled' });
-    return;
-  }
-
-  try {
-    const username = String(req.body?.username || '').trim();
-    const password = String(req.body?.password || '');
-    if (!username || !password) {
-      res.status(400).json({ error: 'Username and password are required' });
-      return;
-    }
-
-    const user = await authenticateCredentials(username, password);
-    if (!user || !user.is_admin) {
-      res.status(401).json({ error: 'Invalid bootstrap admin credentials' });
-      return;
-    }
-
-    res.json(await issueApolloSession(res, user));
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to login with bootstrap admin' });
-  }
+  res.status(403).json({ error: 'Local login is disabled. Use SSO.' });
 });
 
 app.post('/api/auth/refresh', async (req, res) => {
@@ -2706,7 +2672,6 @@ async function start() {
   await ensureMediaRoot();
   await waitForDatabase();
   await runMigrations();
-  await ensureDefaultAdmin();
 
   server.listen(config.port, () => {
     console.log(`Apollo server listening on http://0.0.0.0:${config.port}`);

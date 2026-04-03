@@ -13,15 +13,12 @@ import { normalizeProjectName } from './utils/naming';
 import { createId } from './utils/id';
 import {
   beginOidcLogin,
-  bootstrapLogin,
   bootstrapServerProject,
   clearServerSession,
   createServerProject,
   deleteServerProject,
-  getAuthConfig,
   getCurrentSession,
   isSessionRecoveryError,
-  isServerModeEnabled,
   listServerProjects,
   loadServerSession,
   logout,
@@ -80,7 +77,6 @@ function remapProjectBlobIds(project, idMap) {
 function App() {
   const [view, setView] = useState('player'); // 'player' | 'daw' | 'editor'
   const [serverSession, setServerSession] = useState(loadServerSession());
-  const [authConfig, setAuthConfig] = useState(null);
   const [authBootstrapping, setAuthBootstrapping] = useState(true);
   const [serverProjects, setServerProjects] = useState([]);
   const [serverError, setServerError] = useState('');
@@ -110,11 +106,6 @@ function App() {
   }, [serverSession]);
 
   useEffect(() => {
-    if (!isServerModeEnabled()) {
-      setAuthBootstrapping(false);
-      return;
-    }
-
     let cancelled = false;
 
     const bootstrapAuth = async () => {
@@ -127,17 +118,6 @@ function App() {
         params.delete('auth_error');
         const nextSearch = params.toString();
         window.history.replaceState({}, '', `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`);
-      }
-
-      try {
-        const nextAuthConfig = await getAuthConfig();
-        if (!cancelled) {
-          setAuthConfig(nextAuthConfig);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setServerError(error.message || 'Failed to load auth configuration');
-        }
       }
 
       try {
@@ -176,22 +156,6 @@ function App() {
       window.removeEventListener('apollo:server-session-updated', handleSessionUpdated);
     };
   }, []);
-
-  const handleServerLogin = async (username, password) => {
-    setServerError('');
-    setServerLoading(true);
-    try {
-      const session = await bootstrapLogin(username, password);
-      saveServerSession(session);
-      setServerSession(session);
-      await refreshServerData(session);
-      setView('player');
-    } catch (error) {
-      setServerError(error.message || 'Login failed');
-    } finally {
-      setServerLoading(false);
-    }
-  };
 
   const handleSsoLogin = () => {
     setServerError('');
@@ -381,22 +345,6 @@ function App() {
     setView('daw');
   };
 
-  if (!isServerModeEnabled()) {
-    return (
-      <div className="h-screen w-screen overflow-hidden bg-gray-900 text-white flex items-center justify-center p-6">
-        <div className="max-w-xl rounded border border-gray-700 bg-gray-800 p-6">
-          <h1 className="text-lg font-semibold mb-2">Server Mode Required</h1>
-          <p className="text-sm text-gray-300 mb-2">
-            This build is now server-only and expects the built-in `/api` and `/ws` routes to be available.
-          </p>
-          <p className="text-xs text-gray-400">
-            Example: run the frontend with the local proxy so `/api` and `/ws` forward to the backend automatically.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   if (authBootstrapping) {
     return (
       <div className="h-screen w-screen overflow-hidden bg-gray-900 text-white flex items-center justify-center p-6">
@@ -411,8 +359,6 @@ function App() {
     <div className="h-screen w-screen overflow-hidden bg-gray-900 text-white">
       {!serverSession ? (
         <HostedLogin
-          authConfig={authConfig}
-          onLogin={handleServerLogin}
           onSsoLogin={handleSsoLogin}
           loading={serverLoading}
           error={serverError}

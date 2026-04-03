@@ -145,12 +145,9 @@ export const config = {
   refreshTokenTtlDays: Number(process.env.REFRESH_TOKEN_TTL_DAYS || 7),
   mediaRoot,
   maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES || 524288000),
-  defaultAdminUsername: process.env.DEFAULT_ADMIN_USERNAME || 'admin',
-  defaultAdminPassword: process.env.DEFAULT_ADMIN_PASSWORD || 'changemechangeme',
   lockTimeoutSeconds: Number(process.env.RECORD_LOCK_TIMEOUT_SECONDS || 30),
   checkpointEveryOps: Number(process.env.CHECKPOINT_EVERY_OPS || 100),
   checkpointEverySeconds: Number(process.env.CHECKPOINT_EVERY_SECONDS || 30),
-  bootstrapLocalLoginEnabled: parseBoolean(process.env.BOOTSTRAP_LOCAL_LOGIN_ENABLED, true),
   cookieSecure: parseBoolean(process.env.COOKIE_SECURE, false),
   oidcIssuer,
   oidcPublicIssuer,
@@ -160,4 +157,5 @@ export const config = {
   oidcScopes: process.env.OIDC_SCOPES || 'openid profile email',
   oidcPostLogoutRedirectUri: buildOidcPostLogoutRedirectUri(),
   oidcAllowInsecureHttp: allowsInsecureOidcIssuer(oidcIssuer),
+  oidcFirstAdminClaim: firstDefined(process.env.OIDC_FIRST_ADMIN_CLAIM) || '',
 };

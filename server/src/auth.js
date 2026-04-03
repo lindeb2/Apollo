@@ -1,5 +1,4 @@
 import jwt from 'jsonwebtoken';
-import bcrypt from 'bcryptjs';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { getAccessTokenCookie } from './sessionCookies.js';
@@ -35,23 +34,6 @@ export function verifyAccessToken(token) {
 
 export function verifyRefreshToken(token) {
   return jwt.verify(token, config.jwtRefreshSecret);
-}
-
-export async function authenticateCredentials(username, password) {
-  const result = await pool.query(
-    `SELECT id, username, password_hash, is_admin, is_active
-     FROM users
-     WHERE username = $1`,
-    [username]
-  );
-  if (result.rowCount === 0) return null;
-
-  const user = result.rows[0];
-  if (!user.is_active) return null;
-  if (!user.password_hash) return null;
-  const valid = await bcrypt.compare(password, user.password_hash);
-  if (!valid) return null;
-  return user;
 }
 
 export async function persistRefreshToken(token, userId) {

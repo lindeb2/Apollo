@@ -183,6 +183,7 @@ export async function completeOidcAuthorization(req, transaction) {
         || stringClaim(mergedClaims.name)
         || stringClaim(idTokenClaims.sub),
       issuer: config.oidcIssuer,
+      rawClaims: mergedClaims,
     },
   };
 }
