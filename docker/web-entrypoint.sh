@@ -3,6 +3,8 @@ set -eu
 
 WEB_PORT="${WEB_PORT:-3000}"
 API_PORT="${API_PORT:-8787}"
+API_UPSTREAM_ORIGIN="${API_UPSTREAM_ORIGIN:-http://api:${API_PORT}}"
+API_UPSTREAM_ORIGIN="${API_UPSTREAM_ORIGIN%/}"
 USE_HTTPS="${VITE_USE_HTTPS:-false}"
 CERT_PATH="/app/certs/dev.crt"
 KEY_PATH="/app/certs/dev.key"
@@ -18,7 +20,7 @@ write_common_config() {
   }
 
   location /api/ {
-    proxy_pass http://api:${API_PORT}/api/;
+    proxy_pass ${API_UPSTREAM_ORIGIN}/api/;
     proxy_http_version 1.1;
     proxy_set_header Host \$http_host;
     proxy_set_header X-Forwarded-Host \$http_host;
@@ -27,7 +29,7 @@ write_common_config() {
   }
 
   location /ws {
-    proxy_pass http://api:${API_PORT}/ws;
+    proxy_pass ${API_UPSTREAM_ORIGIN}/ws;
     proxy_http_version 1.1;
     proxy_set_header Upgrade \$http_upgrade;
     proxy_set_header Connection "upgrade";

@@ -14,6 +14,7 @@ WORKDIR /app
 
 ENV WEB_PORT=3000
 ENV API_PORT=8787
+ENV API_UPSTREAM_ORIGIN=
 ENV VITE_USE_HTTPS=false
 
 COPY --from=build /app/dist /usr/share/nginx/html

@@ -15,8 +15,13 @@ function attachForwardedHeaders(proxy, forwardedProto) {
   proxy.on('proxyReqWs', setHeaders);
 }
 
-function defaultBackendHost() {
-  return fs.existsSync('/.dockerenv') ? 'api' : 'localhost';
+function trimTrailingSlashes(value) {
+  return value.replace(/\/+$/, '');
+}
+
+function defaultBackendOrigin(port) {
+  const host = fs.existsSync('/.dockerenv') ? 'api' : 'localhost';
+  return `http://${host}:${port}`;
 }
 
 export default defineConfig(({ mode }) => {
@@ -26,9 +31,10 @@ export default defineConfig(({ mode }) => {
   const useHttps = env.VITE_USE_HTTPS === 'true';
   const sslKeyPath = path.join(process.cwd(), 'certs/dev.key');
   const sslCertPath = path.join(process.cwd(), 'certs/dev.crt');
-  const backendHost = defaultBackendHost();
   const backendPort = Number(env.API_PORT || 8787);
-  const backendOrigin = `http://${backendHost}:${backendPort}`;
+  const backendOrigin = trimTrailingSlashes(
+    env.API_UPSTREAM_ORIGIN || defaultBackendOrigin(backendPort)
+  );
 
   let https = false;
   if (useHttps) {

@@ -14,6 +14,7 @@ This file documents the environment variables used by Apollo.
 | Variable | What it does                                                                                                                          | Default / behavior                  |
 | --- |---------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------|
 | `PUBLIC_BASE_URL` | Public base URL for Apollo, used when the backend needs to generate public-facing URLs.                                               | Derived from the current request    |
+| `API_UPSTREAM_ORIGIN` | Full internal backend origin used by the frontend proxy for `/api` and `/ws`. | Defaults to `http://localhost:<API_PORT>` for npm dev and `http://api:<API_PORT>` in Docker |
 | `DATABASE_URL` | Full PostgreSQL connection string for the backend.                                                                                    | Derived from local defaults and `DB_PORT`    |
 | `OIDC_ISSUER` | OpenID Connect issuer URL. If empty, Apollo uses the local mock issuer on `OIDC_MOCK_PORT`.                                           | `http://localhost:<OIDC_MOCK_PORT>` |
 | `OIDC_PUBLIC_ISSUER` | Public issuer URL exposed to browsers if it differs from the backend's internal issuer URL. | `OIDC_ISSUER`                       |
@@ -60,4 +61,5 @@ Examples:
 ## Notes
 
 - If `DATABASE_URL` & `OIDC_ISSUER` is internal npm-backend and docker-backend interpret them differently and only one at a time can be supported.
+- `API_UPSTREAM_ORIGIN` should be an internal URL the frontend proxy can reach. When it is set, Apollo uses it instead of composing a backend address from `API_PORT`.
 - `PUBLIC_BASE_URL`, `OIDC_PUBLIC_ISSUER`, `OIDC_REDIRECT_URI`, and `OIDC_POST_LOGOUT_REDIRECT_URI` should be public-facing URLs, not Docker-internal hostnames.
