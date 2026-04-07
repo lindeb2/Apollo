@@ -11,7 +11,7 @@ import bcrypt from 'bcryptjs';
 
 import { config } from './config.js';
 import { buildStoredMediaPath, resolveMediaPath } from './mediaPaths.js';
-import { pool, waitForDatabase, runMigrations, closeDb } from './db.js';
+import { pool, waitForDatabase, runMigrations, closeDb, logDatabaseConnectionDetails } from './db.js';
 import {
   getProjectPermission,
   isRefreshTokenPersisted,
@@ -604,6 +604,9 @@ app.get('/api/auth/oidc/callback', async (req, res) => {
     }
 
     const user = await findOrCreateOidcUser(claims);
+    if (!user) {
+      throw new Error('SSO login succeeded, but Apollo could not resolve or create a local user');
+    }
     if (!user?.is_active) {
       clearSessionCookies(res);
       res.redirect(buildAuthErrorRedirect('Your account is pending admin activation'));
@@ -2672,6 +2675,7 @@ server.on('upgrade', (req, socket, head) => {
 async function start() {
   await ensureMediaRoot();
   await waitForDatabase();
+  await logDatabaseConnectionDetails();
   await runMigrations();
 
   server.listen(config.port, () => {

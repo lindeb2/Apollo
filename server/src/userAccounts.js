@@ -182,6 +182,14 @@ export async function findOrCreateOidcUser(claims) {
     );
     const hasAdmin = Boolean(adminResult.rows[0]?.hasAdmin);
 
+    console.log('[OIDC] Resolving local user', {
+      issuer: claims.issuer,
+      subject: claims.subject,
+      email: claims.email || null,
+      hasAdmin,
+      existingUserId: existing?.id || null,
+    });
+
     if (!hasAdmin && !matchesInitialAdminClaim(claims)) {
       throw new Error(buildInitialAdminClaimError());
     }
@@ -197,7 +205,16 @@ export async function findOrCreateOidcUser(claims) {
       }
 
       await client.query('COMMIT');
-      return await findUserById(existing.id);
+      const resolvedUser = await findUserById(existing.id);
+      if (!resolvedUser) {
+        throw new Error('OIDC login matched an existing user but could not load it back from the database');
+      }
+      console.log('[OIDC] Matched existing local user', {
+        userId: resolvedUser.id,
+        isActive: Boolean(resolvedUser.is_active),
+        isAdmin: Boolean(resolvedUser.is_admin),
+      });
+      return resolvedUser;
     }
 
     const username = await generateUniqueUsername(baseUsernameFromClaims(claims), null, client);
@@ -230,7 +247,17 @@ export async function findOrCreateOidcUser(claims) {
     );
 
     await client.query('COMMIT');
-    return await findUserById(id);
+    const createdUser = await findUserById(id);
+    if (!createdUser) {
+      throw new Error('OIDC login inserted a local user row but could not load it back from the database');
+    }
+    console.log('[OIDC] Created local user', {
+      userId: createdUser.id,
+      username: createdUser.username,
+      isActive: Boolean(createdUser.is_active),
+      isAdmin: Boolean(createdUser.is_admin),
+    });
+    return createdUser;
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;

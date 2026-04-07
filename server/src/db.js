@@ -13,6 +13,24 @@ export const pool = new Pool({
   connectionString: config.databaseUrl,
 });
 
+function safeParseDatabaseUrl(connectionString) {
+  try {
+    return new URL(connectionString);
+  } catch {
+    return null;
+  }
+}
+
+export function describeConfiguredDatabaseTarget() {
+  const parsed = safeParseDatabaseUrl(config.databaseUrl);
+  if (!parsed) {
+    return 'an unknown PostgreSQL target';
+  }
+
+  const databaseName = parsed.pathname.replace(/^\//, '') || '(default)';
+  return `${parsed.hostname}:${parsed.port || '5432'}/${databaseName}`;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -72,6 +90,25 @@ export async function runMigrations() {
       client.release();
     }
   }
+}
+
+export async function logDatabaseConnectionDetails() {
+  const result = await pool.query(
+    `SELECT current_database() AS database_name,
+            current_user AS current_user,
+            COALESCE(inet_server_addr()::text, 'local') AS server_addr,
+            inet_server_port() AS server_port`
+  );
+
+  const row = result.rows[0] || {};
+  const serverAddress = row.server_addr || 'unknown';
+  const serverPort = row.server_port || 'unknown';
+  const databaseName = row.database_name || 'unknown';
+  const currentUser = row.current_user || 'unknown';
+
+  console.log(
+    `Connected to PostgreSQL target ${describeConfiguredDatabaseTarget()} (server=${serverAddress}:${serverPort}, database=${databaseName}, user=${currentUser})`
+  );
 }
 
 export async function closeDb() {
