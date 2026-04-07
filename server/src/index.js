@@ -590,7 +590,8 @@ app.get('/api/auth/oidc/callback', async (req, res) => {
 
   const transaction = readOidcTransactionCookie(req);
   clearOidcTransactionCookie(res);
-  if (!transaction?.codeVerifier || !transaction?.state || !transaction?.nonce) {
+  const missingPkceVerifier = config.oidcUsePkce && !transaction?.codeVerifier;
+  if (!transaction?.state || !transaction?.nonce || missingPkceVerifier) {
     res.redirect(buildAuthErrorRedirect('Missing or expired OIDC login transaction'));
     return;
   }

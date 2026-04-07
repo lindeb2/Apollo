@@ -153,6 +153,7 @@ export const config = {
   oidcPublicIssuer,
   oidcClientId: process.env.OIDC_CLIENT_ID || '',
   oidcClientSecret: process.env.OIDC_CLIENT_SECRET || '',
+  oidcUsePkce: parseBoolean(process.env.OIDC_USE_PKCE, true),
   oidcRedirectUri: buildOidcRedirectUri(),
   oidcScopes: process.env.OIDC_SCOPES || 'openid profile email',
   oidcPostLogoutRedirectUri: buildOidcPostLogoutRedirectUri(),

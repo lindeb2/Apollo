@@ -104,28 +104,33 @@ export async function getOidcConfiguration() {
 export async function buildOidcAuthorizationRequest(req) {
   const configuration = await getOidcConfiguration();
   const redirectUri = resolveRedirectUri(req);
-  const codeVerifier = oidcClient.randomPKCECodeVerifier();
-  const codeChallenge = await oidcClient.calculatePKCECodeChallenge(codeVerifier);
   const state = oidcClient.randomState();
   const nonce = oidcClient.randomNonce();
-
-  const url = oidcClient.buildAuthorizationUrl(configuration, {
-    redirect_uri: redirectUri,
-    scope: config.oidcScopes,
-    code_challenge: codeChallenge,
-    code_challenge_method: 'S256',
+  const transaction = {
     state,
     nonce,
-  });
+    createdAt: Date.now(),
+  };
+  const authorizationParameters = {
+    redirect_uri: redirectUri,
+    scope: config.oidcScopes,
+    state,
+    nonce,
+  };
+
+  if (config.oidcUsePkce) {
+    const codeVerifier = oidcClient.randomPKCECodeVerifier();
+    const codeChallenge = await oidcClient.calculatePKCECodeChallenge(codeVerifier);
+    authorizationParameters.code_challenge = codeChallenge;
+    authorizationParameters.code_challenge_method = 'S256';
+    transaction.codeVerifier = codeVerifier;
+  }
+
+  const url = oidcClient.buildAuthorizationUrl(configuration, authorizationParameters);
 
   return {
     url: buildPublicUrl(url, req),
-    transaction: {
-      state,
-      nonce,
-      codeVerifier,
-      createdAt: Date.now(),
-    },
+    transaction,
   };
 }
 
@@ -143,11 +148,16 @@ export async function completeOidcAuthorization(req, transaction) {
     }
   });
 
-  const tokens = await oidcClient.authorizationCodeGrant(configuration, callbackUrl, {
-    pkceCodeVerifier: String(transaction?.codeVerifier || ''),
+  const tokenParameters = {
     expectedState: String(transaction?.state || ''),
     expectedNonce: String(transaction?.nonce || ''),
-  });
+  };
+
+  if (config.oidcUsePkce) {
+    tokenParameters.pkceCodeVerifier = String(transaction?.codeVerifier || '');
+  }
+
+  const tokens = await oidcClient.authorizationCodeGrant(configuration, callbackUrl, tokenParameters);
 
   const idTokenClaims = tokens.claims() || {};
   let mergedClaims = { ...idTokenClaims };

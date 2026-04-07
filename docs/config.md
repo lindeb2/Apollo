@@ -47,6 +47,7 @@ This file documents the environment variables used by Apollo.
 | --- | --- |----------------------|
 | `OIDC_CLIENT_ID` | Client ID Apollo uses with the OIDC provider. Required for OIDC startup. | `apollo-dev`         |
 | `OIDC_CLIENT_SECRET` | Client secret for the OIDC provider when the provider requires one. | `apollo-dev-secret`  |
+| `OIDC_USE_PKCE` | Controls whether Apollo uses PKCE in the authorization code flow. | `true` |
 | `OIDC_SCOPES` | Space-separated list of scopes Apollo requests during login. | `openid profile email` |
 | `OIDC_FIRST_ADMIN_CLAIM` | Optional bootstrap rule for granting the first Apollo admin based on a claim in the OIDC profile or token. | -                    |
 | `OIDC_REDIRECT_URI` | Explicit callback URL override for the OIDC login flow. Leave empty to derive it from the request or `PUBLIC_BASE_URL`. | -                    |
