@@ -22,6 +22,7 @@ export async function registerAndUploadMediaBlob({
   fileName,
   mimeType,
   session,
+  projectId,
 }) {
   const safeMediaId = String(mediaId || '').trim();
   if (!safeMediaId) {
@@ -37,11 +38,12 @@ export async function registerAndUploadMediaBlob({
     mimeType: mimeType || blob.type || 'application/octet-stream',
     sizeBytes: blob.size,
     fileName: fileName || safeMediaId,
+    projectId,
   }, session);
 
   const canonicalMediaId = String(registration?.mediaId || safeMediaId);
   if (!registration?.exists) {
-    await uploadMedia(canonicalMediaId, blob, session);
+    await uploadMedia(canonicalMediaId, blob, session, { projectId });
   }
 
   return {

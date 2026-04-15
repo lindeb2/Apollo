@@ -13,7 +13,6 @@ import { config } from './config.js';
 import { buildStoredMediaPath, resolveMediaPath } from './mediaPaths.js';
 import { pool, waitForDatabase, runMigrations, closeDb, logDatabaseConnectionDetails } from './db.js';
 import {
-  getProjectPermission,
   isRefreshTokenPersisted,
   persistRefreshToken,
   requireAdmin,
@@ -43,13 +42,50 @@ import {
 } from './sessionCookies.js';
 import { choosePreferredOrigin, getRequestOrigin } from './requestOrigin.js';
 import {
+  deleteUserAccount,
   findOrCreateOidcUser,
   findUserById,
   linkPendingOidcIdentityToUser,
   listUsersWithAuthDetails,
   toAdminUser,
   touchUserLogin,
+  transferUserOwnership,
 } from './userAccounts.js';
+import {
+  addRoleMember,
+  buildTrackAccessInfoMap,
+  canCreateProjectsInShow,
+  canUserMutateTrack,
+  createRoleOidcLink,
+  createRole,
+  deleteRoleOidcLink,
+  deleteGrant,
+  deleteRole,
+  ensureDefaultUserRoleMembership,
+  getProjectAccess,
+  getProjectAccessCatalog,
+  getProjectAccessMap,
+  getRoleById,
+  getUserAccessSummary,
+  listRoleChildren,
+  listRoleInheritedGrants,
+  listRoleOidcLinks,
+  listRoleParents,
+  listRoleGrants,
+  listRoleMembers,
+  listRoles,
+  listUserDirectGrants,
+  listUserRoles,
+  removeRoleMember,
+  replaceProjectAccessTags,
+  syncAllProjectAccessTags,
+  syncLegacyProjectPermission,
+  updateRole,
+  upsertRoleGrant,
+  upsertUserGrant,
+  userHasAdminRole,
+  validateAndTransformProjectWrite,
+} from './rbac.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -70,24 +106,29 @@ function toSessionUser(user) {
   };
 }
 
-function buildSessionPayload(user) {
+async function buildSessionPayload(user) {
   return {
     user: toSessionUser(user),
+    accessSummary: await getUserAccessSummary(user.id),
   };
 }
 
 async function issueApolloSession(res, user, options = {}) {
-  const accessToken = signAccessToken(user);
-  const refreshToken = signRefreshToken(user);
-  await persistRefreshToken(refreshToken, user.id);
-  await touchUserLogin(user.id);
+  const sessionUser = await findUserById(user.id);
+  if (!sessionUser) {
+    throw new Error('User not found');
+  }
+  const accessToken = signAccessToken(sessionUser);
+  const refreshToken = signRefreshToken(sessionUser);
+  await persistRefreshToken(refreshToken, sessionUser.id);
+  await touchUserLogin(sessionUser.id);
   setSessionCookies(res, {
     accessToken,
     refreshToken,
     refreshMaxAgeMs: getRefreshCookieLifetimeMs(),
     oidcIdToken: options.oidcIdToken || '',
   });
-  return buildSessionPayload(user);
+  return await buildSessionPayload(sessionUser);
 }
 
 function readRefreshToken(req) {
@@ -171,6 +212,16 @@ function compareMusicalNumbers(leftRaw, rightRaw) {
 }
 
 function compareProjectsByMusicalOrder(left, right) {
+  const showOrderLeft = Number(left?.showOrderIndex ?? 0);
+  const showOrderRight = Number(right?.showOrderIndex ?? 0);
+  if (showOrderLeft !== showOrderRight) return showOrderLeft - showOrderRight;
+
+  const showCompare = String(left?.showName || '').localeCompare(String(right?.showName || ''), undefined, {
+    sensitivity: 'base',
+    numeric: true,
+  });
+  if (showCompare !== 0) return showCompare;
+
   const musicalCompare = compareMusicalNumbers(left?.musicalNumber, right?.musicalNumber);
   if (musicalCompare !== 0) return musicalCompare;
 
@@ -192,6 +243,70 @@ function compareProjectsByMusicalOrder(left, right) {
   });
   if (nameCompare !== 0) return nameCompare;
   return String(left?.id || '').localeCompare(String(right?.id || ''));
+}
+
+async function loadCurrentSessionUser(userId) {
+  const user = await findUserById(userId);
+  if (!user) {
+    throw new Error('User not found');
+  }
+  return user;
+}
+
+async function buildProjectPermissionMapForRows(userId, rows = []) {
+  const projectIds = Array.from(new Set(rows.map((row) => String(row?.id || row?.projectId || '')).filter(Boolean)));
+  const projectRows = projectIds.map((projectId) => {
+    const row = rows.find((entry) => String(entry?.id || entry?.projectId || '') === projectId) || {};
+    return {
+      id: projectId,
+      createdByUserId: row.createdByUserId,
+      showId: row.showId,
+      showName: row.showName,
+      musicalNumber: row.musicalNumber,
+      sceneOrder: row.sceneOrder,
+      name: row.name || row.projectName,
+    };
+  });
+  return await getProjectAccessMap(userId, projectRows);
+}
+
+function attachProjectAccess(row, permissionMap) {
+  const projectId = String(row?.id || row?.projectId || '');
+  const access = permissionMap.get(projectId) || null;
+  return {
+    ...row,
+    access,
+    canRead: Boolean(access?.compatibility?.canRead),
+    canWrite: Boolean(access?.compatibility?.canWrite),
+    canListenTutti: Boolean(access?.canListenTutti),
+    canReadProject: Boolean(access?.canReadProject),
+    canCreateMixes: Boolean(access?.canCreateMixes),
+    canWriteOwnTracks: Boolean(access?.canWriteOwnTracks),
+    canWriteScopedTracks: Boolean(access?.canWriteScopedTracks),
+    canManageOwnProject: Boolean(access?.canManageOwnProject),
+    canManageProject: Boolean(access?.canManageProject),
+  };
+}
+
+function canAccessProjectInPlayer(access) {
+  return Boolean(access?.canListenTutti || access?.canReadProject || access?.canManageOwnProject || access?.canManageProject);
+}
+
+function canAccessProjectInDaw(access) {
+  return Boolean(access?.canReadProject || access?.canManageOwnProject || access?.canManageProject);
+}
+
+function canCreateProjectMixes(access) {
+  return Boolean(access?.canCreateMixes || access?.canManageOwnProject || access?.canManageProject);
+}
+
+function canWriteProjectTracks(access) {
+  return Boolean(
+    access?.canWriteOwnTracks
+    || access?.canWriteScopedTracks
+    || access?.canManageOwnProject
+    || access?.canManageProject
+  );
 }
 
 async function ensureMediaRoot() {
@@ -264,7 +379,20 @@ async function appendProjectOp({ projectId, userId, clientOpId, op }) {
       throw new Error('Project head missing');
     }
 
+    const projectResult = await client.query(
+      `SELECT id,
+              name,
+              created_by AS "createdByUserId"
+       FROM projects
+       WHERE id = $1`,
+      [projectId]
+    );
+    if (projectResult.rowCount === 0) {
+      throw new Error('Project not found');
+    }
+
     const head = headResult.rows[0];
+    const project = projectResult.rows[0];
     const latestSeq = Number(head.latest_seq || 0);
     const maxOpSeqResult = await client.query(
       `SELECT COALESCE(MAX(server_seq), 0) AS max_op_seq
@@ -275,7 +403,20 @@ async function appendProjectOp({ projectId, userId, clientOpId, op }) {
     const maxOpSeq = Number(maxOpSeqResult.rows?.[0]?.max_op_seq || 0);
     const nextSeq = Math.max(latestSeq, maxOpSeq) + 1;
     const currentSnapshot = head.latest_snapshot_json || {};
-    const nextSnapshot = await applyOpToSnapshot(currentSnapshot, op);
+    const provisionalNextSnapshot = await applyOpToSnapshot(currentSnapshot, op);
+    const access = await getProjectAccess(userId, projectId, client);
+    const nextSnapshot = await validateAndTransformProjectWrite({
+      userId,
+      project,
+      access,
+      currentSnapshot,
+      nextSnapshot: provisionalNextSnapshot,
+    });
+    const storedOp = (
+      op?.type === 'project.replace'
+        ? { ...op, project: nextSnapshot }
+        : op
+    );
 
     const projectMetadataUpdates = [];
     const projectMetadataValues = [projectId];
@@ -302,7 +443,7 @@ async function appendProjectOp({ projectId, userId, clientOpId, op }) {
     await client.query(
       `INSERT INTO project_ops(project_id, server_seq, client_op_id, user_id, op_json)
        VALUES($1, $2, $3, $4, $5::jsonb)`,
-      [projectId, nextSeq, clientOpId || null, userId, JSON.stringify(op || {})]
+      [projectId, nextSeq, clientOpId || null, userId, JSON.stringify(storedOp || {})]
     );
 
     if (projectMetadataUpdates.length > 0) {
@@ -350,11 +491,14 @@ async function appendProjectOp({ projectId, userId, clientOpId, op }) {
       );
     }
 
+    await replaceProjectAccessTags(client, projectId, nextSnapshot);
+
     await client.query('COMMIT');
 
     return {
       serverSeq: nextSeq,
       snapshot: nextSnapshot,
+      op: storedOp,
       checkpointed: shouldCheckpoint,
     };
   } catch (error) {
@@ -374,9 +518,14 @@ async function fetchProjectBootstrap(projectId, knownSeq = 0) {
       [projectId]
     ),
     pool.query(
-      `SELECT id, name
-       FROM projects
-       WHERE id = $1`,
+      `SELECT p.id,
+              p.name,
+              p.show_id AS "showId",
+              s.name AS "showName"
+       FROM projects p
+       LEFT JOIN shows s
+         ON s.id = p.show_id
+       WHERE p.id = $1`,
       [projectId]
     ),
   ]);
@@ -411,6 +560,8 @@ async function fetchProjectBootstrap(projectId, knownSeq = 0) {
     project: {
       id: projectResult.rows[0].id,
       name: projectResult.rows[0].name,
+      showId: projectResult.rows[0].showId,
+      showName: projectResult.rows[0].showName,
     },
     latestSeq,
     snapshot,
@@ -493,8 +644,122 @@ function normalizeOrderIndex(value) {
   return numeric;
 }
 
-function canMutateOwnedEntity(ownerUserId, user) {
-  return Boolean(user?.isAdmin) || String(ownerUserId) === String(user?.id || '');
+async function canMutateOwnedEntity(ownerUserId, user) {
+  if (String(ownerUserId) === String(user?.id || '')) {
+    return true;
+  }
+  if (!user?.id) {
+    return false;
+  }
+  return await userHasAdminRole(user.id);
+}
+
+async function canUserEditTrackInProject(userId, projectId, trackId) {
+  const [projectResult, headResult, access] = await Promise.all([
+    pool.query(
+      `SELECT id,
+              created_by AS "createdByUserId"
+       FROM projects
+       WHERE id = $1`,
+      [projectId]
+    ),
+    pool.query(
+      `SELECT latest_snapshot_json
+       FROM project_heads
+       WHERE project_id = $1`,
+      [projectId]
+    ),
+    getProjectAccess(userId, projectId),
+  ]);
+
+  if (projectResult.rowCount === 0 || headResult.rowCount === 0) {
+    return false;
+  }
+  if (!canWriteProjectTracks(access)) {
+    return false;
+  }
+
+  const snapshot = headResult.rows[0].latest_snapshot_json || {};
+  const track = Array.isArray(snapshot?.tracks)
+    ? snapshot.tracks.find((entry) => String(entry?.id || '') === String(trackId || ''))
+    : null;
+  if (!track) {
+    return false;
+  }
+
+  return canUserMutateTrack({
+    access,
+    track,
+    trackInfoById: buildTrackAccessInfoMap(snapshot),
+    userId,
+    projectCreatedByUserId: projectResult.rows[0].createdByUserId,
+  });
+}
+
+async function authorizeProjectMediaAccess(req, res, {
+  projectId,
+  requireWrite = false,
+  requireReferenceMediaId = null,
+} = {}) {
+  const normalizedProjectId = String(projectId || req.body?.projectId || req.query?.projectId || '').trim();
+  if (!normalizedProjectId) {
+    res.status(400).json({ error: 'projectId is required' });
+    return null;
+  }
+
+  const projectExistsResult = await pool.query(
+    `SELECT 1
+     FROM projects
+     WHERE id = $1
+     LIMIT 1`,
+    [normalizedProjectId]
+  );
+  const projectExists = projectExistsResult.rowCount > 0;
+
+  if (!projectExists && requireWrite) {
+    const accessSummary = await getUserAccessSummary(req.user.id);
+    if (!accessSummary.canCreateProjects) {
+      res.status(403).json({ error: 'No write permission for this project' });
+      return null;
+    }
+    return {
+      projectId: normalizedProjectId,
+      access: null,
+    };
+  }
+
+  const access = await getProjectAccess(req.user.id, normalizedProjectId);
+  const allowed = requireWrite
+    ? canWriteProjectTracks(access)
+    : canAccessProjectInPlayer(access);
+  if (!allowed) {
+    res.status(403).json({
+      error: requireWrite
+        ? 'No write permission for this project'
+        : 'No read permission for this project',
+    });
+    return null;
+  }
+
+  if (requireReferenceMediaId) {
+    const referenceResult = await pool.query(
+      `SELECT 1
+       FROM project_media_refs
+       WHERE project_id = $1
+         AND media_id = $2
+       LIMIT 1`,
+      [normalizedProjectId, requireReferenceMediaId]
+    );
+    if (referenceResult.rowCount === 0) {
+      res.status(403).json({ error: 'That media is not available through the selected project' });
+      return null;
+    }
+  }
+
+  return {
+    projectId: normalizedProjectId,
+    access,
+  };
 }
 
 async function loadPlayerFolderById(folderId) {
@@ -546,6 +811,54 @@ async function loadPlaylistById(playlistId) {
     [playlistId]
   );
   return result.rows[0] || null;
+}
+
+async function buildRoleDetailPayload(roleId) {
+  const role = await getRoleById(roleId);
+  if (!role) return null;
+  return {
+    ...role,
+    parents: await listRoleParents(roleId),
+    childRoles: await listRoleChildren(roleId),
+    members: await listRoleMembers(roleId),
+    oidcLinks: await listRoleOidcLinks(roleId),
+    grants: await listRoleGrants(roleId),
+    inheritedGrants: await listRoleInheritedGrants(roleId),
+  };
+}
+
+async function buildUserAccessPayload(userId) {
+  const user = await findUserById(userId);
+  if (!user) return null;
+  return {
+    user: toAdminUser(user),
+    roles: await listUserRoles(userId),
+    directGrants: await listUserDirectGrants(userId),
+    accessSummary: await getUserAccessSummary(userId),
+  };
+}
+
+async function buildEffectiveProjectPermissions(projectId) {
+  const users = await listUsersWithAuthDetails();
+  const permissions = [];
+  for (const user of users) {
+    const access = await getProjectAccess(user.id, projectId);
+    permissions.push({
+      userId: user.id,
+      username: user.username,
+      canListenTutti: Boolean(access.canListenTutti),
+      canReadProject: Boolean(access.canReadProject),
+      canCreateMixes: Boolean(access.canCreateMixes),
+      canWriteOwnTracks: Boolean(access.canWriteOwnTracks),
+      canWriteScopedTracks: Boolean(access.canWriteScopedTracks),
+      canManageOwnProject: Boolean(access.canManageOwnProject),
+      canManageProject: Boolean(access.canManageProject),
+      canRead: Boolean(access.compatibility?.canRead),
+      canWrite: Boolean(access.compatibility?.canWrite),
+      updatedAt: user.updatedAt,
+    });
+  }
+  return permissions;
 }
 
 app.use(cors((req, callback) => {
@@ -607,12 +920,6 @@ app.get('/api/auth/oidc/callback', async (req, res) => {
     if (!user) {
       throw new Error('SSO login succeeded, but Apollo could not resolve or create a local user');
     }
-    if (!user?.is_active) {
-      clearSessionCookies(res);
-      res.redirect(buildAuthErrorRedirect('Your account is pending admin activation'));
-      return;
-    }
-
     await issueApolloSession(res, user, {
       oidcIdToken: tokens.id_token || '',
     });
@@ -645,18 +952,14 @@ app.post('/api/auth/refresh', async (req, res) => {
     }
 
     const payload = verifyRefreshToken(refreshToken);
-    const userResult = await pool.query(
-      'SELECT id, username, is_admin, is_active FROM users WHERE id = $1',
-      [payload.sub]
-    );
-    if (userResult.rowCount === 0 || !userResult.rows[0].is_active) {
+    const user = await findUserById(payload.sub);
+    if (!user) {
       await revokeRefreshToken(refreshToken);
       clearSessionCookies(res);
-      res.status(401).json({ error: 'User is not active' });
+      res.status(401).json({ error: 'User not found' });
       return;
     }
 
-    const user = userResult.rows[0];
     await revokeRefreshToken(refreshToken);
     res.json(await issueApolloSession(res, user, {
       oidcIdToken: getOidcIdTokenCookie(req),
@@ -685,7 +988,11 @@ app.post('/api/auth/logout', async (req, res) => {
 });
 
 app.get('/api/me', requireAuth, async (req, res) => {
-  res.json(buildSessionPayload(req.user));
+  try {
+    res.json(await buildSessionPayload(await loadCurrentSessionUser(req.user.id)));
+  } catch {
+    res.status(401).json({ error: 'User not found' });
+  }
 });
 
 app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
@@ -701,13 +1008,27 @@ app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
 
     const id = randomUUID();
     const hash = await bcrypt.hash(password, 12);
-    await pool.query(
-      `INSERT INTO users(id, username, password_hash, is_admin, is_active)
-       VALUES($1, $2, $3, $4, TRUE)`,
-      [id, username, hash, isAdmin]
-    );
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO users(id, username, password_hash, is_admin, is_active)
+         VALUES($1, $2, $3, $4, TRUE)`,
+        [id, username, hash, isAdmin]
+      );
+      await ensureDefaultUserRoleMembership(id, client);
+      if (isAdmin) {
+        await addRoleMember('system-role-admin', id, req.user.id, client);
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
 
-    res.status(201).json({ id, username, isAdmin });
+    res.status(201).json({ user: toAdminUser(await findUserById(id)) });
   } catch (error) {
     if (String(error?.message || '').includes('users_username_key')) {
       res.status(409).json({ error: 'Username already exists' });
@@ -728,12 +1049,9 @@ app.patch('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) =>
     const updates = [];
     const values = [];
     let idx = 1;
+    const hasIsAdmin = typeof req.body?.isAdmin === 'boolean';
 
-    if (typeof req.body?.isActive === 'boolean') {
-      updates.push(`is_active = $${idx++}`);
-      values.push(req.body.isActive);
-    }
-    if (typeof req.body?.isAdmin === 'boolean') {
+    if (hasIsAdmin) {
       updates.push(`is_admin = $${idx++}`);
       values.push(req.body.isAdmin);
     }
@@ -752,27 +1070,107 @@ app.patch('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) =>
       return;
     }
 
-    updates.push(`updated_at = NOW()`);
-    values.push(userId);
+    const client = await pool.connect();
+    let result;
+    try {
+      await client.query('BEGIN');
+      updates.push(`updated_at = NOW()`);
+      values.push(userId);
 
-    const result = await pool.query(
-      `UPDATE users
-       SET ${updates.join(', ')}
-       WHERE id = $${idx}
-       RETURNING id`,
-      values
-    );
+      result = await client.query(
+        `UPDATE users
+         SET ${updates.join(', ')}
+         WHERE id = $${idx}
+         RETURNING id`,
+        values
+      );
 
-    if (result.rowCount === 0) {
-      res.status(404).json({ error: 'User not found' });
+      if (result.rowCount === 0) {
+        await client.query('ROLLBACK');
+        res.status(404).json({ error: 'User not found' });
+        return;
+      }
+
+      if (hasIsAdmin) {
+        if (req.body.isAdmin) {
+          await addRoleMember('system-role-admin', userId, req.user.id, client);
+        } else {
+          await removeRoleMember('system-role-admin', userId, client);
+        }
+      }
+
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    if (!result || result.rowCount === 0) {
       return;
     }
 
     const updatedUser = await findUserById(userId);
     res.json({ user: toAdminUser(updatedUser) });
   } catch (error) {
+    const message = String(error?.message || '');
+    if (/at least one active admin/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
     console.error(error);
     res.status(500).json({ error: 'Failed to update user' });
+  }
+});
+
+app.post('/api/admin/users/:id/transfer-ownership', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const counts = await transferUserOwnership({
+      sourceUserId: req.params.id,
+      targetUserId: String(req.body?.targetUserId || ''),
+    });
+    res.json({ ok: true, counts });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to transfer ownership');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (/required/i.test(message) || /different/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to transfer ownership' });
+  }
+});
+
+app.delete('/api/admin/users/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await deleteUserAccount({
+      userId: req.params.id,
+      transferToUserId: String(req.body?.transferToUserId || ''),
+      actorUserId: req.user.id,
+    });
+    res.json({ ok: true, userId: req.params.id });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to delete user');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (
+      /required/i.test(message)
+      || /different/i.test(message)
+      || /own user/i.test(message)
+      || /at least one active admin/i.test(message)
+    ) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to delete user' });
   }
 });
 
@@ -804,25 +1202,360 @@ app.post('/api/admin/users/:id/link-oidc', requireAuth, requireAdmin, async (req
   }
 });
 
+app.get('/api/admin/rbac/catalog', requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    res.json(await getProjectAccessCatalog());
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to load RBAC catalog' });
+  }
+});
+
+app.get('/api/admin/roles', requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    res.json({ roles: await listRoles() });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to load roles' });
+  }
+});
+
+app.post('/api/admin/roles', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const role = await createRole({
+      name: req.body?.name,
+      description: req.body?.description || '',
+    }, req.user.id);
+    res.status(201).json({ role });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to create role');
+    if (/required/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    if (/rbac_roles_name_key/i.test(message) || /duplicate/i.test(message)) {
+      res.status(409).json({ error: 'Role name already exists' });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to create role' });
+  }
+});
+
+app.get('/api/admin/roles/:id', requireAuth, requireAdmin, async (req, res) => {
+  const role = await buildRoleDetailPayload(req.params.id);
+    if (!role) {
+      res.status(404).json({ error: 'Role not found' });
+      return;
+  }
+  res.json({ role });
+});
+
+app.patch('/api/admin/roles/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await updateRole(req.params.id, {
+      name: req.body?.name,
+      description: req.body?.description,
+      emptyAccessMessage: req.body?.emptyAccessMessage,
+      parentRoleIds: Array.isArray(req.body?.parentRoleIds) ? req.body.parentRoleIds : undefined,
+    });
+    res.json({ role: await buildRoleDetailPayload(req.params.id) });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to update role');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (
+      /cannot be modified/i.test(message)
+      || /required/i.test(message)
+      || /only the default user role/i.test(message)
+      || /inherit/i.test(message)
+      || /cycle/i.test(message)
+    ) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    if (/rbac_roles_name_key/i.test(message) || /duplicate/i.test(message)) {
+      res.status(409).json({ error: 'Role name already exists' });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to update role' });
+  }
+});
+
+app.delete('/api/admin/roles/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await deleteRole(req.params.id);
+    res.json({ ok: true, roleId: req.params.id });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to delete role');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (/system roles cannot be modified/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to delete role' });
+  }
+});
+
+app.post('/api/admin/roles/:id/oidc-links', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const link = await createRoleOidcLink(req.params.id, {
+      claimPath: req.body?.claimPath,
+      claimValue: req.body?.claimValue,
+      description: req.body?.description,
+    }, req.user.id);
+    res.status(201).json({ link });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to create OIDC role link');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (/required/i.test(message) || /automatic/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    if (/duplicate/i.test(message) || /unique/i.test(message) || /idx_rbac_role_oidc_links_unique/i.test(message)) {
+      res.status(409).json({ error: 'OIDC link already exists for this role' });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to create OIDC role link' });
+  }
+});
+
+app.delete('/api/admin/roles/:roleId/oidc-links/:linkId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await deleteRoleOidcLink(req.params.roleId, req.params.linkId);
+    res.json({ ok: true, linkId: req.params.linkId });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to delete OIDC role link');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (/automatic/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to delete OIDC role link' });
+  }
+});
+
+app.put('/api/admin/roles/:roleId/members/:userId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await addRoleMember(req.params.roleId, req.params.userId, req.user.id);
+    res.json({ role: await buildRoleDetailPayload(req.params.roleId) });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to add role member');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (/membership is automatic/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to add role member' });
+  }
+});
+
+app.delete('/api/admin/roles/:roleId/members/:userId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await removeRoleMember(req.params.roleId, req.params.userId);
+    res.json({ role: await buildRoleDetailPayload(req.params.roleId) });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to remove role member');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (/membership is automatic/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    if (/at least one active admin/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to remove role member' });
+  }
+});
+
+app.post('/api/admin/roles/:id/grants', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const grant = await upsertRoleGrant(req.params.id, {
+      capability: req.body?.capability,
+      showTargetType: req.body?.showTargetType,
+      showTargetShowId: req.body?.showTargetShowId,
+      projectTargetType: req.body?.projectTargetType ?? req.body?.scopeType,
+      projectTargetProjectId: req.body?.projectTargetProjectId ?? req.body?.scopeProjectId,
+      projectTargetValue: req.body?.projectTargetValue ?? req.body?.scopeValue,
+      trackScopeType: req.body?.trackScopeType,
+      trackScopeValue: req.body?.trackScopeValue,
+    }, req.user.id);
+    res.status(201).json({ grant });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to save role grant');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (/invalid/i.test(message) || /required/i.test(message) || /grants cannot be modified/i.test(message) || /selected/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to save role grant' });
+  }
+});
+
+app.delete('/api/admin/roles/:roleId/grants/:grantId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await deleteGrant(req.params.grantId);
+    res.json({ ok: true, grantId: req.params.grantId });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to delete role grant');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (/grants cannot be modified/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to delete role grant' });
+  }
+});
+
+app.get('/api/admin/users/:id/access', requireAuth, requireAdmin, async (req, res) => {
+  const payload = await buildUserAccessPayload(req.params.id);
+  if (!payload) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+  res.json(payload);
+});
+
+app.put('/api/admin/users/:userId/roles/:roleId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await addRoleMember(req.params.roleId, req.params.userId, req.user.id);
+    res.json(await buildUserAccessPayload(req.params.userId));
+  } catch (error) {
+    const message = String(error?.message || 'Failed to add user role');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (/membership is automatic/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to add user role' });
+  }
+});
+
+app.delete('/api/admin/users/:userId/roles/:roleId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await removeRoleMember(req.params.roleId, req.params.userId);
+    res.json(await buildUserAccessPayload(req.params.userId));
+  } catch (error) {
+    const message = String(error?.message || 'Failed to remove user role');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (/membership is automatic/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    if (/at least one active admin/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to remove user role' });
+  }
+});
+
+app.post('/api/admin/users/:id/grants', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const grant = await upsertUserGrant(req.params.id, {
+      capability: req.body?.capability,
+      showTargetType: req.body?.showTargetType,
+      showTargetShowId: req.body?.showTargetShowId,
+      projectTargetType: req.body?.projectTargetType ?? req.body?.scopeType,
+      projectTargetProjectId: req.body?.projectTargetProjectId ?? req.body?.scopeProjectId,
+      projectTargetValue: req.body?.projectTargetValue ?? req.body?.scopeValue,
+      trackScopeType: req.body?.trackScopeType,
+      trackScopeValue: req.body?.trackScopeValue,
+    }, req.user.id);
+    res.status(201).json({ grant });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to save direct grant');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (/invalid/i.test(message) || /required/i.test(message) || /selected/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to save direct grant' });
+  }
+});
+
+app.delete('/api/admin/users/:userId/grants/:grantId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await deleteGrant(req.params.grantId);
+    res.json({ ok: true, grantId: req.params.grantId });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to delete direct grant');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to delete direct grant' });
+  }
+});
+
 app.get('/api/projects', requireAuth, async (req, res) => {
   const result = await pool.query(
     `SELECT p.id, p.name,
             p.musical_number AS "musicalNumber",
             p.scene_order AS "sceneOrder",
-            pp.can_read AS "canRead",
-            pp.can_write AS "canWrite",
+            p.show_id AS "showId",
+            s.name AS "showName",
+            s.order_index AS "showOrderIndex",
+            p.created_by AS "createdByUserId",
             ph.latest_seq AS "latestSeq",
             COALESCE(jsonb_array_length(ph.latest_snapshot_json -> 'tracks'), 0) AS "trackCount",
             ph.updated_at AS "updatedAt"
      FROM projects p
-     LEFT JOIN project_permissions pp
-       ON pp.project_id = p.id AND pp.user_id = $1
+     LEFT JOIN shows s
+       ON s.id = p.show_id
      LEFT JOIN project_heads ph
-       ON ph.project_id = p.id
-     WHERE $2::boolean = TRUE OR COALESCE(pp.can_read, FALSE) = TRUE`,
-    [req.user.id, req.user.isAdmin]
+       ON ph.project_id = p.id`
   );
-  const sortedProjects = [...result.rows].sort(compareProjectsByMusicalOrder);
+  const permissionMap = await buildProjectPermissionMapForRows(req.user.id, result.rows);
+  const sortedProjects = result.rows
+    .map((row) => attachProjectAccess(row, permissionMap))
+    .filter((row) => canAccessProjectInDaw(row.access))
+    .sort(compareProjectsByMusicalOrder);
   res.json({ projects: sortedProjects });
 });
 
@@ -830,6 +1563,7 @@ app.post('/api/projects', requireAuth, async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim();
     const initialSnapshot = req.body?.initialSnapshot;
+    const requestedShowId = String(req.body?.showId || initialSnapshot?.showId || '').trim();
     const requestedMusicalNumber = normalizeMusicalNumber(
       req.body?.musicalNumber ?? initialSnapshot?.musicalNumber ?? '0.0'
     );
@@ -847,13 +1581,35 @@ app.post('/api/projects', requireAuth, async (req, res) => {
       res.status(400).json({ error: 'sceneOrder must be an integer >= 1 when provided' });
       return;
     }
+    if (!requestedShowId) {
+      res.status(400).json({ error: 'Show is required' });
+      return;
+    }
+
+    const showResult = await pool.query(
+      `SELECT id, name, order_index AS "orderIndex"
+       FROM shows
+       WHERE id = $1`,
+      [requestedShowId]
+    );
+    if (showResult.rowCount === 0) {
+      res.status(404).json({ error: 'Show not found' });
+      return;
+    }
+    const show = showResult.rows[0];
+    if (!(await canCreateProjectsInShow(req.user.id, show.id))) {
+      res.status(403).json({ error: 'You do not have permission to create projects in this show' });
+      return;
+    }
 
     const projectId = String(req.body?.projectId || randomUUID());
     const snapshot = initialSnapshot && typeof initialSnapshot === 'object'
-      ? { ...initialSnapshot, projectId, projectName: name, musicalNumber: requestedMusicalNumber }
+      ? { ...initialSnapshot, projectId, projectName: name, musicalNumber: requestedMusicalNumber, showId: show.id, showName: show.name }
       : {
         projectId,
         projectName: name,
+        showId: show.id,
+        showName: show.name,
         musicalNumber: requestedMusicalNumber,
         sampleRate: 44100,
         masterVolume: 100,
@@ -866,9 +1622,9 @@ app.post('/api/projects', requireAuth, async (req, res) => {
     try {
       await client.query('BEGIN');
       await client.query(
-        `INSERT INTO projects(id, name, musical_number, scene_order, created_by)
-         VALUES($1, $2, $3, $4, $5)`,
-        [projectId, name, requestedMusicalNumber, requestedSceneOrder, req.user.id]
+        `INSERT INTO projects(id, name, musical_number, scene_order, show_id, created_by)
+         VALUES($1, $2, $3, $4, $5, $6)`,
+        [projectId, name, requestedMusicalNumber, requestedSceneOrder, show.id, req.user.id]
       );
 
       await client.query(
@@ -878,18 +1634,12 @@ app.post('/api/projects', requireAuth, async (req, res) => {
       );
 
       await client.query(
-        `INSERT INTO project_permissions(project_id, user_id, can_read, can_write, granted_by)
-         VALUES($1, $2, TRUE, TRUE, $3)
-         ON CONFLICT (project_id, user_id)
-         DO UPDATE SET can_read = TRUE, can_write = TRUE, granted_by = EXCLUDED.granted_by, updated_at = NOW()`,
-        [projectId, req.user.id, req.user.id]
-      );
-
-      await client.query(
         `INSERT INTO project_snapshots(project_id, server_seq, snapshot_json, created_by)
          VALUES($1, 0, $2::jsonb, $3)`,
         [projectId, JSON.stringify(snapshot), req.user.id]
       );
+
+      await replaceProjectAccessTags(client, projectId, snapshot);
 
       const mediaIds = collectSnapshotMediaIds(snapshot);
       if (mediaIds.length > 0) {
@@ -915,6 +1665,9 @@ app.post('/api/projects', requireAuth, async (req, res) => {
       project: {
         id: projectId,
         name,
+        showId: show.id,
+        showName: show.name,
+        showOrderIndex: show.orderIndex,
         musicalNumber: requestedMusicalNumber,
         sceneOrder: requestedSceneOrder,
         latestSeq: 0,
@@ -1164,13 +1917,29 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
 });
 
 app.get('/api/projects/:id/bootstrap', requireAuth, async (req, res) => {
-  const permission = await requireProjectPermission(req, res, 'read');
-  if (!permission) return;
-
   try {
+    const projectId = String(req.params.id || '');
+    const purpose = String(req.query?.purpose || 'daw').trim().toLowerCase();
+    const access = await getProjectAccess(req.user.id, projectId);
+    const canBootstrap = purpose === 'player'
+      ? canAccessProjectInPlayer(access)
+      : canAccessProjectInDaw(access);
+    if (!canBootstrap) {
+      res.status(403).json({
+        error: purpose === 'player'
+          ? 'No player access for this project'
+          : 'No read permission for this project',
+      });
+      return;
+    }
+
     const knownSeq = Number(req.query.knownSeq || 0);
-    const payload = await fetchProjectBootstrap(permission.projectId, knownSeq);
-    res.json(payload);
+    const payload = await fetchProjectBootstrap(projectId, knownSeq);
+    res.json({
+      ...payload,
+      access,
+      purpose,
+    });
   } catch (error) {
     console.error(error);
     res.status(404).json({ error: 'Project not found' });
@@ -1209,51 +1978,166 @@ app.post('/api/projects/:id/checkpoint', requireAuth, async (req, res) => {
   res.json({ ok: true, latestSeq: Number(head.latest_seq || 0) });
 });
 
-app.get('/api/projects/:projectId/permissions', requireAuth, async (req, res) => {
-  const permission = await requireProjectPermission(req, res, 'read');
-  if (!permission) return;
-
-  const result = await pool.query(
-    `SELECT pp.user_id AS "userId",
-            u.username,
-            pp.can_read AS "canRead",
-            pp.can_write AS "canWrite",
-            pp.updated_at AS "updatedAt"
-     FROM project_permissions pp
-     JOIN users u ON u.id = pp.user_id
-     WHERE pp.project_id = $1
-     ORDER BY u.username ASC`,
-    [permission.projectId]
-  );
-
-  res.json({ permissions: result.rows });
+app.get('/api/projects/:projectId/permissions', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const projectId = String(req.params.projectId || '');
+    if (!projectId) {
+      res.status(400).json({ error: 'Missing project id' });
+      return;
+    }
+    res.json({ permissions: await buildEffectiveProjectPermissions(projectId) });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to load project permissions' });
+  }
 });
 
-app.put('/api/projects/:projectId/permissions/:userId', requireAuth, async (req, res) => {
-  const permission = await requireProjectPermission(req, res, 'write');
-  if (!permission) return;
+app.put('/api/projects/:projectId/permissions/:userId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const projectId = String(req.params.projectId || '');
+    if (!projectId) {
+      res.status(400).json({ error: 'Missing project id' });
+      return;
+    }
+    await syncLegacyProjectPermission(
+      req.params.userId,
+      projectId,
+      {
+        canRead: Boolean(req.body?.canRead),
+        canWrite: Boolean(req.body?.canWrite),
+      },
+      req.user.id
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to update project permission');
+    if (/not found/i.test(message)) {
+      res.status(404).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to update project permission' });
+  }
+});
 
-  const canRead = Boolean(req.body?.canRead);
-  const canWrite = Boolean(req.body?.canWrite);
+app.get('/api/shows', requireAuth, async (_req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT s.id,
+              s.name,
+              s.order_index AS "orderIndex",
+              COUNT(p.id)::integer AS "projectCount"
+       FROM shows s
+       LEFT JOIN projects p
+         ON p.show_id = s.id
+       GROUP BY s.id, s.name, s.order_index
+       ORDER BY s.order_index ASC, s.name ASC`
+    );
+    res.json({ shows: result.rows });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to load shows' });
+  }
+});
 
-  await pool.query(
-    `INSERT INTO project_permissions(project_id, user_id, can_read, can_write, granted_by)
-     VALUES($1, $2, $3, $4, $5)
-     ON CONFLICT (project_id, user_id)
-     DO UPDATE SET can_read = EXCLUDED.can_read,
-                   can_write = EXCLUDED.can_write,
-                   granted_by = EXCLUDED.granted_by,
-                   updated_at = NOW()`,
-    [permission.projectId, req.params.userId, canRead, canWrite, req.user.id]
-  );
+app.post('/api/admin/shows', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    if (!name) {
+      res.status(400).json({ error: 'Show name is required' });
+      return;
+    }
+    const orderResult = await pool.query('SELECT COALESCE(MAX(order_index), -1) + 1 AS "nextOrder" FROM shows');
+    const id = randomUUID();
+    const result = await pool.query(
+      `INSERT INTO shows(id, name, order_index, created_by)
+       VALUES($1, $2, $3, $4)
+       RETURNING id, name, order_index AS "orderIndex", 0::integer AS "projectCount"`,
+      [id, name, Number(orderResult.rows[0]?.nextOrder || 0), req.user.id]
+    );
+    res.status(201).json({ show: result.rows[0] });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to create show');
+    if (/duplicate key|unique/i.test(message)) {
+      res.status(409).json({ error: 'A show with that name already exists' });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to create show' });
+  }
+});
 
-  res.json({ ok: true });
+app.patch('/api/admin/shows/:id', requireAuth, requireAdmin, async (req, res) => {
+  const showId = String(req.params.id || '').trim();
+  const name = String(req.body?.name || '').trim();
+  if (!showId || !name) {
+    res.status(400).json({ error: 'Show name is required' });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `UPDATE shows
+       SET name = $2,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, name, order_index AS "orderIndex"`,
+      [showId, name]
+    );
+    if (result.rowCount === 0) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Show not found' });
+      return;
+    }
+
+    await client.query(
+      `UPDATE project_heads ph
+       SET latest_snapshot_json = jsonb_set(
+             COALESCE(ph.latest_snapshot_json, '{}'::jsonb),
+             '{showName}',
+             to_jsonb($2::text),
+             true
+           ),
+           updated_at = NOW()
+       FROM projects p
+       WHERE p.id = ph.project_id
+         AND p.show_id = $1`,
+      [showId, name]
+    );
+
+    const countResult = await client.query(
+      `SELECT COUNT(*)::integer AS "projectCount"
+       FROM projects
+       WHERE show_id = $1`,
+      [showId]
+    );
+    await client.query('COMMIT');
+    res.json({
+      show: {
+        ...result.rows[0],
+        projectCount: Number(countResult.rows[0]?.projectCount || 0),
+      },
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    const message = String(error?.message || 'Failed to rename show');
+    if (/duplicate key|unique/i.test(message)) {
+      res.status(409).json({ error: 'A show with that name already exists' });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to rename show' });
+  } finally {
+    client.release();
+  }
 });
 
 app.get('/api/player/my-device', requireAuth, async (req, res) => {
   try {
     const userId = req.user.id;
-    const isAdmin = Boolean(req.user.isAdmin);
+    const isAdmin = await userHasAdminRole(userId);
     const [folderResult, mixResult, playlistResult, playlistItemResult] = await Promise.all([
       pool.query(
         `SELECT id,
@@ -1283,16 +2167,17 @@ app.get('/api/player/my-device', requireAuth, async (req, res) => {
                 p.name AS "projectName",
                 p.musical_number AS "musicalNumber",
                 p.scene_order AS "sceneOrder",
-                CASE WHEN $2::boolean THEN TRUE ELSE COALESCE(pp.can_read, FALSE) END AS "canRead",
-                CASE WHEN $2::boolean THEN TRUE ELSE COALESCE(pp.can_write, FALSE) END AS "canWrite"
+                p.show_id AS "showId",
+                s.name AS "showName",
+                s.order_index AS "showOrderIndex"
          FROM virtual_mixes vm
          JOIN projects p
            ON p.id = vm.project_id
-         LEFT JOIN project_permissions pp
-           ON pp.project_id = p.id AND pp.user_id = $1
+         LEFT JOIN shows s
+           ON s.id = p.show_id
          WHERE vm.owner_user_id = $1
          ORDER BY vm.updated_at DESC`,
-        [userId, isAdmin]
+        [userId]
       ),
       pool.query(
         `SELECT id,
@@ -1325,18 +2210,9 @@ app.get('/api/player/my-device', requireAuth, async (req, res) => {
                 p.name AS "projectName",
                 p.musical_number AS "musicalNumber",
                 p.scene_order AS "sceneOrder",
-                CASE
-                  WHEN vm.id IS NULL THEN FALSE
-                  WHEN $2::boolean THEN TRUE
-                  WHEN vm.owner_user_id = $1 THEN TRUE
-                  WHEN vm.visibility = 'global' AND COALESCE(pp.can_read, FALSE) = TRUE THEN TRUE
-                  ELSE FALSE
-                END AS "mixReadable",
-                CASE
-                  WHEN vm.id IS NULL THEN FALSE
-                  WHEN $2::boolean THEN TRUE
-                  ELSE COALESCE(pp.can_write, FALSE)
-                END AS "projectCanWrite"
+                p.show_id AS "showId",
+                s.name AS "showName",
+                s.order_index AS "showOrderIndex"
          FROM player_playlist_items pli
          JOIN player_playlists pl
            ON pl.id = pli.playlist_id
@@ -1344,13 +2220,19 @@ app.get('/api/player/my-device', requireAuth, async (req, res) => {
            ON vm.id = pli.mix_id
          LEFT JOIN projects p
            ON p.id = vm.project_id
-         LEFT JOIN project_permissions pp
-           ON pp.project_id = p.id AND pp.user_id = $1
+         LEFT JOIN shows s
+           ON s.id = p.show_id
          WHERE pl.owner_user_id = $1
          ORDER BY pli.playlist_id ASC, pli.order_index ASC`,
-        [userId, isAdmin]
+        [userId]
       ),
     ]);
+
+    const permissionRows = [
+      ...mixResult.rows,
+      ...playlistItemResult.rows,
+    ].filter((row) => row.projectId);
+    const permissionMap = await buildProjectPermissionMapForRows(userId, permissionRows);
 
     const playlistItemsByPlaylistId = {};
     playlistResult.rows.forEach((playlist) => {
@@ -1358,7 +2240,17 @@ app.get('/api/player/my-device', requireAuth, async (req, res) => {
     });
 
     playlistItemResult.rows.forEach((row) => {
-      const readable = Boolean(row.mixReadable);
+      const permission = row.projectId
+        ? (permissionMap.get(String(row.projectId)) || null)
+        : null;
+      const readable = Boolean(
+        row.mixId
+        && (
+          isAdmin
+          || row.mixOwnerUserId === userId
+          || (row.mixVisibility === 'global' && canCreateProjectMixes(permission))
+        )
+      );
       const mix = readable
         ? {
           id: row.mixId,
@@ -1375,8 +2267,12 @@ app.get('/api/player/my-device', requireAuth, async (req, res) => {
           projectName: row.projectName,
           musicalNumber: row.musicalNumber,
           sceneOrder: row.sceneOrder,
+          showId: row.showId,
+          showName: row.showName,
+          showOrderIndex: row.showOrderIndex,
           canRead: true,
-          canWrite: Boolean(row.projectCanWrite),
+          canWrite: Boolean(isAdmin || permission?.compatibility?.canWrite),
+          canCreateMixes: Boolean(isAdmin || canCreateProjectMixes(permission)),
         }
         : null;
       const item = {
@@ -1396,7 +2292,16 @@ app.get('/api/player/my-device', requireAuth, async (req, res) => {
 
     res.json({
       folders: folderResult.rows,
-      mixes: mixResult.rows,
+      mixes: mixResult.rows.map((row) => {
+        const permission = permissionMap.get(String(row.projectId)) || null;
+        return {
+          ...row,
+          access: permission,
+          canRead: Boolean(isAdmin || permission?.compatibility?.canRead),
+          canWrite: Boolean(isAdmin || permission?.compatibility?.canWrite),
+          canCreateMixes: Boolean(isAdmin || canCreateProjectMixes(permission)),
+        };
+      }),
       playlists: playlistResult.rows,
       playlistItemsByPlaylistId,
     });
@@ -1412,16 +2317,19 @@ app.get('/api/player/tutti', requireAuth, async (req, res) => {
       `SELECT p.id, p.name,
               p.musical_number AS "musicalNumber",
               p.scene_order AS "sceneOrder",
-              CASE WHEN $2::boolean THEN TRUE ELSE COALESCE(pp.can_read, FALSE) END AS "canRead",
-              CASE WHEN $2::boolean THEN TRUE ELSE COALESCE(pp.can_write, FALSE) END AS "canWrite"
+              p.show_id AS "showId",
+              s.name AS "showName",
+              s.order_index AS "showOrderIndex",
+              p.created_by AS "createdByUserId"
        FROM projects p
-       LEFT JOIN project_permissions pp
-         ON pp.project_id = p.id AND pp.user_id = $1
-       WHERE $2::boolean = TRUE OR COALESCE(pp.can_read, FALSE) = TRUE`,
-      [req.user.id, Boolean(req.user.isAdmin)]
+       LEFT JOIN shows s
+         ON s.id = p.show_id`
     );
-
-    const projects = [...result.rows].sort(compareProjectsByMusicalOrder);
+    const permissionMap = await buildProjectPermissionMapForRows(req.user.id, result.rows);
+    const projects = result.rows
+      .map((row) => attachProjectAccess(row, permissionMap))
+      .filter((row) => canAccessProjectInPlayer(row.access))
+      .sort(compareProjectsByMusicalOrder);
     res.json({
       mixes: projects.map((project) => ({
         id: `tutti:${project.id}`,
@@ -1431,7 +2339,12 @@ app.get('/api/player/tutti', requireAuth, async (req, res) => {
         presetVariantKey: null,
         musicalNumber: project.musicalNumber,
         sceneOrder: project.sceneOrder,
+        showId: project.showId,
+        showName: project.showName,
+        showOrderIndex: project.showOrderIndex,
         canWrite: Boolean(project.canWrite),
+        canCreateMixes: Boolean(project.canCreateMixes),
+        canListenTutti: Boolean(project.canListenTutti),
       })),
     });
   } catch (error) {
@@ -1442,7 +2355,6 @@ app.get('/api/player/tutti', requireAuth, async (req, res) => {
 
 app.get('/api/player/mixes/global', requireAuth, async (req, res) => {
   try {
-    const isAdmin = Boolean(req.user.isAdmin);
     const result = await pool.query(
       `SELECT vm.id,
               vm.owner_user_id AS "ownerUserId",
@@ -1458,21 +2370,34 @@ app.get('/api/player/mixes/global', requireAuth, async (req, res) => {
               p.name AS "projectName",
               p.musical_number AS "musicalNumber",
               p.scene_order AS "sceneOrder",
-              u.username AS "ownerUsername",
-              CASE WHEN $1::boolean THEN TRUE ELSE COALESCE(pp.can_write, FALSE) END AS "canWrite"
+              p.show_id AS "showId",
+              s.name AS "showName",
+              s.order_index AS "showOrderIndex",
+              p.created_by AS "createdByUserId",
+              u.username AS "ownerUsername"
        FROM virtual_mixes vm
        JOIN projects p
          ON p.id = vm.project_id
+       LEFT JOIN shows s
+         ON s.id = p.show_id
        JOIN users u
          ON u.id = vm.owner_user_id
-       LEFT JOIN project_permissions pp
-         ON pp.project_id = p.id AND pp.user_id = $2
        WHERE vm.visibility = 'global'
-         AND ($1::boolean = TRUE OR COALESCE(pp.can_read, FALSE) = TRUE)
        ORDER BY vm.published_at DESC NULLS LAST, vm.updated_at DESC`,
-      [isAdmin, req.user.id]
+      []
     );
-    res.json({ mixes: result.rows });
+    const permissionMap = await buildProjectPermissionMapForRows(req.user.id, result.rows);
+    res.json({
+      mixes: result.rows
+        .map((row) => ({
+          ...row,
+          access: permissionMap.get(String(row.projectId)) || null,
+          canWrite: Boolean((permissionMap.get(String(row.projectId)) || {}).compatibility?.canWrite),
+          canRead: Boolean((permissionMap.get(String(row.projectId)) || {}).compatibility?.canRead),
+          canCreateMixes: Boolean(canCreateProjectMixes(permissionMap.get(String(row.projectId)) || null)),
+        }))
+        .filter((row) => row.canCreateMixes),
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to load global mixes' });
@@ -1529,7 +2454,7 @@ app.patch('/api/player/folders/:id', requireAuth, async (req, res) => {
       res.status(404).json({ error: 'Folder not found' });
       return;
     }
-    if (!canMutateOwnedEntity(folder.ownerUserId, req.user)) {
+    if (!(await canMutateOwnedEntity(folder.ownerUserId, req.user))) {
       res.status(403).json({ error: 'No permission to edit this folder' });
       return;
     }
@@ -1633,7 +2558,7 @@ app.delete('/api/player/folders/:id', requireAuth, async (req, res) => {
       res.status(404).json({ error: 'Folder not found' });
       return;
     }
-    if (!canMutateOwnedEntity(folder.ownerUserId, req.user)) {
+    if (!(await canMutateOwnedEntity(folder.ownerUserId, req.user))) {
       res.status(403).json({ error: 'No permission to delete this folder' });
       return;
     }
@@ -1682,9 +2607,9 @@ app.post('/api/player/mixes', requireAuth, async (req, res) => {
       return;
     }
 
-    const permission = await getProjectPermission(req.user.id, projectId, req.user.isAdmin);
-    if (!permission.canRead) {
-      res.status(403).json({ error: 'No read permission for source project' });
+    const access = await getProjectAccess(req.user.id, projectId);
+    if (!canCreateProjectMixes(access)) {
+      res.status(403).json({ error: 'No permission to create mixes from this project' });
       return;
     }
 
@@ -1728,7 +2653,7 @@ app.patch('/api/player/mixes/:id', requireAuth, async (req, res) => {
       res.status(404).json({ error: 'Mix not found' });
       return;
     }
-    if (!canMutateOwnedEntity(mix.ownerUserId, req.user)) {
+    if (!(await canMutateOwnedEntity(mix.ownerUserId, req.user))) {
       res.status(403).json({ error: 'No permission to edit this mix' });
       return;
     }
@@ -1816,7 +2741,7 @@ app.delete('/api/player/mixes/:id', requireAuth, async (req, res) => {
       res.status(404).json({ error: 'Mix not found' });
       return;
     }
-    if (!canMutateOwnedEntity(mix.ownerUserId, req.user)) {
+    if (!(await canMutateOwnedEntity(mix.ownerUserId, req.user))) {
       res.status(403).json({ error: 'No permission to delete this mix' });
       return;
     }
@@ -1836,7 +2761,7 @@ app.post('/api/player/mixes/:id/publish', requireAuth, async (req, res) => {
       res.status(404).json({ error: 'Mix not found' });
       return;
     }
-    if (!canMutateOwnedEntity(mix.ownerUserId, req.user)) {
+    if (!(await canMutateOwnedEntity(mix.ownerUserId, req.user))) {
       res.status(403).json({ error: 'No permission to publish this mix' });
       return;
     }
@@ -1873,7 +2798,7 @@ app.post('/api/player/mixes/:id/unpublish', requireAuth, async (req, res) => {
       res.status(404).json({ error: 'Mix not found' });
       return;
     }
-    if (!canMutateOwnedEntity(mix.ownerUserId, req.user)) {
+    if (!(await canMutateOwnedEntity(mix.ownerUserId, req.user))) {
       res.status(403).json({ error: 'No permission to unpublish this mix' });
       return;
     }
@@ -1943,7 +2868,7 @@ app.patch('/api/player/playlists/:id', requireAuth, async (req, res) => {
       res.status(404).json({ error: 'Playlist not found' });
       return;
     }
-    if (!canMutateOwnedEntity(playlist.ownerUserId, req.user)) {
+    if (!(await canMutateOwnedEntity(playlist.ownerUserId, req.user))) {
       res.status(403).json({ error: 'No permission to edit this playlist' });
       return;
     }
@@ -2008,7 +2933,7 @@ app.delete('/api/player/playlists/:id', requireAuth, async (req, res) => {
       res.status(404).json({ error: 'Playlist not found' });
       return;
     }
-    if (!canMutateOwnedEntity(playlist.ownerUserId, req.user)) {
+    if (!(await canMutateOwnedEntity(playlist.ownerUserId, req.user))) {
       res.status(403).json({ error: 'No permission to delete this playlist' });
       return;
     }
@@ -2027,7 +2952,7 @@ app.post('/api/player/playlists/:id/items', requireAuth, async (req, res) => {
       res.status(404).json({ error: 'Playlist not found' });
       return;
     }
-    if (!canMutateOwnedEntity(playlist.ownerUserId, req.user)) {
+    if (!(await canMutateOwnedEntity(playlist.ownerUserId, req.user))) {
       res.status(403).json({ error: 'No permission to edit this playlist' });
       return;
     }
@@ -2040,25 +2965,25 @@ app.post('/api/player/playlists/:id/items', requireAuth, async (req, res) => {
     const mixPermission = await pool.query(
       `SELECT vm.id,
               vm.owner_user_id AS "ownerUserId",
-              CASE
-                WHEN $3::boolean THEN TRUE
-                WHEN vm.owner_user_id = $2 THEN TRUE
-                WHEN vm.visibility = 'global' AND COALESCE(pp.can_read, FALSE) = TRUE THEN TRUE
-                ELSE FALSE
-              END AS "canUse"
+              vm.project_id AS "projectId",
+              vm.visibility AS "visibility"
        FROM virtual_mixes vm
-       JOIN projects p
-         ON p.id = vm.project_id
-       LEFT JOIN project_permissions pp
-         ON pp.project_id = p.id AND pp.user_id = $2
        WHERE vm.id = $1`,
-      [mixId, req.user.id, Boolean(req.user.isAdmin)]
+      [mixId]
     );
     if (mixPermission.rowCount === 0) {
       res.status(404).json({ error: 'Mix not found' });
       return;
     }
-    if (!Boolean(mixPermission.rows[0].canUse)) {
+    const mixRow = mixPermission.rows[0];
+    const isAdmin = await userHasAdminRole(req.user.id);
+    const access = await getProjectAccess(req.user.id, mixRow.projectId);
+    const canUse = Boolean(
+      isAdmin
+      || mixRow.ownerUserId === req.user.id
+      || (mixRow.visibility === 'global' && canCreateProjectMixes(access))
+    );
+    if (!canUse) {
       res.status(403).json({ error: 'No permission to use this mix in playlist' });
       return;
     }
@@ -2100,7 +3025,7 @@ app.patch('/api/player/playlists/:id/items/reorder', requireAuth, async (req, re
       res.status(404).json({ error: 'Playlist not found' });
       return;
     }
-    if (!canMutateOwnedEntity(playlist.ownerUserId, req.user)) {
+    if (!(await canMutateOwnedEntity(playlist.ownerUserId, req.user))) {
       res.status(403).json({ error: 'No permission to reorder this playlist' });
       return;
     }
@@ -2183,7 +3108,7 @@ app.delete('/api/player/playlists/:id/items/:itemId', requireAuth, async (req, r
       res.status(404).json({ error: 'Playlist not found' });
       return;
     }
-    if (!canMutateOwnedEntity(playlist.ownerUserId, req.user)) {
+    if (!(await canMutateOwnedEntity(playlist.ownerUserId, req.user))) {
       res.status(403).json({ error: 'No permission to edit this playlist' });
       return;
     }
@@ -2241,6 +3166,9 @@ app.delete('/api/player/playlists/:id/items/:itemId', requireAuth, async (req, r
 
 app.post('/api/media/register', requireAuth, async (req, res) => {
   try {
+    const authorization = await authorizeProjectMediaAccess(req, res, { requireWrite: true });
+    if (!authorization) return;
+
     const mediaId = String(req.body?.mediaId || randomUUID());
     const sha256 = String(req.body?.sha256 || '').trim();
     const mimeType = String(req.body?.mimeType || 'application/octet-stream');
@@ -2280,6 +3208,12 @@ app.post('/api/media/register', requireAuth, async (req, res) => {
 
 app.put('/api/media/:mediaId/content', requireAuth, express.raw({ type: '*/*', limit: config.maxUploadBytes }), async (req, res) => {
   try {
+    const authorization = await authorizeProjectMediaAccess(req, res, {
+      projectId: req.query?.projectId,
+      requireWrite: true,
+    });
+    if (!authorization) return;
+
     const mediaId = req.params.mediaId;
     const recordResult = await pool.query(
       `SELECT path, size_bytes AS "sizeBytes"
@@ -2318,6 +3252,13 @@ app.put('/api/media/:mediaId/content', requireAuth, express.raw({ type: '*/*', l
 app.get('/api/media/:mediaId', requireAuth, async (req, res) => {
   try {
     const mediaId = req.params.mediaId;
+    const authorization = await authorizeProjectMediaAccess(req, res, {
+      projectId: req.query?.projectId,
+      requireWrite: false,
+      requireReferenceMediaId: mediaId,
+    });
+    if (!authorization) return;
+
     const result = await pool.query(
       `SELECT path, mime_type AS "mimeType", size_bytes AS "sizeBytes"
        FROM media_objects
@@ -2374,6 +3315,9 @@ app.get('/api/media/:mediaId', requireAuth, async (req, res) => {
 
 app.post('/api/media/batch-resolve', requireAuth, async (req, res) => {
   try {
+    const authorization = await authorizeProjectMediaAccess(req, res, { requireWrite: true });
+    if (!authorization) return;
+
     const mediaIds = Array.isArray(req.body?.mediaIds) ? req.body.mediaIds.slice(0, 5000) : [];
     if (!mediaIds.length) {
       res.json({ found: [] });
@@ -2444,8 +3388,8 @@ wsServer.on('connection', (ws, req) => {
             return;
           }
 
-          const permission = await getProjectPermission(ws.session.userId, projectId, ws.session.isAdmin);
-          if (!permission.canRead) {
+          const access = await getProjectAccess(ws.session.userId, projectId);
+          if (!canAccessProjectInDaw(access)) {
             sendWs(ws, 'error', { code: 'NO_READ_PERMISSION', message: 'No read permission', retryable: false });
             return;
           }
@@ -2459,6 +3403,7 @@ wsServer.on('connection', (ws, req) => {
             latestSeq: payload.latestSeq,
             snapshot: payload.snapshot,
             missingOps: payload.missingOps,
+            access,
           });
           await sendProjectLockStatesToClient(projectId, ws);
           return;
@@ -2478,8 +3423,8 @@ wsServer.on('connection', (ws, req) => {
             return;
           }
 
-          const permission = await getProjectPermission(ws.session.userId, projectId, ws.session.isAdmin);
-          if (!permission.canWrite) {
+          const access = await getProjectAccess(ws.session.userId, projectId);
+          if (!canWriteProjectTracks(access)) {
             sendWs(ws, 'error', { code: 'NO_WRITE_PERMISSION', message: 'No write permission', retryable: false });
             return;
           }
@@ -2501,7 +3446,7 @@ wsServer.on('connection', (ws, req) => {
             projectId,
             serverSeq: result.serverSeq,
             clientOpId,
-            op,
+            op: result.op || op,
             actor: {
               userId: ws.session.userId,
               username: ws.session.username,
@@ -2522,9 +3467,17 @@ wsServer.on('connection', (ws, req) => {
             return;
           }
 
-          const permission = await getProjectPermission(ws.session.userId, projectId, ws.session.isAdmin);
-          if (!permission.canWrite) {
+          const access = await getProjectAccess(ws.session.userId, projectId);
+          if (!canWriteProjectTracks(access)) {
             sendWs(ws, 'error', { code: 'NO_WRITE_PERMISSION', message: 'No write permission', retryable: false });
+            return;
+          }
+          if (!(await canUserEditTrackInProject(ws.session.userId, projectId, trackId))) {
+            sendWs(ws, 'error', {
+              code: 'NO_TRACK_WRITE_PERMISSION',
+              message: 'You cannot edit that track',
+              retryable: false,
+            });
             return;
           }
 
@@ -2596,6 +3549,15 @@ wsServer.on('connection', (ws, req) => {
             return;
           }
 
+          if (!(await canUserEditTrackInProject(ws.session.userId, projectId, trackId))) {
+            sendWs(ws, 'error', {
+              code: 'NO_TRACK_WRITE_PERMISSION',
+              message: 'You cannot edit that track',
+              retryable: false,
+            });
+            return;
+          }
+
           const result = await pool.query(
             `UPDATE record_locks
              SET expires_at = NOW() + ($4 || ' seconds')::INTERVAL,
@@ -2620,6 +3582,15 @@ wsServer.on('connection', (ws, req) => {
           const trackId = String(message.trackId || '');
           if (!projectId || !trackId) {
             sendWs(ws, 'error', { code: 'BAD_REQUEST', message: 'projectId and trackId are required', retryable: false });
+            return;
+          }
+
+          if (!(await canUserEditTrackInProject(ws.session.userId, projectId, trackId))) {
+            sendWs(ws, 'error', {
+              code: 'NO_TRACK_WRITE_PERMISSION',
+              message: 'You cannot edit that track',
+              retryable: false,
+            });
             return;
           }
 
@@ -2677,6 +3648,7 @@ async function start() {
   await waitForDatabase();
   await logDatabaseConnectionDetails();
   await runMigrations();
+  await syncAllProjectAccessTags();
 
   server.listen(config.port, () => {
     console.log(`Apollo server listening on http://0.0.0.0:${config.port}`);

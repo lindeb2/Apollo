@@ -129,6 +129,27 @@ export async function listServerProjects(session) {
   return payload.projects || [];
 }
 
+export async function listShows(session) {
+  const payload = await apiFetch('/api/shows', {}, session);
+  return payload.shows || [];
+}
+
+export async function createShow(name, session) {
+  const payload = await apiFetch('/api/admin/shows', {
+    method: 'POST',
+    body: { name },
+  }, session);
+  return payload.show || null;
+}
+
+export async function renameShow(showId, name, session) {
+  const payload = await apiFetch(`/api/admin/shows/${encodeURIComponent(showId)}`, {
+    method: 'PATCH',
+    body: { name },
+  }, session);
+  return payload.show || null;
+}
+
 export async function createServerProject(name, session, options = null) {
   const initial = options?.initialSnapshot && typeof options.initialSnapshot === 'object'
     ? options.initialSnapshot
@@ -147,6 +168,7 @@ export async function createServerProject(name, session, options = null) {
     method: 'POST',
     body: {
       name: snapshot.projectName,
+      showId: options?.showId || snapshot.showId || null,
       musicalNumber: snapshot.musicalNumber,
       projectId,
       initialSnapshot: snapshot,
@@ -277,8 +299,13 @@ export async function updateServerProjectMusicalNumber(projectId, musicalNumber,
   );
 }
 
-export async function bootstrapServerProject(projectId, session, knownSeq = 0) {
-  return await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/bootstrap?knownSeq=${Number(knownSeq || 0)}`, {}, session);
+export async function bootstrapServerProject(projectId, session, knownSeq = 0, options = {}) {
+  const params = new URLSearchParams();
+  params.set('knownSeq', String(Number(knownSeq || 0)));
+  if (options?.purpose) {
+    params.set('purpose', String(options.purpose));
+  }
+  return await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/bootstrap?${params.toString()}`, {}, session);
 }
 
 export async function listUsers(session) {
@@ -300,11 +327,147 @@ export async function updateUser(userId, updates, session) {
   }, session);
 }
 
+export async function transferUserOwnership(userId, targetUserId, session) {
+  return await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/transfer-ownership`, {
+    method: 'POST',
+    body: { targetUserId },
+  }, session);
+}
+
+export async function deleteUser(userId, transferToUserId, session) {
+  return await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
+    body: { transferToUserId },
+  }, session);
+}
+
 export async function linkOidcIdentity(targetUserId, sourceUserId, session) {
   return await apiFetch(`/api/admin/users/${encodeURIComponent(targetUserId)}/link-oidc`, {
     method: 'POST',
     body: { sourceUserId },
   }, session);
+}
+
+export async function getRbacCatalog(session) {
+  return await apiFetch('/api/admin/rbac/catalog', {}, session);
+}
+
+export async function listRbacRoles(session) {
+  const payload = await apiFetch('/api/admin/roles', {}, session);
+  return payload.roles || [];
+}
+
+export async function createRbacRole(role, session) {
+  const payload = await apiFetch('/api/admin/roles', {
+    method: 'POST',
+    body: role,
+  }, session);
+  return payload.role;
+}
+
+export async function getRbacRole(roleId, session) {
+  const payload = await apiFetch(`/api/admin/roles/${encodeURIComponent(roleId)}`, {}, session);
+  return payload.role || null;
+}
+
+export async function updateRbacRole(roleId, updates, session) {
+  const payload = await apiFetch(`/api/admin/roles/${encodeURIComponent(roleId)}`, {
+    method: 'PATCH',
+    body: updates,
+  }, session);
+  return payload.role || null;
+}
+
+export async function deleteRbacRole(roleId, session) {
+  return await apiFetch(`/api/admin/roles/${encodeURIComponent(roleId)}`, {
+    method: 'DELETE',
+  }, session);
+}
+
+export async function createRbacRoleOidcLink(roleId, link, session) {
+  const payload = await apiFetch(`/api/admin/roles/${encodeURIComponent(roleId)}/oidc-links`, {
+    method: 'POST',
+    body: link,
+  }, session);
+  return payload.link || null;
+}
+
+export async function deleteRbacRoleOidcLink(roleId, linkId, session) {
+  return await apiFetch(
+    `/api/admin/roles/${encodeURIComponent(roleId)}/oidc-links/${encodeURIComponent(linkId)}`,
+    { method: 'DELETE' },
+    session
+  );
+}
+
+export async function addRbacRoleMember(roleId, userId, session) {
+  const payload = await apiFetch(
+    `/api/admin/roles/${encodeURIComponent(roleId)}/members/${encodeURIComponent(userId)}`,
+    { method: 'PUT', body: {} },
+    session
+  );
+  return payload.role || null;
+}
+
+export async function removeRbacRoleMember(roleId, userId, session) {
+  const payload = await apiFetch(
+    `/api/admin/roles/${encodeURIComponent(roleId)}/members/${encodeURIComponent(userId)}`,
+    { method: 'DELETE' },
+    session
+  );
+  return payload.role || null;
+}
+
+export async function saveRbacRoleGrant(roleId, grant, session) {
+  const payload = await apiFetch(`/api/admin/roles/${encodeURIComponent(roleId)}/grants`, {
+    method: 'POST',
+    body: grant,
+  }, session);
+  return payload.grant || null;
+}
+
+export async function deleteRbacRoleGrant(roleId, grantId, session) {
+  return await apiFetch(
+    `/api/admin/roles/${encodeURIComponent(roleId)}/grants/${encodeURIComponent(grantId)}`,
+    { method: 'DELETE' },
+    session
+  );
+}
+
+export async function getUserAccessDetail(userId, session) {
+  return await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/access`, {}, session);
+}
+
+export async function addUserRole(userId, roleId, session) {
+  return await apiFetch(
+    `/api/admin/users/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleId)}`,
+    { method: 'PUT', body: {} },
+    session
+  );
+}
+
+export async function removeUserRole(userId, roleId, session) {
+  return await apiFetch(
+    `/api/admin/users/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleId)}`,
+    { method: 'DELETE' },
+    session
+  );
+}
+
+export async function saveUserGrant(userId, grant, session) {
+  const payload = await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/grants`, {
+    method: 'POST',
+    body: grant,
+  }, session);
+  return payload.grant || null;
+}
+
+export async function deleteUserGrant(userId, grantId, session) {
+  return await apiFetch(
+    `/api/admin/users/${encodeURIComponent(userId)}/grants/${encodeURIComponent(grantId)}`,
+    { method: 'DELETE' },
+    session
+  );
 }
 
 export async function getProjectPermissions(projectId, session) {
@@ -330,8 +493,12 @@ export async function registerMedia(payload, session) {
   }, session);
 }
 
-export async function uploadMedia(mediaId, blob, session) {
-  await apiFetch(`/api/media/${encodeURIComponent(mediaId)}/content`, {
+export async function uploadMedia(mediaId, blob, session, options = {}) {
+  const params = new URLSearchParams();
+  if (options?.projectId) {
+    params.set('projectId', String(options.projectId));
+  }
+  await apiFetch(`/api/media/${encodeURIComponent(mediaId)}/content${params.toString() ? `?${params.toString()}` : ''}`, {
     method: 'PUT',
     headers: {
       'Content-Type': blob.type || 'application/octet-stream',
@@ -340,15 +507,22 @@ export async function uploadMedia(mediaId, blob, session) {
   }, session);
 }
 
-export async function resolveMedia(mediaIds, session) {
+export async function resolveMedia(mediaIds, session, options = {}) {
   return await apiFetch('/api/media/batch-resolve', {
     method: 'POST',
-    body: { mediaIds },
+    body: {
+      mediaIds,
+      projectId: options?.projectId || null,
+    },
   }, session);
 }
 
-export async function downloadMediaBlob(mediaId, session) {
-  const response = await apiFetch(`/api/media/${encodeURIComponent(mediaId)}`, {
+export async function downloadMediaBlob(mediaId, session, options = {}) {
+  const params = new URLSearchParams();
+  if (options?.projectId) {
+    params.set('projectId', String(options.projectId));
+  }
+  const response = await apiFetch(`/api/media/${encodeURIComponent(mediaId)}${params.toString() ? `?${params.toString()}` : ''}`, {
     method: 'GET',
   }, session);
   return await response.blob();

@@ -10,7 +10,7 @@ import {
   upsertPendingSyncOp,
 } from '../lib/db';
 import { createId } from '../utils/id';
-import { resolveMedia } from '../lib/serverApi';
+import { bootstrapServerProject, resolveMedia } from '../lib/serverApi';
 import { registerAndUploadMediaBlob } from '../lib/mediaUpload';
 
 function collectBlobIds(project) {
@@ -252,7 +252,7 @@ export default function useRealtimeProjectSync({
     const blobIds = collectBlobIds(currentProject);
     const unresolvedBlobIds = blobIds.filter((blobId) => !uploadedBlobIdsRef.current.has(blobId));
     if (unresolvedBlobIds.length > 0) {
-      const resolution = await resolveMedia(unresolvedBlobIds, session);
+      const resolution = await resolveMedia(unresolvedBlobIds, session, { projectId: serverProjectId });
       for (const mediaId of resolution?.found || []) {
         uploadedBlobIdsRef.current.add(String(mediaId));
       }
@@ -279,6 +279,7 @@ export default function useRealtimeProjectSync({
         fileName: media.fileName || blobId,
         mimeType: media.blob.type || 'application/octet-stream',
         session,
+        projectId: serverProjectId,
       });
       const canonicalMediaId = String(uploaded?.mediaId || blobId);
       if (canonicalMediaId !== blobId) {
@@ -289,7 +290,7 @@ export default function useRealtimeProjectSync({
       uploadedBlobIdsRef.current.add(blobId);
     }
     return remapProjectBlobIds(currentProject, canonicalByBlobId);
-  }, [session]);
+  }, [serverProjectId, session]);
 
   useEffect(() => {
     latestSeqRef.current = latestSeq;
@@ -494,6 +495,17 @@ export default function useRealtimeProjectSync({
         onError: (message) => {
           if (disposed) return;
           setSyncError(message?.message || 'Realtime sync error');
+          if (serverProjectId && session && /permission|scope|manager|track/i.test(String(message?.message || ''))) {
+            bootstrapServerProject(serverProjectId, session, 0, { purpose: 'daw' })
+              .then(async (payload) => {
+                if (payload?.snapshot) {
+                  await applyRemoteSnapshot(payload.snapshot, Number(payload.latestSeq || 0), {
+                    animateFromOtherClient: false,
+                  });
+                }
+              })
+              .catch(() => {});
+          }
         },
       });
     })();

@@ -2,6 +2,36 @@ import { randomUUID } from 'crypto';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { describeOidcBootstrapRule, matchesOidcBootstrapRule } from './oidcBootstrap.js';
+import {
+  addRoleMember,
+  applyOidcRoleLinksForUser,
+  assertUserCanLoseAdminRole,
+  countActiveAdminUsers,
+  SYSTEM_ROLE_ADMIN_KEY,
+  SYSTEM_ROLE_DEFAULT_USER_KEY,
+  ensureDefaultUserRoleMembership,
+} from './rbac.js';
+
+function buildUserSelectSql(alias = 'u') {
+  return `${alias}.id,
+          ${alias}.username,
+          ${alias}.password_hash,
+          EXISTS(
+            SELECT 1
+            FROM rbac_role_memberships rm
+            JOIN rbac_roles r
+              ON r.id = rm.role_id
+            WHERE rm.user_id = ${alias}.id
+              AND r.system_key = '${SYSTEM_ROLE_ADMIN_KEY}'
+          ) AS is_admin,
+          ${alias}.is_active,
+          ${alias}.oidc_issuer,
+          ${alias}.oidc_subject,
+          ${alias}.oidc_email,
+          ${alias}.oidc_display_name,
+          ${alias}.created_at,
+          ${alias}.updated_at`;
+}
 
 function sanitizeUsernameCandidate(value, fallback = 'user') {
   const normalized = String(value || fallback)
@@ -63,23 +93,49 @@ function mapAdminUserRow(row) {
     oidcEmail: row.oidc_email || '',
     oidcDisplayName: row.oidc_display_name || '',
     pendingOidc: oidcLinked && !row.is_active,
+    roleCount: Number(row.role_count || 0),
+    roles: Array.isArray(row.roles)
+      ? row.roles.map((role) => ({
+        id: role.id,
+        name: role.name,
+        isSystem: Boolean(role.isSystem),
+        systemKey: role.systemKey || '',
+      }))
+      : [],
   };
 }
 
 export async function listUsersWithAuthDetails() {
   const result = await pool.query(
-    `SELECT id,
-            username,
-            password_hash,
-            is_admin,
-            is_active,
-            oidc_issuer,
-            oidc_subject,
-            oidc_email,
-            oidc_display_name,
-            created_at,
-            updated_at
-     FROM users
+    `SELECT ${buildUserSelectSql('u')},
+            (
+              SELECT COUNT(*)::integer
+              FROM rbac_role_memberships rm
+              JOIN rbac_roles r
+                ON r.id = rm.role_id
+              WHERE rm.user_id = u.id
+                AND r.system_key IS DISTINCT FROM '${SYSTEM_ROLE_DEFAULT_USER_KEY}'
+            ) AS role_count,
+            (
+              SELECT COALESCE(
+                jsonb_agg(
+                  jsonb_build_object(
+                    'id', r.id,
+                    'name', r.name,
+                    'isSystem', r.is_system,
+                    'systemKey', COALESCE(r.system_key, '')
+                  )
+                  ORDER BY r.is_system DESC, r.name ASC
+                ),
+                '[]'::jsonb
+              )
+              FROM rbac_role_memberships rm
+              JOIN rbac_roles r
+                ON r.id = rm.role_id
+              WHERE rm.user_id = u.id
+                AND r.system_key IS DISTINCT FROM '${SYSTEM_ROLE_DEFAULT_USER_KEY}'
+            ) AS roles
+     FROM users u
      ORDER BY username ASC`
   );
   return result.rows.map(mapAdminUserRow);
@@ -87,18 +143,8 @@ export async function listUsersWithAuthDetails() {
 
 export async function findUserById(userId, db = pool) {
   const result = await db.query(
-    `SELECT id,
-            username,
-            password_hash,
-            is_admin,
-            is_active,
-            oidc_issuer,
-            oidc_subject,
-            oidc_email,
-            oidc_display_name,
-            created_at,
-            updated_at
-     FROM users
+    `SELECT ${buildUserSelectSql('u')}
+     FROM users u
      WHERE id = $1`,
     [userId]
   );
@@ -107,18 +153,8 @@ export async function findUserById(userId, db = pool) {
 
 export async function findUserByOidcIdentity(issuer, subject, db = pool) {
   const result = await db.query(
-    `SELECT id,
-            username,
-            password_hash,
-            is_admin,
-            is_active,
-            oidc_issuer,
-            oidc_subject,
-            oidc_email,
-            oidc_display_name,
-            created_at,
-            updated_at
-     FROM users
+    `SELECT ${buildUserSelectSql('u')}
+     FROM users u
      WHERE oidc_issuer = $1 AND oidc_subject = $2`,
     [issuer, subject]
   );
@@ -163,6 +199,8 @@ async function promoteUserToInitialAdmin(userId, db = pool) {
      WHERE id = $1`,
     [userId]
   );
+  await ensureDefaultUserRoleMembership(userId, db);
+  await addRoleMember('system-role-admin', userId, null, db);
 }
 
 export async function findOrCreateOidcUser(claims) {
@@ -173,14 +211,7 @@ export async function findOrCreateOidcUser(claims) {
     await client.query('LOCK TABLE users IN EXCLUSIVE MODE');
 
     const existing = await findUserByOidcIdentity(claims.issuer, claims.subject, client);
-    const adminResult = await client.query(
-      `SELECT EXISTS(
-         SELECT 1
-         FROM users
-         WHERE is_admin = TRUE
-       ) AS "hasAdmin"`
-    );
-    const hasAdmin = Boolean(adminResult.rows[0]?.hasAdmin);
+    const hasAdmin = (await countActiveAdminUsers(client)) > 0;
 
     console.log('[OIDC] Resolving local user', {
       issuer: claims.issuer,
@@ -195,6 +226,8 @@ export async function findOrCreateOidcUser(claims) {
     }
 
     if (existing) {
+      await ensureDefaultUserRoleMembership(existing.id, client);
+      await applyOidcRoleLinksForUser(existing.id, claims.rawClaims || {}, client);
       await updateOidcProfile(existing.id, {
         email: claims.email,
         displayName: claims.displayName,
@@ -238,13 +271,19 @@ export async function findOrCreateOidcUser(claims) {
         id,
         username,
         shouldBootstrapInitialAdmin,
-        shouldBootstrapInitialAdmin,
+        true,
         claims.issuer,
         claims.subject,
         claims.email || null,
         claims.displayName || null,
       ]
     );
+
+    await ensureDefaultUserRoleMembership(id, client);
+    await applyOidcRoleLinksForUser(id, claims.rawClaims || {}, client);
+    if (shouldBootstrapInitialAdmin) {
+      await addRoleMember('system-role-admin', id, null, client);
+    }
 
     await client.query('COMMIT');
     const createdUser = await findUserById(id);
@@ -349,6 +388,114 @@ export async function linkPendingOidcIdentityToUser({ sourceUserId, targetUserId
   }
 
   return await findUserById(targetUserId);
+}
+
+async function assertTransferUsers(sourceUserId, targetUserId, db = pool) {
+  const normalizedSourceUserId = String(sourceUserId || '').trim();
+  const normalizedTargetUserId = String(targetUserId || '').trim();
+  if (!normalizedSourceUserId || !normalizedTargetUserId) {
+    throw new Error('Both source and target users are required');
+  }
+  if (normalizedSourceUserId === normalizedTargetUserId) {
+    throw new Error('Source and target users must be different');
+  }
+
+  const result = await db.query(
+    `SELECT id, username
+     FROM users
+     WHERE id = ANY($1::text[])
+     FOR UPDATE`,
+    [[normalizedSourceUserId, normalizedTargetUserId]]
+  );
+  const usersById = new Map(result.rows.map((row) => [row.id, row]));
+  if (!usersById.has(normalizedSourceUserId)) {
+    throw new Error('Source user not found');
+  }
+  if (!usersById.has(normalizedTargetUserId)) {
+    throw new Error('Target user not found');
+  }
+  return {
+    sourceUser: usersById.get(normalizedSourceUserId),
+    targetUser: usersById.get(normalizedTargetUserId),
+  };
+}
+
+export async function transferUserOwnership({ sourceUserId, targetUserId }, db = pool) {
+  const client = db === pool ? await pool.connect() : db;
+  const release = db === pool;
+  const counts = {};
+
+  try {
+    if (release) await client.query('BEGIN');
+    const { targetUser } = await assertTransferUsers(sourceUserId, targetUserId, client);
+
+    const updateCount = async (key, sql, values = [targetUserId, sourceUserId]) => {
+      const result = await client.query(sql, values);
+      counts[key] = result.rowCount;
+    };
+
+    await updateCount('shows', 'UPDATE shows SET created_by = $1 WHERE created_by = $2');
+    await updateCount('projects', 'UPDATE projects SET created_by = $1 WHERE created_by = $2');
+    await updateCount('playerFolders', 'UPDATE player_folders SET owner_user_id = $1, updated_at = NOW() WHERE owner_user_id = $2');
+    await updateCount('virtualMixes', 'UPDATE virtual_mixes SET owner_user_id = $1, updated_at = NOW() WHERE owner_user_id = $2');
+    await updateCount('playerPlaylists', 'UPDATE player_playlists SET owner_user_id = $1, updated_at = NOW() WHERE owner_user_id = $2');
+    await updateCount(
+      'recordLocks',
+      'UPDATE record_locks SET owner_user_id = $1, owner_name = $3, updated_at = NOW() WHERE owner_user_id = $2',
+      [targetUserId, sourceUserId, targetUser.username]
+    );
+    await updateCount('mediaObjects', 'UPDATE media_objects SET created_by = $1 WHERE created_by = $2');
+    await updateCount('projectSnapshots', 'UPDATE project_snapshots SET created_by = $1 WHERE created_by = $2');
+    await updateCount('projectOps', 'UPDATE project_ops SET user_id = $1 WHERE user_id = $2');
+    await updateCount('projectPermissionsGranted', 'UPDATE project_permissions SET granted_by = $1 WHERE granted_by = $2');
+    await updateCount('rbacRolesCreated', 'UPDATE rbac_roles SET created_by = $1 WHERE created_by = $2');
+    await updateCount('rbacMembershipsAdded', 'UPDATE rbac_role_memberships SET added_by = $1 WHERE added_by = $2');
+    await updateCount('rbacGrantsGranted', 'UPDATE rbac_grants SET granted_by = $1 WHERE granted_by = $2');
+    await updateCount('rbacOidcLinksCreated', 'UPDATE rbac_role_oidc_links SET created_by = $1 WHERE created_by = $2');
+
+    if (release) await client.query('COMMIT');
+    return counts;
+  } catch (error) {
+    if (release) await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    if (release) client.release();
+  }
+}
+
+export async function deleteUserAccount({ userId, transferToUserId, actorUserId }) {
+  const normalizedUserId = String(userId || '').trim();
+  const normalizedTransferToUserId = String(transferToUserId || '').trim();
+  if (!normalizedUserId) {
+    throw new Error('User id is required');
+  }
+  if (!normalizedTransferToUserId) {
+    throw new Error('Ownership transfer target is required');
+  }
+  if (String(actorUserId || '') === normalizedUserId) {
+    throw new Error('You cannot delete your own user');
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await transferUserOwnership({
+      sourceUserId: normalizedUserId,
+      targetUserId: normalizedTransferToUserId,
+    }, client);
+    await assertUserCanLoseAdminRole(normalizedUserId, client);
+    await client.query('DELETE FROM refresh_tokens WHERE user_id = $1', [normalizedUserId]);
+    const result = await client.query('DELETE FROM users WHERE id = $1 RETURNING id', [normalizedUserId]);
+    if (result.rowCount === 0) {
+      throw new Error('User not found');
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export function toAdminUser(userRow) {

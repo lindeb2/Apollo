@@ -366,6 +366,7 @@ function PlayerDashboard({
   session,
   onLogout,
   onSwitchToDawDashboard,
+  onOpenAdmin = null,
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -408,6 +409,11 @@ function PlayerDashboard({
   const [mixDialog, setMixDialog] = useState(null);
   const [playlistDragState, setPlaylistDragState] = useState(null);
   const [playlistReorderPendingId, setPlaylistReorderPendingId] = useState(null);
+  const showNoAccessMessage = Boolean(session?.accessSummary?.showNoAccessMessage);
+  const noAccessMessage = String(
+    session?.accessSummary?.emptyAccessMessage
+    || 'You do not currently have any permissions. Please contact an admin if you should.'
+  );
 
   const audioRef = useRef(null);
   const objectUrlRef = useRef(null);
@@ -444,6 +450,16 @@ function PlayerDashboard({
   });
 
   const monoOutputActive = audioSettings.forceMonoOutput === true || outputChannelCount <= 1;
+  const showNoAccessBanner = (
+    showNoAccessMessage
+    && !loading
+    && !error
+    && folders.length === 0
+    && myMixes.length === 0
+    && playlists.length === 0
+    && tuttiMixes.length === 0
+    && globalMixes.length === 0
+  );
   const buildPlaybackExportSettings = useCallback((projectLike) => normalizeExportSettings({
     ...(projectLike?.exportSettings || {}),
     panLawDb: playbackPanLawDb,
@@ -865,15 +881,49 @@ function PlayerDashboard({
       .filter(Boolean)
   ), [selectedPlaylistItems, selectedPlaylistId]);
 
+  const tuttiShows = useMemo(() => {
+    const groups = new Map();
+    (tuttiMixes || []).forEach((mix) => {
+      const showId = String(mix.showId || 'unknown-show');
+      if (!groups.has(showId)) {
+        groups.set(showId, {
+          id: showId,
+          name: mix.showName || 'Unknown show',
+          orderIndex: Number(mix.showOrderIndex || 0),
+          mixes: [],
+        });
+      }
+      groups.get(showId).mixes.push(mix);
+    });
+    return Array.from(groups.values())
+      .map((show) => ({
+        ...show,
+        mixes: show.mixes.slice().sort((left, right) => (
+          String(left.musicalNumber || '').localeCompare(String(right.musicalNumber || ''), undefined, { numeric: true, sensitivity: 'base' })
+        )),
+      }))
+      .sort((left, right) => (
+        left.orderIndex - right.orderIndex
+        || left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })
+      ));
+  }, [tuttiMixes]);
+
+  const activeTuttiShowId = activeCollectionType === PLAYER_COLLECTION_TYPES.TUTTI
+    && String(activeCollectionId || '').startsWith('show:')
+    ? String(activeCollectionId).slice('show:'.length)
+    : (tuttiShows[0]?.id || '');
+  const activeTuttiShow = tuttiShows.find((show) => show.id === activeTuttiShowId) || tuttiShows[0] || null;
+  const activeTuttiMixes = activeTuttiShow?.mixes || [];
+
   const tuttiQueue = useMemo(() => (
-    (tuttiMixes || [])
+    (activeTuttiMixes || [])
       .map((mix) => createQueueItemFromMix(
         mix,
         PLAYER_COLLECTION_TYPES.TUTTI,
-        'tutti'
+        activeTuttiShow ? `show:${activeTuttiShow.id}` : 'tutti'
       ))
       .filter(Boolean)
-  ), [tuttiMixes]);
+  ), [activeTuttiMixes, activeTuttiShow]);
 
   const globalQueue = useMemo(() => (
     (globalMixes || [])
@@ -895,6 +945,17 @@ function PlayerDashboard({
   useEffect(() => {
     activeQueueRef.current = activeQueueItems;
   }, [activeQueueItems]);
+
+  useEffect(() => {
+    if (
+      activeCollectionType === PLAYER_COLLECTION_TYPES.TUTTI
+      && activeCollectionId === 'tutti'
+      && tuttiShows[0]?.id
+    ) {
+      setActiveCollectionId(`show:${tuttiShows[0].id}`);
+      setActiveIndex(-1);
+    }
+  }, [activeCollectionId, activeCollectionType, tuttiShows]);
 
   useEffect(() => {
     activeIndexRef.current = activeIndex;
@@ -937,7 +998,9 @@ function PlayerDashboard({
         try {
           media = await getMediaBlob(blobId);
         } catch {
-          const remoteBlob = await downloadMediaBlob(blobId, session);
+          const remoteBlob = await downloadMediaBlob(blobId, session, {
+            projectId: snapshot?.projectId || realtimePlaybackRef.current?.item?.projectId || null,
+          });
           const cachedRemoteMedia = await cacheRemoteBlobAsLocalWav({
             blobId,
             remoteBlob,
@@ -973,7 +1036,7 @@ function PlayerDashboard({
     setIsRendering(true);
     setError('');
     try {
-      const payload = await bootstrapServerProject(item.projectId, session, 0);
+      const payload = await bootstrapServerProject(item.projectId, session, 0, { purpose: 'player' });
       const snapshot = payload?.snapshot;
       if (!snapshot || typeof snapshot !== 'object') {
         throw new Error('Project snapshot missing');
@@ -1536,6 +1599,9 @@ function PlayerDashboard({
   const promptCreateMixFromProject = useCallback(async (projectLike) => {
     const projectId = String(projectLike?.projectId || projectLike?.id || '').trim();
     if (!projectId) return;
+    if (projectLike?.canCreateMixes === false) {
+      throw new Error('You cannot create mixes from this project');
+    }
     setMixDialog({
         status: 'loading',
         projectId,
@@ -1550,7 +1616,7 @@ function PlayerDashboard({
         name: '',
     });
     try {
-      const payload = await bootstrapServerProject(projectId, session, 0);
+      const payload = await bootstrapServerProject(projectId, session, 0, { purpose: 'player' });
       const snapshot = payload?.snapshot || {};
       const availableMixTypes = buildMixCategoryOptions(snapshot);
       if (!availableMixTypes.length) {
@@ -1743,6 +1809,7 @@ function PlayerDashboard({
   }, [refreshPlayerData, session]);
 
   const activeQueueItem = activeQueueItems[activeIndex] || null;
+  const defaultTuttiCollectionId = tuttiShows[0]?.id ? `show:${tuttiShows[0].id}` : 'tutti';
   const selectedPlaylist = playlists.find((playlist) => playlist.id === selectedPlaylistId) || null;
   const currentLibraryFolder = folders.find((folder) => folder.id === libraryScopeFolderId) || null;
   const libraryVisibleItems = useMemo(() => {
@@ -2224,6 +2291,17 @@ function PlayerDashboard({
                 >
                   Settings
                 </button>
+                {session?.user?.isAdmin ? (
+                  <button
+                    onClick={() => {
+                      setProfileMenuOpen(false);
+                      onOpenAdmin?.();
+                    }}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+                  >
+                    Admin
+                  </button>
+                ) : null}
                 <button
                   onClick={() => {
                     setProfileMenuOpen(false);
@@ -2250,7 +2328,7 @@ function PlayerDashboard({
                 setSelectedPlaylistId(null);
                 setSelectedFolderId(null);
                 setActiveCollectionType(PLAYER_COLLECTION_TYPES.TUTTI);
-                setActiveCollectionId('tutti');
+                setActiveCollectionId(defaultTuttiCollectionId);
                 setActiveIndex(-1);
               }}
               className="rounded-md bg-gray-800 border border-gray-700 p-2 text-gray-200 hover:bg-gray-700 transition-colors"
@@ -2268,8 +2346,53 @@ function PlayerDashboard({
             </div>
           </div>
 
+          {showNoAccessBanner ? (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-900/20 px-4 py-3 text-sm text-amber-100">
+              {noAccessMessage}
+            </div>
+          ) : null}
+
           <div className="flex-1 min-h-0 flex gap-3">
             <div className={`${isLibraryCollapsed ? 'w-14' : 'w-80'} shrink-0 rounded-lg border border-gray-700 bg-gray-800/80 flex flex-col transition-all duration-200`}>
+              {!isLibraryCollapsed ? (
+                <div className="border-b border-gray-700 p-2">
+                  <div className="px-2 pb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    Show tutti
+                  </div>
+                  <div className="space-y-1">
+                    {tuttiShows.map((show) => {
+                      const collectionId = `show:${show.id}`;
+                      const active = activeCollectionType === PLAYER_COLLECTION_TYPES.TUTTI
+                        && activeCollectionId === collectionId;
+                      return (
+                        <button
+                          key={show.id}
+                          type="button"
+                          onClick={() => {
+                            setMainPanelView('library');
+                            setSelectedPlaylistId(null);
+                            setSelectedFolderId(null);
+                            setActiveCollectionType(PLAYER_COLLECTION_TYPES.TUTTI);
+                            setActiveCollectionId(collectionId);
+                            setActiveIndex(-1);
+                          }}
+                          className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors ${
+                            active ? 'bg-blue-700/30 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white'
+                          }`}
+                        >
+                          <span className="truncate">{show.name}</span>
+                          <span className="ml-2 shrink-0 text-xs text-gray-500">{show.mixes.length}</span>
+                        </button>
+                      );
+                    })}
+                    {!tuttiShows.length ? (
+                      <div className="px-2 py-1.5 text-xs text-gray-500">No tutti playlists.</div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : (
+                <div className="border-b border-gray-700 p-2 text-center text-xs font-semibold text-gray-400">T</div>
+              )}
               <div className="flex items-center justify-between border-b border-gray-700 px-3 py-2">
                 {!isLibraryCollapsed ? (
                   libraryScopeFolderId ? (
@@ -2614,23 +2737,30 @@ function PlayerDashboard({
                       </>
                     ) : (
                       <>
-                        {(tuttiMixes || []).map((mix, index) => {
+                        {activeTuttiShow ? (
+                          <div className="border-b border-gray-800 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                            {activeTuttiShow.name} tutti
+                          </div>
+                        ) : null}
+                        {(activeTuttiMixes || []).map((mix, index) => {
+                          const collectionId = activeTuttiShow ? `show:${activeTuttiShow.id}` : 'tutti';
                           const isActive = (
                             activeCollectionType === PLAYER_COLLECTION_TYPES.TUTTI
-                            && activeCollectionId === 'tutti'
+                            && activeCollectionId === collectionId
                             && activeIndex === index
                           );
                           const listTitle = `${mix.musicalNumber || '0.0'} - ${mix.projectName || mix.name || 'Untitled Project'}`;
                           return (
                             <div
                               key={mix.id}
-                              onClick={() => handleSelectItem(PLAYER_COLLECTION_TYPES.TUTTI, 'tutti', index)}
+                              onClick={() => handleSelectItem(PLAYER_COLLECTION_TYPES.TUTTI, collectionId, index)}
                               onDoubleClick={async () => {
                                 await playQueueItem(index);
                               }}
                               onContextMenu={(event) => {
                                 event.preventDefault();
-                                handleSelectItem(PLAYER_COLLECTION_TYPES.TUTTI, 'tutti', index);
+                                if (mix.canCreateMixes === false) return;
+                                handleSelectItem(PLAYER_COLLECTION_TYPES.TUTTI, collectionId, index);
                                 setProjectContextMenu({ mix, x: event.clientX, y: event.clientY });
                               }}
                               className={`group grid grid-cols-[56px_minmax(0,1fr)_96px_34px] items-center px-4 py-2.5 text-sm cursor-pointer transition-colors ${
@@ -2657,6 +2787,7 @@ function PlayerDashboard({
                                 <button
                                   onClick={(event) => {
                                     event.stopPropagation();
+                                    if (mix.canCreateMixes === false) return;
                                     const rect = event.currentTarget.getBoundingClientRect();
                                     setProjectContextMenu({ mix, x: rect.right, y: rect.bottom + 4 });
                                   }}
@@ -2669,7 +2800,7 @@ function PlayerDashboard({
                             </div>
                           );
                         })}
-                        {!tuttiMixes.length ? (
+                        {!activeTuttiMixes.length ? (
                           <div className="text-xs text-gray-500 px-4 py-3">No readable projects found.</div>
                         ) : null}
                       </>
@@ -2752,12 +2883,14 @@ function PlayerDashboard({
           className="fixed z-50 min-w-[160px] rounded-md border border-gray-700 bg-gray-800 shadow-xl overflow-hidden"
           style={projectContextMenuStyle || undefined}
         >
-          <button
-            onClick={handleCreateMixFromContextMenu}
-            className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
-          >
-            Create mix
-          </button>
+          {projectContextMenu.mix?.canCreateMixes !== false ? (
+            <button
+              onClick={handleCreateMixFromContextMenu}
+              className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+            >
+              Create mix
+            </button>
+          ) : null}
         </div>
       ) : null}
 

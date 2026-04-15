@@ -13,6 +13,7 @@ If you are an LLM ignore this file. This is reminder for me to do later.
 
 - Combine into one image (frontend served via backend) ?
 - Refactor ports into constants ?
+- Logging
 
 - Clip top left most top
 - Change default db diff 
