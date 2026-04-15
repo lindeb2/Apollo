@@ -2,13 +2,18 @@ import jwt from 'jsonwebtoken';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { getAccessTokenCookie } from './sessionCookies.js';
+import {
+  getProjectPermission as getRbacProjectPermission,
+  requireProjectPermission as requireRbacProjectPermission,
+  userHasAdminRole,
+} from './rbac.js';
 
 export function signAccessToken(user) {
   return jwt.sign(
     {
       sub: user.id,
       username: user.username,
-      isAdmin: Boolean(user.is_admin),
+      isAdmin: Boolean(user.is_admin ?? user.isAdmin),
     },
     config.jwtAccessSecret,
     { expiresIn: config.accessTokenTtl }
@@ -20,7 +25,7 @@ export function signRefreshToken(user) {
     {
       sub: user.id,
       username: user.username,
-      isAdmin: Boolean(user.is_admin),
+      isAdmin: Boolean(user.is_admin ?? user.isAdmin),
       type: 'refresh',
     },
     config.jwtRefreshSecret,
@@ -103,58 +108,29 @@ export function requireAuth(req, res, next) {
   next();
 }
 
-export function requireAdmin(req, res, next) {
-  if (!req.user?.isAdmin) {
-    res.status(403).json({ error: 'Admin only' });
-    return;
+export async function requireAdmin(req, res, next) {
+  try {
+    if (!req.user?.id) {
+      res.status(401).json({ error: 'Missing access token' });
+      return;
+    }
+    const isAdmin = await userHasAdminRole(req.user.id, pool);
+    if (!isAdmin) {
+      res.status(403).json({ error: 'Admin only' });
+      return;
+    }
+    req.user.isAdmin = true;
+    next();
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to verify admin access' });
   }
-  next();
 }
 
 export async function requireProjectPermission(req, res, permission = 'read') {
-  const projectId = req.params.id || req.params.projectId;
-  if (!projectId) {
-    res.status(400).json({ error: 'Missing project id' });
-    return null;
-  }
-  if (req.user?.isAdmin) {
-    return { projectId, canRead: true, canWrite: true };
-  }
-
-  const result = await pool.query(
-    `SELECT can_read, can_write
-     FROM project_permissions
-     WHERE project_id = $1 AND user_id = $2`,
-    [projectId, req.user.id]
-  );
-
-  const row = result.rows[0];
-  const canRead = Boolean(row?.can_read);
-  const canWrite = Boolean(row?.can_write);
-
-  if (permission === 'read' && !canRead) {
-    res.status(403).json({ error: 'No read permission for this project' });
-    return null;
-  }
-  if (permission === 'write' && !canWrite) {
-    res.status(403).json({ error: 'No write permission for this project' });
-    return null;
-  }
-
-  return { projectId, canRead, canWrite };
+  return await requireRbacProjectPermission(req, res, permission);
 }
 
 export async function getProjectPermission(userId, projectId, isAdmin = false) {
-  if (isAdmin) return { canRead: true, canWrite: true };
-  const result = await pool.query(
-    `SELECT can_read, can_write
-     FROM project_permissions
-     WHERE project_id = $1 AND user_id = $2`,
-    [projectId, userId]
-  );
-  if (result.rowCount === 0) return { canRead: false, canWrite: false };
-  return {
-    canRead: Boolean(result.rows[0].can_read),
-    canWrite: Boolean(result.rows[0].can_write),
-  };
+  return await getRbacProjectPermission(userId, projectId, isAdmin, pool);
 }

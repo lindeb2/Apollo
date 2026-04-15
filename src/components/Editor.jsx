@@ -188,6 +188,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         fileName: prepared.serverUploadFileName,
         mimeType: prepared.serverUploadMimeType,
         session: remoteSession.session,
+        projectId: remoteSession.serverProjectId,
       });
       blobId = uploaded.mediaId;
     }
@@ -212,6 +213,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         fileName: prepared.serverUploadFileName,
         mimeType: prepared.serverUploadMimeType,
         session: remoteSession.session,
+        projectId: remoteSession.serverProjectId,
       });
       blobId = uploaded.mediaId;
     }
@@ -406,7 +408,9 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
             }
 
             try {
-              const remoteBlob = await downloadMediaBlob(blobId, remoteSession.session);
+              const remoteBlob = await downloadMediaBlob(blobId, remoteSession.session, {
+                projectId: remoteSession.serverProjectId,
+              });
               const cachedRemoteMedia = await cacheRemoteBlobAsLocalWav({
                 blobId,
                 remoteBlob,

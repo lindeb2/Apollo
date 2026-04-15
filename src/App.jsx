@@ -4,6 +4,7 @@ import Editor from './components/Editor';
 import HostedLogin from './components/HostedLogin';
 import HostedDashboard from './components/HostedDashboard';
 import PlayerDashboard from './components/PlayerDashboard';
+import AdminPanel from './components/AdminPanel';
 import { audioManager } from './lib/audioManager';
 import { importFromZIP } from './lib/projectPortability';
 import { deleteProject as deleteCachedProject, getMediaBlob, saveRemoteProjectMeta, storeMediaBlob } from './lib/db';
@@ -15,13 +16,16 @@ import {
   beginOidcLogin,
   bootstrapServerProject,
   clearServerSession,
+  createShow,
   createServerProject,
   deleteServerProject,
   getCurrentSession,
   isSessionRecoveryError,
   listServerProjects,
+  listShows,
   loadServerSession,
   logout,
+  renameShow,
   renameServerProject,
   updateServerProjectMusicalNumber,
   saveServerSession,
@@ -74,11 +78,51 @@ function remapProjectBlobIds(project, idMap) {
   };
 }
 
+function getBrowserPath() {
+  return window.location.pathname || '/';
+}
+
+function isAdminPath(path) {
+  const normalized = String(path || '/').replace(/\/+$/, '') || '/';
+  return normalized === '/admin';
+}
+
+function AdminAccessDenied({ onBack, onLogout }) {
+  return (
+    <div className="flex h-full w-full items-center justify-center bg-gray-900 px-6 text-white">
+      <div className="w-full max-w-md rounded-2xl border border-gray-700 bg-gray-800 p-6 shadow-2xl">
+        <h1 className="text-xl font-semibold">Admin access required</h1>
+        <p className="mt-2 text-sm text-gray-300">
+          Your account does not have permission to open the admin page.
+        </p>
+        <div className="mt-5 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={onBack}
+            className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500"
+          >
+            Back to Apollo
+          </button>
+          <button
+            type="button"
+            onClick={onLogout}
+            className="rounded bg-gray-700 px-4 py-2 text-sm text-gray-100 hover:bg-gray-600"
+          >
+            Log out
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [view, setView] = useState('player'); // 'player' | 'daw' | 'editor'
+  const [currentPath, setCurrentPath] = useState(getBrowserPath);
   const [serverSession, setServerSession] = useState(loadServerSession());
   const [authBootstrapping, setAuthBootstrapping] = useState(true);
   const [serverProjects, setServerProjects] = useState([]);
+  const [serverShows, setServerShows] = useState([]);
   const [serverError, setServerError] = useState('');
   const [serverLoading, setServerLoading] = useState(false);
   const [remoteEditorSession, setRemoteEditorSession] = useState(null);
@@ -91,7 +135,11 @@ function App() {
     setServerLoading(true);
     setServerError('');
     try {
-      const projects = await listServerProjects(activeSession);
+      const [shows, projects] = await Promise.all([
+        listShows(activeSession),
+        listServerProjects(activeSession),
+      ]);
+      setServerShows(shows);
       setServerProjects(projects);
     } catch (error) {
       setServerError(error.message || 'Failed to refresh server data');
@@ -99,6 +147,16 @@ function App() {
       setServerLoading(false);
     }
   };
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPath(getBrowserPath());
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
 
   useEffect(() => {
     if (!serverSession) return;
@@ -162,6 +220,14 @@ function App() {
     beginOidcLogin();
   };
 
+  const navigateTo = (path) => {
+    const nextPath = String(path || '/');
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState({}, '', nextPath);
+    }
+    setCurrentPath(getBrowserPath());
+  };
+
   const handleServerLogout = async () => {
     let redirectUrl = '';
     try {
@@ -173,6 +239,7 @@ function App() {
     clearServerSession();
     setServerSession(null);
     setServerProjects([]);
+    setServerShows([]);
     setRemoteEditorSession(null);
     setView('player');
     if (redirectUrl) {
@@ -184,7 +251,7 @@ function App() {
     setServerError('');
     setServerLoading(true);
     try {
-      const payload = await bootstrapServerProject(projectMeta.id, serverSession, 0);
+      const payload = await bootstrapServerProject(projectMeta.id, serverSession, 0, { purpose: 'daw' });
       await loadProjectToStore(payload.snapshot);
       await saveRemoteProjectMeta({
         projectId: payload.snapshot.projectId,
@@ -197,6 +264,9 @@ function App() {
         latestSeq: Number(payload.latestSeq || 0),
         projectName: projectMeta?.name || payload?.project?.name || payload?.snapshot?.projectName || '',
         musicalNumber: projectMeta?.musicalNumber || payload?.snapshot?.musicalNumber || '0.0',
+        showId: projectMeta?.showId || payload?.project?.showId || payload?.snapshot?.showId || null,
+        showName: projectMeta?.showName || payload?.project?.showName || payload?.snapshot?.showName || '',
+        projectAccess: payload?.access || null,
       });
       setView('editor');
     } catch (error) {
@@ -206,11 +276,11 @@ function App() {
     }
   };
 
-  const handleCreateServerProject = async (name, musicalNumber) => {
+  const handleCreateServerProject = async (name, musicalNumber, showId) => {
     setServerError('');
     setServerLoading(true);
     try {
-      const created = await createServerProject(name, serverSession, { musicalNumber });
+      const created = await createServerProject(name, serverSession, { musicalNumber, showId });
       await refreshServerData();
       if (created?.project) {
         await handleOpenServerProject(created.project);
@@ -222,7 +292,7 @@ function App() {
     }
   };
 
-  const handleImportServerProject = async (file) => {
+  const handleImportServerProject = async (file, showId) => {
     setServerError('');
     setServerLoading(true);
     try {
@@ -248,6 +318,7 @@ function App() {
         ...importedProject,
         projectId: importedProjectId,
         projectName: importedName,
+        showId,
       };
 
       const blobIds = collectBlobIds(snapshot);
@@ -268,6 +339,7 @@ function App() {
           fileName: prepared.serverUploadFileName,
           mimeType: prepared.serverUploadMimeType,
           session: serverSession,
+          projectId: importedProjectId,
         });
         if (uploaded.mediaId !== blobId) {
           canonicalIdMap.set(blobId, uploaded.mediaId);
@@ -279,10 +351,11 @@ function App() {
       await createServerProject(importedName, serverSession, {
         projectId: importedProjectId,
         initialSnapshot: snapshot,
+        showId,
       });
 
       await refreshServerData();
-      await handleOpenServerProject({ id: importedProjectId, name: importedName, musicalNumber: snapshot.musicalNumber });
+      await handleOpenServerProject({ id: importedProjectId, name: importedName, musicalNumber: snapshot.musicalNumber, showId });
     } catch (error) {
       setServerError(error.message || 'Failed to import ZIP project to server');
     } finally {
@@ -330,6 +403,37 @@ function App() {
     }
   };
 
+  const handleCreateShow = async (name) => {
+    setServerError('');
+    setServerLoading(true);
+    try {
+      const show = await createShow(name, serverSession);
+      await refreshServerData();
+      return show;
+    } catch (error) {
+      setServerError(error.message || 'Failed to create show');
+      return null;
+    } finally {
+      setServerLoading(false);
+    }
+  };
+
+  const handleRenameShow = async (show, nextName) => {
+    if (!show?.id) return null;
+    setServerError('');
+    setServerLoading(true);
+    try {
+      const updated = await renameShow(show.id, nextName, serverSession);
+      await refreshServerData();
+      return updated;
+    } catch (error) {
+      setServerError(error.message || 'Failed to rename show');
+      return null;
+    } finally {
+      setServerLoading(false);
+    }
+  };
+
   const handleBackToDashboard = () => {
     setRemoteEditorSession(null);
     setView('daw');
@@ -345,6 +449,15 @@ function App() {
     setView('daw');
   };
 
+  const handleOpenAdmin = () => {
+    setRemoteEditorSession(null);
+    navigateTo('/admin');
+  };
+
+  const handleLeaveAdmin = () => {
+    navigateTo('/');
+  };
+
   if (authBootstrapping) {
     return (
       <div className="h-screen w-screen overflow-hidden bg-gray-900 text-white flex items-center justify-center p-6">
@@ -355,6 +468,8 @@ function App() {
     );
   }
 
+  const adminRouteActive = isAdminPath(currentPath);
+
   return (
     <div className="h-screen w-screen overflow-hidden bg-gray-900 text-white">
       {!serverSession ? (
@@ -362,6 +477,17 @@ function App() {
           onSsoLogin={handleSsoLogin}
           loading={serverLoading}
           error={serverError}
+        />
+      ) : adminRouteActive && !serverSession.user?.isAdmin ? (
+        <AdminAccessDenied
+          onBack={handleLeaveAdmin}
+          onLogout={handleServerLogout}
+        />
+      ) : adminRouteActive ? (
+        <AdminPanel
+          session={serverSession}
+          onClose={handleLeaveAdmin}
+          onLogout={handleServerLogout}
         />
       ) : view === 'editor' ? (
         <Editor
@@ -379,10 +505,13 @@ function App() {
       ) : view === 'daw' ? (
           <HostedDashboard
             session={serverSession}
+            shows={serverShows}
             projects={serverProjects}
             onOpenProject={handleOpenServerProject}
             onCreateProject={handleCreateServerProject}
             onImportProject={handleImportServerProject}
+            onCreateShow={handleCreateShow}
+            onRenameShow={handleRenameShow}
             onLogout={handleServerLogout}
             onDeleteProject={handleDeleteServerProject}
             onRenameProject={handleRenameServerProject}
@@ -390,6 +519,7 @@ function App() {
             loading={serverLoading}
             error={serverError}
             onSwitchToPlayerMode={handleSwitchToPlayerMode}
+            onOpenAdmin={handleOpenAdmin}
           />
       ) : (
         <PlayerDashboard
@@ -397,6 +527,7 @@ function App() {
           onLogout={handleServerLogout}
           onSwitchToDawDashboard={handleSwitchToDawMode}
           onOpenDawProject={handleOpenServerProject}
+          onOpenAdmin={handleOpenAdmin}
         />
       )}
     </div>

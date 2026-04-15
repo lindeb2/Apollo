@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
-import { Plus, Download, FileAudio, CircleUserRound } from 'lucide-react';
+import { ChevronDown, Plus, Download, FileAudio, CircleUserRound } from 'lucide-react';
 import { isValidMusicalNumber, normalizeMusicalNumber, normalizeProjectName } from '../utils/naming';
 import { PlaybackDevicesSettingsPanel } from './SettingsPanels';
 import { usePlaybackDeviceSettings } from '../hooks/usePlaybackDeviceSettings';
-import AdminPanel from './AdminPanel';
 
 function HostedDashboard({
   session,
+  shows = [],
   projects,
   onOpenProject,
   onCreateProject,
+  onCreateShow = null,
+  onRenameShow = null,
   onLogout,
   onImportProject,
   onDeleteProject,
@@ -18,18 +20,26 @@ function HostedDashboard({
   loading = false,
   error = '',
   onSwitchToPlayerMode = null,
+  onOpenAdmin = null,
 }) {
   const [newProjectName, setNewProjectName] = useState('');
   const [newMusicalNumber, setNewMusicalNumber] = useState('0.0');
+  const [selectedShowId, setSelectedShowId] = useState('');
   const [showNewProjectDialog, setShowNewProjectDialog] = useState(false);
+  const [showDropdownOpen, setShowDropdownOpen] = useState(false);
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const canCreateProjects = Boolean(session?.accessSummary?.canCreateProjects);
+  const canManageShows = Boolean(session?.user?.isAdmin && onCreateShow);
+  const canRenameShows = Boolean(session?.user?.isAdmin && onRenameShow);
   const [contextMenu, setContextMenu] = useState(null);
   const [editingProjectId, setEditingProjectId] = useState(null);
   const [editingProjectName, setEditingProjectName] = useState('');
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [adminOpen, setAdminOpen] = useState(false);
   const profileMenuRef = useRef(null);
+  const showSelectorRef = useRef(null);
+  const createMenuRef = useRef(null);
   const {
     audioInputs,
     audioOutputs,
@@ -41,6 +51,32 @@ function HostedDashboard({
   } = usePlaybackDeviceSettings({
     errorPrefix: 'hosted-dashboard',
   });
+  const showNoAccessMessage = Boolean(session?.accessSummary?.showNoAccessMessage);
+  const noAccessMessage = String(
+    session?.accessSummary?.emptyAccessMessage
+    || 'You do not currently have any permissions. Please contact an admin if you should.'
+  );
+  const projectShowIds = new Set((projects || []).map((project) => project.showId).filter(Boolean));
+  const selectableShows = (shows || []).filter((show) => (
+    canCreateProjects || canManageShows || projectShowIds.has(show.id)
+  ));
+  const selectableShowIds = selectableShows.map((show) => show.id).join('|');
+  const selectedShow = selectableShows.find((show) => show.id === selectedShowId)
+    || selectableShows[0]
+    || null;
+  const visibleProjects = (projects || []).filter((project) => (
+    selectedShow ? project.showId === selectedShow.id : false
+  ));
+
+  useEffect(() => {
+    if (!selectableShows.length) {
+      setSelectedShowId('');
+      return;
+    }
+    setSelectedShowId((current) => (
+      selectableShows.some((show) => show.id === current) ? current : selectableShows[0].id
+    ));
+  }, [selectableShowIds]);
 
   const formatRelativeTime = (timestamp) => {
     const numeric = Number(timestamp);
@@ -71,11 +107,33 @@ function HostedDashboard({
   const handleCreateProject = async () => {
     const normalizedName = normalizeProjectName(newProjectName);
     const normalizedMusicalNumber = normalizeMusicalNumber(newMusicalNumber);
-    if (!normalizedName || !isValidMusicalNumber(normalizedMusicalNumber)) return;
-    await onCreateProject(normalizedName, normalizedMusicalNumber);
+    if (!normalizedName || !isValidMusicalNumber(normalizedMusicalNumber) || !selectedShow?.id) return;
+    await onCreateProject(normalizedName, normalizedMusicalNumber, selectedShow.id);
     setNewProjectName('');
     setNewMusicalNumber('0.0');
     setShowNewProjectDialog(false);
+  };
+
+  const promptCreateShow = async () => {
+    if (!onCreateShow) return;
+    const name = window.prompt('New show name');
+    const normalized = normalizeProjectName(name || '');
+    if (!normalized) return;
+    const created = await onCreateShow(normalized);
+    if (created?.id) {
+      setSelectedShowId(created.id);
+      setShowDropdownOpen(false);
+    }
+  };
+
+  const promptRenameShow = async (show) => {
+    if (!show?.id || !onRenameShow) return;
+    const name = window.prompt('Rename show', show.name || '');
+    if (name === null) return;
+    const normalized = normalizeProjectName(name || '');
+    if (!normalized || normalized === show.name) return;
+    const updated = await onRenameShow(show, normalized);
+    if (updated?.id) setSelectedShowId(updated.id);
   };
 
   useEffect(() => {
@@ -88,6 +146,12 @@ function HostedDashboard({
     const handleDocumentClick = (event) => {
       if (!profileMenuRef.current?.contains(event.target)) {
         setProfileMenuOpen(false);
+      }
+      if (!showSelectorRef.current?.contains(event.target)) {
+        setShowDropdownOpen(false);
+      }
+      if (!createMenuRef.current?.contains(event.target)) {
+        setCreateMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', handleDocumentClick);
@@ -122,22 +186,118 @@ function HostedDashboard({
 
   return (
     <div className="h-full flex flex-col bg-gray-900 text-white">
-      <div className="bg-gray-800 border-b border-gray-700 px-4 py-3 flex items-center justify-between gap-3">
+      <div className="relative bg-gray-800 border-b border-gray-700 px-4 py-3 flex items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">Apollo</h1>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2" ref={showSelectorRef}>
           <button
-            onClick={() => setShowNewProjectDialog(true)}
-            className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg p-2 flex items-center justify-center transition-colors disabled:bg-gray-700"
-            disabled={loading}
-            title="New Project"
+            type="button"
+            onClick={() => {
+              if (selectableShows.length > 1) {
+                setShowDropdownOpen((previous) => !previous);
+              }
+            }}
+            onContextMenu={(event) => {
+              if (!canRenameShows || !selectedShow) return;
+              event.preventDefault();
+              setContextMenu({
+                type: 'show',
+                x: event.clientX,
+                y: event.clientY,
+                show: selectedShow,
+              });
+            }}
+            className={`flex max-w-[42vw] items-center gap-2 rounded-lg px-3 py-1.5 text-center text-base font-semibold text-white transition-colors ${
+              selectableShows.length > 1 ? 'hover:bg-gray-700' : 'cursor-default'
+            }`}
+            title={selectableShows.length > 1 ? 'Switch show' : (selectedShow?.name || 'No show selected')}
           >
-            <Plus size={18} />
+            <span className="truncate">{selectedShow?.name || 'No show selected'}</span>
+            {selectableShows.length > 1 ? <ChevronDown size={16} className="shrink-0 text-gray-400" /> : null}
           </button>
+          {showDropdownOpen && selectableShows.length > 1 ? (
+            <div className="absolute left-1/2 top-full mt-2 max-h-80 min-w-64 -translate-x-1/2 overflow-y-auto rounded-lg border border-gray-700 bg-gray-800 py-1 shadow-xl">
+              {selectableShows.map((show) => {
+                const active = show.id === selectedShow?.id;
+                return (
+                  <button
+                    key={show.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedShowId(show.id);
+                      setShowDropdownOpen(false);
+                    }}
+                    onContextMenu={(event) => {
+                      if (!canRenameShows) return;
+                      event.preventDefault();
+                      setContextMenu({
+                        type: 'show',
+                        x: event.clientX,
+                        y: event.clientY,
+                        show,
+                      });
+                    }}
+                    className={`flex w-full items-center justify-between gap-4 px-3 py-2 text-left text-sm transition-colors ${
+                      active ? 'bg-blue-600/20 text-white' : 'text-gray-300 hover:bg-gray-700 hover:text-white'
+                    }`}
+                  >
+                    <span className="truncate">{show.name}</span>
+                    <span className="shrink-0 text-xs text-gray-500">{show.projectCount || 0}</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="relative" ref={createMenuRef}>
+            <button
+              onClick={() => {
+                if (canManageShows) {
+                  setCreateMenuOpen((previous) => !previous);
+                  return;
+                }
+                setShowNewProjectDialog(true);
+              }}
+              className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg p-2 flex items-center justify-center transition-colors disabled:bg-gray-700"
+              disabled={loading || (!canCreateProjects && !canManageShows) || (!selectedShow && !canManageShows)}
+              title={selectedShow ? `Create in ${selectedShow.name}` : 'Create'}
+            >
+              <Plus size={18} />
+            </button>
+            {createMenuOpen ? (
+              <div className="absolute right-0 top-full z-30 mt-2 min-w-52 overflow-hidden rounded-md border border-gray-700 bg-gray-800 py-1 shadow-lg">
+                <button
+                  type="button"
+                  disabled={!canCreateProjects || !selectedShow || loading}
+                  onClick={() => {
+                    setCreateMenuOpen(false);
+                    setShowNewProjectDialog(true);
+                  }}
+                  className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-700 disabled:cursor-not-allowed disabled:text-gray-500 disabled:hover:bg-transparent"
+                >
+                  Create musical number
+                </button>
+                {canManageShows ? (
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() => {
+                      setCreateMenuOpen(false);
+                      promptCreateShow();
+                    }}
+                    className="w-full px-3 py-2 text-left text-sm text-gray-200 hover:bg-gray-700 disabled:cursor-not-allowed disabled:text-gray-500"
+                  >
+                    Create show
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
 
           <label
-            className={`bg-green-600 hover:bg-green-700 text-white rounded-lg p-2 flex items-center justify-center transition-colors cursor-pointer ${loading ? 'opacity-60 pointer-events-none' : ''}`}
+            className={`bg-green-600 hover:bg-green-700 text-white rounded-lg p-2 flex items-center justify-center transition-colors cursor-pointer ${(loading || !canCreateProjects || !selectedShow) ? 'opacity-60 pointer-events-none' : ''}`}
             title={isImporting ? 'Importing project...' : 'Import Project'}
           >
             <Download size={18} />
@@ -148,9 +308,10 @@ function HostedDashboard({
               onChange={async (e) => {
                 const file = e.target.files?.[0];
                 if (!file) return;
+                if (!selectedShow?.id) return;
                 setIsImporting(true);
                 try {
-                  await onImportProject(file);
+                  await onImportProject(file, selectedShow.id);
                 } finally {
                   setIsImporting(false);
                   e.target.value = '';
@@ -203,7 +364,7 @@ function HostedDashboard({
                   <button
                     onClick={() => {
                       setProfileMenuOpen(false);
-                      setAdminOpen(true);
+                      onOpenAdmin?.();
                     }}
                     className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
                   >
@@ -226,10 +387,13 @@ function HostedDashboard({
       </div>
 
       <div className="flex-1 overflow-auto p-6">
-        <div className="max-w-2xl mx-auto">
+        <div className="mx-auto max-w-4xl space-y-5">
           {showNewProjectDialog && (
             <div className="mb-6 bg-gray-800 border border-gray-700 rounded-lg p-6">
-              <h2 className="text-lg font-semibold mb-4">Create New Project</h2>
+              <h2 className="text-lg font-semibold mb-1">Create New Project</h2>
+              <div className="mb-4 text-sm text-gray-400">
+                Show: {selectedShow?.name || 'No show selected'}
+              </div>
               <input
                 type="text"
                 value={newProjectName}
@@ -260,6 +424,7 @@ function HostedDashboard({
                   disabled={
                     !normalizeProjectName(newProjectName)
                     || !isValidMusicalNumber(newMusicalNumber)
+                    || !selectedShow?.id
                     || loading
                   }
                 >
@@ -285,10 +450,15 @@ function HostedDashboard({
             </div>
           ) : null}
 
-          {projects?.length === 0 ? (
+          {!selectedShow ? (
             <div className="text-center py-12 text-gray-500">
               <FileAudio size={48} className="mx-auto mb-4 opacity-50" />
-              <p>No projects yet. Create one to get started!</p>
+              <p>Select or create a show to begin.</p>
+            </div>
+          ) : visibleProjects.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              <FileAudio size={48} className="mx-auto mb-4 opacity-50" />
+              <p>{showNoAccessMessage ? noAccessMessage : 'No projects yet.'}</p>
             </div>
           ) : (
             <div className="overflow-x-auto rounded-lg border border-gray-700">
@@ -300,7 +470,7 @@ function HostedDashboard({
                   <div>Last Modified</div>
                 </div>
                 <div className="divide-y divide-gray-700">
-                  {projects.map((project) => (
+                  {visibleProjects.map((project) => (
                     <div
                       key={project.id}
                       onClick={() => {
@@ -308,8 +478,10 @@ function HostedDashboard({
                         onOpenProject(project);
                       }}
                       onContextMenu={(e) => {
+                        if (!(project?.canManageOwnProject || project?.canManageProject)) return;
                         e.preventDefault();
                         setContextMenu({
+                          type: 'project',
                           x: e.clientX,
                           y: e.clientY,
                           project,
@@ -357,7 +529,25 @@ function HostedDashboard({
         </div>
       </div>
 
-      {contextMenu && (
+      {contextMenu?.type === 'show' && (
+        <div
+          className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-1"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700"
+            onClick={() => {
+              const show = contextMenu.show;
+              setContextMenu(null);
+              promptRenameShow(show);
+            }}
+          >
+            Rename show
+          </button>
+        </div>
+      )}
+
+      {contextMenu?.type === 'project' && (
         <div
           className="fixed z-50 bg-gray-800 border border-gray-700 rounded-md shadow-lg py-1"
           style={{ left: contextMenu.x, top: contextMenu.y }}
@@ -441,12 +631,6 @@ function HostedDashboard({
         </div>
       ) : null}
 
-      <AdminPanel
-        open={adminOpen}
-        session={session}
-        projects={projects}
-        onClose={() => setAdminOpen(false)}
-      />
     </div>
   );
 }
