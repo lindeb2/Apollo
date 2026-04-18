@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CircleUserRound, MoreHorizontal, Plus } from 'lucide-react';
+import { ArrowLeft, CircleUserRound, MoreHorizontal, Plus, Search } from 'lucide-react';
 import {
   addRbacRoleMember,
   addUserRole,
@@ -38,10 +38,12 @@ function Badge({ children, tone = 'slate' }) {
 function Panel({ title, actions = null, children }) {
   return (
     <section className="rounded-xl border border-gray-700 bg-gray-900/40">
-      <div className="flex items-center justify-between gap-3 border-b border-gray-700 px-4 py-3">
-        <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-200">{title}</h3>
-        {actions}
-      </div>
+      {(title || actions) ? (
+        <div className="flex items-center justify-between gap-3 border-b border-gray-700 px-4 py-3">
+          {title ? <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-200">{title}</h3> : <span />}
+          {actions}
+        </div>
+      ) : null}
       <div className="p-4">{children}</div>
     </section>
   );
@@ -52,6 +54,26 @@ function Empty({ children }) {
     <div className="rounded-lg border border-dashed border-gray-700 bg-gray-950/50 px-4 py-4 text-sm text-gray-400">
       {children}
     </div>
+  );
+}
+
+function SearchField({
+  value,
+  onChange,
+  placeholder,
+  className = '',
+}) {
+  return (
+    <label className={`flex items-center gap-3 rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 text-sm text-gray-300 ${className}`}>
+      <Search size={16} className="shrink-0 text-gray-500" />
+      <input
+        type="text"
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        className="w-full bg-transparent text-sm text-gray-100 outline-none placeholder:text-gray-500"
+      />
+    </label>
   );
 }
 
@@ -137,12 +159,6 @@ function CompactAccessRow({
   );
 }
 
-function roleTypeLabel(role) {
-  if (role?.systemKey === 'admin') return 'Admin';
-  if (role?.systemKey === 'default_user') return 'Automatic';
-  return role?.isSystem ? 'System' : 'Custom';
-}
-
 const CAPABILITY_HELP = {
   player_tutti: 'Player only: listen to the built-in tutti mix. Cannot open DAW or create custom mixes.',
   project_read: 'Can open DAW read-only and create personal practice mixes. Includes tutti listening.',
@@ -182,6 +198,11 @@ function getCapabilityHelp(capability) {
 function getCapabilityLabel(catalog, capability) {
   const option = (catalog?.capabilities || []).find((candidate) => candidate.value === capability);
   return option?.label || capability || 'Access';
+}
+
+function getRoleDisplayName(role) {
+  if (role?.systemKey === 'default_user') return 'All users';
+  return role?.name || '';
 }
 
 function isGeneralGrant(grant) {
@@ -609,8 +630,8 @@ export default function AdminPanel({
   const [catalog, setCatalog] = useState({ shows: [], projects: [], groupNames: [], partNames: [] });
   const [selectedRoleId, setSelectedRoleId] = useState('');
   const [selectedRole, setSelectedRole] = useState(null);
+  const [newlyCreatedRoleId, setNewlyCreatedRoleId] = useState('');
   const [roleDetailTab, setRoleDetailTab] = useState('permissions');
-  const [newRoleName, setNewRoleName] = useState('');
   const [roleNameDraft, setRoleNameDraft] = useState('');
   const [defaultMessageDraft, setDefaultMessageDraft] = useState('');
   const [parentRoleIdsDraft, setParentRoleIdsDraft] = useState([]);
@@ -630,6 +651,7 @@ export default function AdminPanel({
   const profileMenuRef = useRef(null);
   const rolePickerRef = useRef(null);
   const userActionMenuRef = useRef(null);
+  const roleNameInputRef = useRef(null);
 
   const loadBaseData = async () => {
     const [nextRoles, nextUsers, nextCatalog] = await Promise.all([
@@ -705,14 +727,28 @@ export default function AdminPanel({
   }, [selectedRoleId]);
 
   useEffect(() => {
-    setRoleDetailTab('permissions');
+    if (selectedRole?.systemKey === 'admin') {
+      setRoleDetailTab('links');
+    } else {
+      setRoleDetailTab('permissions');
+    }
     setPendingRoleMemberId('');
     setPendingChildRoleId('');
     setOidcClaimPathDraft('');
     setOidcClaimValueDraft('');
     setOidcDescriptionDraft('');
     setShowRedundantAccesses(false);
-  }, [selectedRoleId]);
+  }, [selectedRole?.systemKey, selectedRoleId]);
+
+  useEffect(() => {
+    if (!newlyCreatedRoleId || selectedRoleId !== newlyCreatedRoleId || !selectedRole || selectedRole.isSystem) return;
+    const frame = window.requestAnimationFrame(() => {
+      roleNameInputRef.current?.focus();
+      roleNameInputRef.current?.select();
+      setNewlyCreatedRoleId('');
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [newlyCreatedRoleId, selectedRole, selectedRoleId]);
 
   useEffect(() => {
     const handleDocumentClick = (event) => {
@@ -729,6 +765,12 @@ export default function AdminPanel({
     document.addEventListener('mousedown', handleDocumentClick);
     return () => document.removeEventListener('mousedown', handleDocumentClick);
   }, []);
+
+  useEffect(() => {
+    if (tab !== 'roles' && selectedRoleId) {
+      setSelectedRoleId('');
+    }
+  }, [selectedRoleId, tab]);
 
   const filteredRoles = useMemo(() => (
     roles.filter((role) => role.name.toLowerCase().includes(roleSearch.trim().toLowerCase()))
@@ -820,11 +862,10 @@ export default function AdminPanel({
   };
 
   const handleCreateRole = async () => {
-    if (!newRoleName.trim()) return;
     await runAction(async () => {
-      const createdRole = await createRbacRole({ name: newRoleName.trim() }, session);
-      setNewRoleName('');
+      const createdRole = await createRbacRole({ name: 'New role' }, session);
       await loadBaseData();
+      setNewlyCreatedRoleId(createdRole.id);
       setSelectedRoleId(createdRole.id);
     }, 'Failed to create role.');
   };
@@ -1042,6 +1083,23 @@ export default function AdminPanel({
   const userActionTargetUsers = userActionModal
     ? users.filter((user) => user.id !== userActionModal.userId)
     : [];
+  const roleTabs = selectedRole ? [
+    {
+      value: 'permissions',
+      label: 'Permissions',
+      disabled: selectedRole.systemKey === 'admin',
+    },
+    {
+      value: 'links',
+      label: 'Links',
+      disabled: false,
+    },
+    {
+      value: 'members',
+      label: `Members (${selectedRole.memberCount || 0})`,
+      disabled: selectedRole.systemKey === 'default_user',
+    },
+  ] : [];
 
   return (
     <div className="h-full w-full overflow-hidden bg-gray-900 text-white">
@@ -1110,24 +1168,10 @@ export default function AdminPanel({
               <nav className="flex gap-2 overflow-x-auto md:block md:space-y-2 md:overflow-visible">
                 <button
                   type="button"
-                  onClick={() => setTab('roles')}
-                  className={`relative flex min-w-36 items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm transition md:w-full ${
-                    tab === 'roles'
-                      ? 'bg-gray-800 text-white ring-1 ring-blue-500/40'
-                      : 'text-gray-400 hover:bg-gray-900 hover:text-gray-100'
-                  }`}
-                >
-                  {tab === 'roles' ? (
-                    <span className="absolute inset-y-2 left-0 w-1 rounded-full bg-blue-500" />
-                  ) : null}
-                  <span className="pl-2 font-medium">Roles</span>
-                  <span className="rounded-full bg-gray-900 px-2 py-0.5 text-xs text-gray-400">
-                    {roles.length}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTab('users')}
+                  onClick={() => {
+                    setSelectedRoleId('');
+                    setTab('users');
+                  }}
                   className={`relative flex min-w-36 items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm transition md:w-full ${
                     tab === 'users'
                       ? 'bg-gray-800 text-white ring-1 ring-blue-500/40'
@@ -1142,6 +1186,26 @@ export default function AdminPanel({
                     {users.length}
                   </span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedRoleId('');
+                    setTab('roles');
+                  }}
+                  className={`relative flex min-w-36 items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm transition md:w-full ${
+                    tab === 'roles'
+                      ? 'bg-gray-800 text-white ring-1 ring-blue-500/40'
+                      : 'text-gray-400 hover:bg-gray-900 hover:text-gray-100'
+                  }`}
+                >
+                  {tab === 'roles' ? (
+                    <span className="absolute inset-y-2 left-0 w-1 rounded-full bg-blue-500" />
+                  ) : null}
+                  <span className="pl-2 font-medium">Roles</span>
+                  <span className="rounded-full bg-gray-900 px-2 py-0.5 text-xs text-gray-400">
+                    {roles.length}
+                  </span>
+                </button>
               </nav>
             </aside>
 
@@ -1152,22 +1216,27 @@ export default function AdminPanel({
                 selectedRole ? (
                   <div className="grid gap-5 xl:grid-cols-[280px,1fr]">
                     <aside className="space-y-3 rounded-xl border border-gray-800 bg-gray-950/60 p-3">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedRoleId('')}
-                        className="w-full rounded-lg bg-gray-800 px-3 py-2 text-left text-sm font-semibold text-gray-100 hover:bg-gray-700"
-                      >
-                        Back to roles
-                      </button>
-                      <input
-                        type="text"
-                        value={roleSearch}
-                        onChange={(event) => setRoleSearch(event.target.value)}
-                        placeholder="Search roles"
-                        className="w-full rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
-                      />
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedRoleId('')}
+                          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-gray-800 bg-gray-950/80 px-3 py-2 text-left text-sm font-medium text-gray-200 transition hover:border-gray-700 hover:bg-gray-900"
+                        >
+                          <ArrowLeft size={16} className="shrink-0" />
+                          <span className="truncate">Back</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={saving}
+                          onClick={handleCreateRole}
+                          title="Create role"
+                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-gray-800 bg-gray-950/80 text-gray-200 transition hover:border-gray-700 hover:bg-gray-900 disabled:opacity-50"
+                        >
+                          <Plus size={16} />
+                        </button>
+                      </div>
                       <div className="space-y-1">
-                        {filteredRoles.map((role) => (
+                        {roles.map((role) => (
                           <button
                             key={role.id}
                             type="button"
@@ -1178,61 +1247,47 @@ export default function AdminPanel({
                                 : 'text-gray-300 hover:bg-gray-900 hover:text-white'
                             }`}
                           >
-                            <div className="flex items-center gap-2">
-                              <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
-                              <span className="min-w-0 truncate font-medium">{role.name}</span>
-                            </div>
+                            <div className="min-w-0 truncate font-medium">{getRoleDisplayName(role)}</div>
                           </button>
                         ))}
                       </div>
                     </aside>
 
                     <div className="space-y-5">
-                      <Panel
-                        title="Role"
-                        actions={(
-                          <div className="flex gap-2">
-                            {(canEditRoleName || canEditDefaultMessage) ? (
-                              <button
-                                type="button"
-                                disabled={saving || (canEditRoleName ? !roleNameDraft.trim() : false)}
-                                onClick={handleSaveRole}
-                                className="rounded bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-500 disabled:bg-gray-700"
-                              >
-                                Save
-                              </button>
-                            ) : null}
-                            {!selectedRole.isSystem ? (
-                              <button
-                                type="button"
-                                disabled={saving}
-                                onClick={handleDeleteRole}
-                                className="rounded bg-red-700 px-3 py-2 text-sm text-white hover:bg-red-600 disabled:bg-gray-700"
-                              >
-                                Delete
-                              </button>
-                            ) : null}
-                          </div>
-                        )}
-                      >
+                      <Panel title={null} actions={null}>
                         <div className="space-y-4">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-xl font-semibold text-white">{selectedRole.name}</span>
-                            <Badge tone={selectedRole.systemKey === 'default_user' ? 'amber' : 'blue'}>
-                              {roleTypeLabel(selectedRole)}
-                            </Badge>
-                            <Badge>{selectedRole.systemKey === 'default_user' ? 'Automatic' : `${selectedRole.memberCount || 0} members`}</Badge>
-                            {selectedRole.linkCount ? <Badge tone="green">{selectedRole.linkCount} links</Badge> : null}
-                          </div>
-
-                          {canEditRoleName ? (
+                          <div className="flex flex-wrap items-center justify-between gap-3">
                             <input
+                              ref={roleNameInputRef}
                               type="text"
-                              value={roleNameDraft}
+                              value={canEditRoleName ? roleNameDraft : getRoleDisplayName(selectedRole)}
+                              disabled={!canEditRoleName}
                               onChange={(event) => setRoleNameDraft(event.target.value)}
-                              className="w-full rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
+                              className="min-w-0 flex-1 rounded border border-gray-700 bg-gray-900 px-3 py-2 text-xl font-semibold text-gray-100 disabled:cursor-default disabled:opacity-100"
                             />
-                          ) : null}
+                            <div className="flex flex-wrap items-center gap-2">
+                              {(canEditRoleName || canEditDefaultMessage) ? (
+                                <button
+                                  type="button"
+                                  disabled={saving || (canEditRoleName ? !roleNameDraft.trim() : false)}
+                                  onClick={handleSaveRole}
+                                  className="rounded bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-500 disabled:bg-gray-700"
+                                >
+                                  Save
+                                </button>
+                              ) : null}
+                              {!selectedRole.isSystem ? (
+                                <button
+                                  type="button"
+                                  disabled={saving}
+                                  onClick={handleDeleteRole}
+                                  className="rounded bg-red-700 px-3 py-2 text-sm text-white hover:bg-red-600 disabled:bg-gray-700"
+                                >
+                                  Delete
+                                </button>
+                              ) : null}
+                            </div>
+                          </div>
 
                           {selectedRole.systemKey === 'default_user' ? (
                             <div className="space-y-2">
@@ -1250,19 +1305,20 @@ export default function AdminPanel({
                       </Panel>
 
                       <div className="flex flex-wrap gap-2 border-b border-gray-700">
-                        {[
-                          ['permissions', 'Permissions'],
-                          ['links', 'Links'],
-                          ['members', 'Members'],
-                        ].map(([value, label]) => (
+                        {roleTabs.map(({ value, label, disabled }) => (
                           <button
                             key={value}
                             type="button"
-                            onClick={() => setRoleDetailTab(value)}
+                            disabled={disabled}
+                            onClick={() => {
+                              if (!disabled) setRoleDetailTab(value);
+                            }}
                             className={`border-b-2 px-3 py-2 text-sm font-semibold ${
                               roleDetailTab === value
                                 ? 'border-blue-500 text-white'
-                                : 'border-transparent text-gray-400 hover:text-gray-100'
+                                : disabled
+                                  ? 'border-transparent text-gray-600 cursor-not-allowed'
+                                  : 'border-transparent text-gray-400 hover:text-gray-100'
                             }`}
                           >
                             {label}
@@ -1570,10 +1626,7 @@ export default function AdminPanel({
                                           key={role.id}
                                           className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-700 bg-gray-950/60 px-3 py-3"
                                         >
-                                          <div className="flex flex-wrap items-center gap-2">
-                                            <span className="font-medium text-white">{role.name}</span>
-                                            <Badge>{roleTypeLabel(role)}</Badge>
-                                          </div>
+                                          <div className="font-medium text-white">{role.name}</div>
                                           <button
                                             type="button"
                                             onClick={() => handleRemoveChildRole(role.id)}
@@ -1596,38 +1649,23 @@ export default function AdminPanel({
                     </div>
                   </div>
                 ) : (
-                  <div className="mx-auto max-w-5xl space-y-5">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                      <div>
-                        <h2 className="text-2xl font-bold text-white">Roles</h2>
-                        <div className="text-sm text-gray-400">{roles.length} roles</div>
-                      </div>
-                      <div className="flex flex-col gap-2 md:min-w-96 md:flex-row">
-                        <input
-                          type="text"
-                          value={newRoleName}
-                          onChange={(event) => setNewRoleName(event.target.value)}
-                          placeholder="Role name"
-                          className="rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 md:flex-1"
-                        />
-                        <button
-                          type="button"
-                          disabled={!newRoleName.trim() || saving}
-                          onClick={handleCreateRole}
-                          className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500 disabled:bg-gray-700"
-                        >
-                          Create role
-                        </button>
-                      </div>
+                  <div className="mx-auto max-w-6xl space-y-5">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-center">
+                      <SearchField
+                        value={roleSearch}
+                        onChange={(event) => setRoleSearch(event.target.value)}
+                        placeholder="Search roles"
+                        className="md:flex-1"
+                      />
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={handleCreateRole}
+                        className="rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-500 disabled:bg-gray-700"
+                      >
+                        Create role
+                      </button>
                     </div>
-
-                    <input
-                      type="text"
-                      value={roleSearch}
-                      onChange={(event) => setRoleSearch(event.target.value)}
-                      placeholder="Search roles"
-                      className="w-full rounded-lg border border-gray-700 bg-gray-950 px-4 py-3 text-sm text-gray-100"
-                    />
 
                     <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-950/50">
                       <div className="grid grid-cols-[1fr,140px] gap-4 border-b border-gray-800 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-gray-400 md:grid-cols-[1fr,150px,120px]">
@@ -1640,18 +1678,15 @@ export default function AdminPanel({
                           key={role.id}
                           type="button"
                           onClick={() => setSelectedRoleId(role.id)}
-                          className="grid w-full grid-cols-[1fr,140px] items-center gap-4 border-b border-gray-800 px-4 py-4 text-left last:border-b-0 hover:bg-gray-900 md:grid-cols-[1fr,150px,120px]"
+                          className={`grid w-full grid-cols-[1fr,140px] items-center gap-4 border-b px-4 py-4 text-left last:border-b-0 hover:bg-gray-900 md:grid-cols-[1fr,150px,120px] ${
+                            role.isSystem ? 'border-gray-700 bg-gray-900/40' : 'border-gray-800'
+                          }`}
                         >
                           <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="truncate font-semibold text-white">{role.name}</span>
-                              <Badge tone={role.systemKey === 'default_user' ? 'amber' : 'blue'}>
-                                {roleTypeLabel(role)}
-                              </Badge>
-                            </div>
+                            <div className="truncate font-semibold text-white">{getRoleDisplayName(role)}</div>
                           </div>
                           <span className="text-sm text-gray-300">
-                            {role.systemKey === 'default_user' ? 'Automatic' : role.memberCount || 0}
+                            {role.memberCount || 0}
                           </span>
                           <span className="hidden text-sm text-gray-300 md:block">{role.linkCount || 0}</span>
                         </button>
@@ -1666,17 +1701,12 @@ export default function AdminPanel({
                 )
               ) : (
                 <div className="mx-auto max-w-6xl space-y-5">
-                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                    <div>
-                      <h2 className="text-2xl font-bold text-white">Users</h2>
-                      <div className="text-sm text-gray-400">{users.length} users</div>
-                    </div>
-                    <input
-                      type="text"
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center">
+                    <SearchField
                       value={userSearch}
                       onChange={(event) => setUserSearch(event.target.value)}
                       placeholder="Search users"
-                      className="w-full rounded-lg border border-gray-700 bg-gray-950 px-4 py-3 text-sm text-gray-100 md:w-96"
+                      className="md:flex-1"
                     />
                   </div>
 
