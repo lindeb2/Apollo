@@ -5,6 +5,7 @@ import HostedLogin from './components/HostedLogin';
 import HostedDashboard from './components/HostedDashboard';
 import PlayerDashboard from './components/PlayerDashboard';
 import AdminPanel from './components/AdminPanel';
+import ProfileDialog from './components/ProfileDialog';
 import { audioManager } from './lib/audioManager';
 import { importFromZIP } from './lib/projectPortability';
 import { deleteProject as deleteCachedProject, getMediaBlob, saveRemoteProjectMeta, storeMediaBlob } from './lib/db';
@@ -126,6 +127,7 @@ function App() {
   const [serverError, setServerError] = useState('');
   const [serverLoading, setServerLoading] = useState(false);
   const [remoteEditorSession, setRemoteEditorSession] = useState(null);
+  const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   const { loadProject: loadProjectToStore } = useStore();
 
   const refreshServerData = async (sessionOverride = null) => {
@@ -241,6 +243,7 @@ function App() {
     setServerProjects([]);
     setServerShows([]);
     setRemoteEditorSession(null);
+    setProfileDialogOpen(false);
     setView('player');
     if (redirectUrl) {
       window.location.assign(redirectUrl);
@@ -458,6 +461,16 @@ function App() {
     navigateTo('/');
   };
 
+  const handleOpenProfile = () => {
+    setProfileDialogOpen(true);
+  };
+
+  const handleProfileSaved = (nextSession) => {
+    if (!nextSession) return;
+    saveServerSession(nextSession);
+    setServerSession(nextSession);
+  };
+
   if (authBootstrapping) {
     return (
       <div className="h-screen w-screen overflow-hidden bg-gray-900 text-white flex items-center justify-center p-6">
@@ -488,6 +501,7 @@ function App() {
           session={serverSession}
           onClose={handleLeaveAdmin}
           onLogout={handleServerLogout}
+          onOpenProfile={handleOpenProfile}
         />
       ) : view === 'editor' ? (
         <Editor
@@ -520,6 +534,7 @@ function App() {
             error={serverError}
             onSwitchToPlayerMode={handleSwitchToPlayerMode}
             onOpenAdmin={handleOpenAdmin}
+            onOpenProfile={handleOpenProfile}
           />
       ) : (
         <PlayerDashboard
@@ -528,8 +543,17 @@ function App() {
           onSwitchToDawDashboard={handleSwitchToDawMode}
           onOpenDawProject={handleOpenServerProject}
           onOpenAdmin={handleOpenAdmin}
+          onOpenProfile={handleOpenProfile}
         />
       )}
+      {serverSession ? (
+        <ProfileDialog
+          open={profileDialogOpen}
+          session={serverSession}
+          onClose={() => setProfileDialogOpen(false)}
+          onSaved={handleProfileSaved}
+        />
+      ) : null}
     </div>
   );
 }

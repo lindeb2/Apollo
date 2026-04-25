@@ -15,6 +15,8 @@ import {
 function buildUserSelectSql(alias = 'u') {
   return `${alias}.id,
           ${alias}.username,
+          ${alias}.artist_display_name,
+          ${alias}.artist_description,
           ${alias}.password_hash,
           EXISTS(
             SELECT 1
@@ -82,6 +84,8 @@ function mapAdminUserRow(row) {
   return {
     id: row.id,
     username: row.username,
+    artistDisplayName: row.artist_display_name || '',
+    artistDescription: row.artist_description || '',
     isAdmin: Boolean(row.is_admin),
     isActive: Boolean(row.is_active),
     createdAt: row.created_at,
@@ -180,6 +184,40 @@ export async function updateOidcProfile(userId, { email = '', displayName = '' }
      WHERE id = $1`,
     [userId, email || null, displayName || null]
   );
+}
+
+function normalizeArtistDisplayName(value) {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  if (normalized.length > 120) {
+    throw new Error('Artist display name must be 120 characters or fewer');
+  }
+  return normalized || null;
+}
+
+function normalizeArtistDescription(value) {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  if (normalized.length > 2000) {
+    throw new Error('Artist description must be 2000 characters or fewer');
+  }
+  return normalized || null;
+}
+
+export async function updateUserProfile(userId, { artistDisplayName = '', artistDescription = undefined }, db = pool) {
+  const normalizedArtistDisplayName = normalizeArtistDisplayName(artistDisplayName);
+  const shouldUpdateDescription = artistDescription !== undefined;
+  const normalizedArtistDescription = shouldUpdateDescription
+    ? normalizeArtistDescription(artistDescription)
+    : null;
+  const result = await db.query(
+    `UPDATE users
+     SET artist_display_name = $2,
+         artist_description = CASE WHEN $3::boolean THEN $4::text ELSE artist_description END,
+         updated_at = NOW()
+     WHERE id = $1
+     RETURNING ${buildUserSelectSql('users')}`,
+    [userId, normalizedArtistDisplayName, shouldUpdateDescription, normalizedArtistDescription]
+  );
+  return result.rows[0] || null;
 }
 
 function matchesInitialAdminClaim(claims) {

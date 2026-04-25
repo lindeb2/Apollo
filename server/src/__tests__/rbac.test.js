@@ -1,15 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
-  ACCESS_LEVEL_READ,
-  ACCESS_LEVEL_WRITE,
-  CAPABILITY_PLAYER_TUTTI,
-  CAPABILITY_PROJECT_MANAGER,
-  CAPABILITY_PROJECT_READ,
-  CAPABILITY_TRACK_WRITE_SCOPE,
-  SCOPE_TYPE_ALL_PROJECTS,
-  SCOPE_TYPE_GROUP_NAME,
-  SCOPE_TYPE_PART_NAME,
-  SCOPE_TYPE_PROJECT,
+  RBAC_SCOPE_GROUP_NAME,
+  RBAC_SCOPE_PART_NAME,
+  RBAC_SCOPE_PROJECT,
+  RBAC_SCOPE_SHOW,
+  PERMISSION_PROJECT_MANAGER,
+  PERMISSION_PROJECT_READER,
+  PERMISSION_TRACK_CREATOR,
+  PERMISSION_TRACK_READER,
   extractProjectAccessTags,
   resolveProjectAccessFromGrantRows,
   validateAndTransformProjectWrite,
@@ -31,18 +29,33 @@ describe('extractProjectAccessTags', () => {
       { tagType: 'group_name', tagValue: 'choir', displayName: 'Choir' },
     ]);
   });
+
+  it('collects explicit part tags and clears nested part descendants', () => {
+    const tags = extractProjectAccessTags({
+      trackTree: [
+        { id: 'choir', kind: 'group', name: 'Choir', part: true },
+        { id: 'soprano', kind: 'group', parentId: 'choir', name: 'Soprano', part: true },
+      ],
+    });
+
+    expect(tags).toEqual([
+      { tagType: 'group_name', tagValue: 'choir', displayName: 'Choir' },
+      { tagType: 'group_name', tagValue: 'soprano', displayName: 'Soprano' },
+      { tagType: 'part_name', tagValue: 'choir', displayName: 'Choir' },
+    ]);
+  });
 });
 
 describe('resolveProjectAccessFromGrantRows', () => {
-  it('lets write win over read when multiple grants apply', () => {
+  it('lets a project manager override a project reader on the targeted project', () => {
     const grants = [
       {
-        accessLevel: ACCESS_LEVEL_READ,
-        scopeType: SCOPE_TYPE_ALL_PROJECTS,
+        permissionKey: PERMISSION_PROJECT_READER,
+        scopeType: 'all',
       },
       {
-        accessLevel: ACCESS_LEVEL_WRITE,
-        scopeType: SCOPE_TYPE_PROJECT,
+        permissionKey: PERMISSION_PROJECT_MANAGER,
+        scopeType: RBAC_SCOPE_PROJECT,
         scopeProjectId: 'project-1',
       },
     ];
@@ -57,40 +70,40 @@ describe('resolveProjectAccessFromGrantRows', () => {
     });
   });
 
-  it('matches named scopes for current and future projects by normalized tag name', () => {
+  it('matches named track scopes for current and future projects by normalized tag name', () => {
     const grants = [
       {
-        accessLevel: ACCESS_LEVEL_WRITE,
-        scopeType: SCOPE_TYPE_GROUP_NAME,
-        scopeValue: 'sopran',
+        permissionKey: PERMISSION_TRACK_READER,
+        scopeType: RBAC_SCOPE_GROUP_NAME,
+        scopeNameValue: 'sopran',
       },
       {
-        accessLevel: ACCESS_LEVEL_READ,
-        scopeType: SCOPE_TYPE_PART_NAME,
-        scopeValue: 'alto 1',
+        permissionKey: PERMISSION_TRACK_READER,
+        scopeType: RBAC_SCOPE_PART_NAME,
+        scopeNameValue: 'alto 1',
       },
     ];
 
     const matchingProjectTags = {
-      [SCOPE_TYPE_GROUP_NAME]: new Set(['sopran']),
-      [SCOPE_TYPE_PART_NAME]: new Set(['alto 1']),
+      [RBAC_SCOPE_GROUP_NAME]: new Set(['sopran']),
+      [RBAC_SCOPE_PART_NAME]: new Set(['alto 1']),
     };
     const futureProjectTags = {
-      [SCOPE_TYPE_GROUP_NAME]: new Set(['sopran']),
-      [SCOPE_TYPE_PART_NAME]: new Set(),
+      [RBAC_SCOPE_GROUP_NAME]: new Set(['sopran']),
+      [RBAC_SCOPE_PART_NAME]: new Set(),
     };
     const unrelatedProjectTags = {
-      [SCOPE_TYPE_GROUP_NAME]: new Set(['tenor']),
-      [SCOPE_TYPE_PART_NAME]: new Set(['bass 2']),
+      [RBAC_SCOPE_GROUP_NAME]: new Set(['tenor']),
+      [RBAC_SCOPE_PART_NAME]: new Set(['bass 2']),
     };
 
     expect(resolveProjectAccessFromGrantRows(grants, 'project-now', matchingProjectTags)).toEqual({
       canRead: true,
-      canWrite: true,
+      canWrite: false,
     });
     expect(resolveProjectAccessFromGrantRows(grants, 'project-future', futureProjectTags)).toEqual({
       canRead: true,
-      canWrite: true,
+      canWrite: false,
     });
     expect(resolveProjectAccessFromGrantRows(grants, 'project-other', unrelatedProjectTags)).toEqual({
       canRead: false,
@@ -98,49 +111,12 @@ describe('resolveProjectAccessFromGrantRows', () => {
     });
   });
 
-  it('treats capability grants according to the new fine-grained model', () => {
+  it('limits project readers to the targeted show when configured', () => {
     const grants = [
       {
-        capability: CAPABILITY_PLAYER_TUTTI,
-        projectTargetType: SCOPE_TYPE_GROUP_NAME,
-        projectTargetValue: 'choir',
-      },
-      {
-        capability: CAPABILITY_PROJECT_READ,
-        projectTargetType: SCOPE_TYPE_PROJECT,
-        projectTargetProjectId: 'project-read',
-      },
-      {
-        capability: CAPABILITY_PROJECT_MANAGER,
-        projectTargetType: SCOPE_TYPE_PROJECT,
-        projectTargetProjectId: 'project-manage',
-      },
-    ];
-
-    expect(resolveProjectAccessFromGrantRows(grants, 'project-manage')).toEqual({
-      canRead: true,
-      canWrite: true,
-    });
-    expect(resolveProjectAccessFromGrantRows(grants, 'project-read')).toEqual({
-      canRead: true,
-      canWrite: false,
-    });
-    expect(resolveProjectAccessFromGrantRows(grants, 'project-choir', {
-      [SCOPE_TYPE_GROUP_NAME]: new Set(['choir']),
-      [SCOPE_TYPE_PART_NAME]: new Set(),
-    })).toEqual({
-      canRead: false,
-      canWrite: false,
-    });
-  });
-
-  it('limits capability grants to the targeted show when configured', () => {
-    const grants = [
-      {
-        capability: CAPABILITY_PROJECT_READ,
-        showTargetType: 'show',
-        showTargetShowId: 'show-a',
-        projectTargetType: SCOPE_TYPE_ALL_PROJECTS,
+        permissionKey: PERMISSION_PROJECT_READER,
+        scopeType: RBAC_SCOPE_SHOW,
+        scopeShowId: 'show-a',
       },
     ];
 
@@ -153,16 +129,51 @@ describe('resolveProjectAccessFromGrantRows', () => {
       canWrite: false,
     });
   });
+
+  it('requires show, group, and part filters to all match for project access', () => {
+    const grants = [
+      {
+        permissionKey: PERMISSION_PROJECT_READER,
+        scopeType: RBAC_SCOPE_SHOW,
+        scopeShowId: 'show-a',
+        scopeGroupNameValue: 'choir',
+        scopePartNameValue: 'soprano',
+      },
+    ];
+
+    expect(resolveProjectAccessFromGrantRows(grants, { id: 'project-1', showId: 'show-a' }, {
+      [RBAC_SCOPE_GROUP_NAME]: new Set(['choir']),
+      [RBAC_SCOPE_PART_NAME]: new Set(['soprano']),
+    })).toEqual({
+      canRead: true,
+      canWrite: false,
+    });
+    expect(resolveProjectAccessFromGrantRows(grants, { id: 'project-2', showId: 'show-a' }, {
+      [RBAC_SCOPE_GROUP_NAME]: new Set(['choir']),
+      [RBAC_SCOPE_PART_NAME]: new Set(['alto']),
+    })).toEqual({
+      canRead: false,
+      canWrite: false,
+    });
+    expect(resolveProjectAccessFromGrantRows(grants, { id: 'project-3', showId: 'show-b' }, {
+      [RBAC_SCOPE_GROUP_NAME]: new Set(['choir']),
+      [RBAC_SCOPE_PART_NAME]: new Set(['soprano']),
+    })).toEqual({
+      canRead: false,
+      canWrite: false,
+    });
+  });
 });
 
 describe('validateAndTransformProjectWrite', () => {
-  it('stamps scoped tracks from inferred group scope when exactly one scope matches', async () => {
+  it('stamps created tracks from an inferred group scope when exactly one scope matches', async () => {
     const currentSnapshot = {
       projectId: 'project-1',
       projectName: 'Test',
       musicalNumber: '1.1',
       sampleRate: 44100,
       masterVolume: 100,
+      showId: 'show-1',
       trackTree: [
         { id: 'group-1', kind: 'group', name: 'Soprano', order: 0 },
       ],
@@ -192,10 +203,10 @@ describe('validateAndTransformProjectWrite', () => {
 
     const transformed = await validateAndTransformProjectWrite({
       userId: 'user-1',
-      project: { id: 'project-1', createdByUserId: 'owner-1' },
+      project: { id: 'project-1', createdByUserId: 'owner-1', showId: 'show-1' },
       access: {
-        canWriteScopedTracks: true,
-        editableTrackScopes: [{ type: 'group_name', value: 'soprano', label: 'Soprano' }],
+        canCreateTracks: true,
+        creatableTrackScopes: [{ type: 'group_name', value: 'soprano', label: 'Soprano' }],
       },
       currentSnapshot,
       nextSnapshot,
@@ -206,5 +217,106 @@ describe('validateAndTransformProjectWrite', () => {
       accessScopeType: 'group_name',
       accessScopeValue: 'soprano',
     });
+  });
+
+  it('allows a track creator on a specific track to create subtracks under that track', async () => {
+    const currentSnapshot = {
+      projectId: 'project-1',
+      projectName: 'Test',
+      musicalNumber: '1.1',
+      sampleRate: 44100,
+      masterVolume: 100,
+      showId: 'show-1',
+      tracks: [
+        {
+          id: 'parent-track',
+          name: 'Lead',
+          role: 'lead',
+          icon: 'mic',
+          volume: 100,
+          pan: 0,
+          muted: false,
+          soloed: false,
+          clips: [],
+          createdByUserId: 'owner-1',
+        },
+      ],
+      trackTree: [
+        { id: 'node-parent', kind: 'track', trackId: 'parent-track', order: 0 },
+      ],
+      loop: { enabled: false, startMs: 0, endMs: 0 },
+    };
+    const nextSnapshot = {
+      ...currentSnapshot,
+      tracks: [
+        ...currentSnapshot.tracks,
+        {
+          id: 'child-track',
+          name: 'Harmony',
+          role: 'lead',
+          icon: 'mic',
+          volume: 100,
+          pan: 0,
+          muted: false,
+          soloed: false,
+          clips: [],
+        },
+      ],
+      trackTree: [
+        { id: 'node-parent', kind: 'track', trackId: 'parent-track', order: 0 },
+        { id: 'node-child', kind: 'track', trackId: 'child-track', parentId: 'node-parent', order: 0 },
+      ],
+    };
+
+    const transformed = await validateAndTransformProjectWrite({
+      userId: 'user-2',
+      project: { id: 'project-1', createdByUserId: 'owner-1', showId: 'show-1' },
+      access: {
+        canCreateTracks: true,
+        creatableTrackScopes: [{ type: 'track', trackId: 'parent-track', value: 'parent-track', label: 'Lead' }],
+      },
+      currentSnapshot,
+      nextSnapshot,
+    });
+
+    expect(transformed.tracks[1]).toMatchObject({
+      createdByUserId: 'user-2',
+      accessScopeType: 'track',
+      accessScopeValue: 'parent-track',
+    });
+  });
+
+  it('rejects project manager writes that would remove the only matching filtered access', async () => {
+    const currentSnapshot = {
+      projectId: 'project-1',
+      projectName: 'Test',
+      musicalNumber: '1.1',
+      sampleRate: 44100,
+      masterVolume: 100,
+      showId: 'show-1',
+      tracks: [],
+      trackTree: [
+        { id: 'group-1', kind: 'group', name: 'Choir', order: 0 },
+      ],
+      loop: { enabled: false, startMs: 0, endMs: 0 },
+    };
+    const nextSnapshot = {
+      ...currentSnapshot,
+      trackTree: [
+        { id: 'group-1', kind: 'group', name: 'Band', order: 0 },
+      ],
+    };
+
+    await expect(validateAndTransformProjectWrite({
+      userId: 'user-3',
+      project: { id: 'project-1', createdByUserId: 'owner-1', showId: 'show-1' },
+      access: {
+        canManageProject: true,
+        canManageProjectUnconditionally: false,
+        projectManagerRetainScopes: [{ type: 'all', groupNameValue: 'choir', label: 'Choir' }],
+      },
+      currentSnapshot,
+      nextSnapshot,
+    })).rejects.toThrow('remove your only project manager access');
   });
 });

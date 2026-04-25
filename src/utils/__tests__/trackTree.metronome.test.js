@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createEmptyProject, createTrack, TRACK_ROLES } from '../../types/project';
 import {
   attachTrackNode,
@@ -6,6 +6,9 @@ import {
   getTrackNodeByTrackId,
   moveTrackTreeNode,
   normalizeTrackTree,
+  syncDirectChildRolesFromGroupCategories,
+  TRACK_NODE_TYPE_AUDIO,
+  TRACK_NODE_TYPE_GROUP,
 } from '../trackTree';
 
 describe('metronome track tree rules', () => {
@@ -59,5 +62,76 @@ describe('metronome track tree rules', () => {
     const movedProject = moveTrackTreeNode(project, metronomeNodeId, groupNode.id, 'inside');
 
     expect(getTrackNodeByTrackId(movedProject, metronome.id)?.parentId ?? null).toBeNull();
+  });
+});
+
+describe('track tree type and part normalization', () => {
+  it('normalizes broad track node types and prevents nested part tracks', () => {
+    let project = createEmptyProject('Parts Test');
+    project = createGroupNode(project, 'Choir');
+    const parentGroup = project.trackTree.find((node) => node.kind === 'group');
+    project = createGroupNode(project, 'Soprano', parentGroup.id);
+    const childGroup = project.trackTree.find((node) => node.kind === 'group' && node.id !== parentGroup.id);
+
+    const normalized = normalizeTrackTree({
+      ...project,
+      trackTree: project.trackTree.map((node) => (
+        node.id === parentGroup.id || node.id === childGroup.id
+          ? { ...node, part: true }
+          : node
+      )),
+    });
+
+    const normalizedParent = normalized.trackTree.find((node) => node.id === parentGroup.id);
+    const normalizedChild = normalized.trackTree.find((node) => node.id === childGroup.id);
+
+    expect(normalizedParent).toMatchObject({
+      type: TRACK_NODE_TYPE_GROUP,
+      part: true,
+    });
+    expect(normalizedChild).toMatchObject({
+      type: TRACK_NODE_TYPE_GROUP,
+      part: false,
+    });
+  });
+
+  it('adds audio type and part defaults to track nodes', () => {
+    const audioTrack = createTrack('Solo', TRACK_ROLES.LEAD);
+    const normalized = normalizeTrackTree({
+      ...createEmptyProject('Audio Type Test'),
+      tracks: [audioTrack],
+      trackTree: [],
+    });
+
+    expect(getTrackNodeByTrackId(normalized, audioTrack.id)).toMatchObject({
+      type: TRACK_NODE_TYPE_AUDIO,
+      part: false,
+    });
+  });
+
+  it('keeps descendants on the same type, including Other groups', () => {
+    const childTrack = createTrack('Nested child', TRACK_ROLES.LEAD);
+    let project = {
+      ...createEmptyProject('Other Sync Test'),
+      tracks: [childTrack],
+    };
+    project = createGroupNode(project, 'Other root');
+    const parentGroup = project.trackTree.find((node) => node.kind === 'group');
+    project = createGroupNode(project, 'Nested group', parentGroup.id);
+    const childGroup = project.trackTree.find((node) => node.kind === 'group' && node.id !== parentGroup.id);
+    project = attachTrackNode(project, childTrack.id, childGroup.id);
+
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    let synced;
+    try {
+      synced = syncDirectChildRolesFromGroupCategories(project);
+    } finally {
+      debugSpy.mockRestore();
+    }
+    const syncedChildGroup = synced.trackTree.find((node) => node.id === childGroup.id);
+    const syncedChildTrack = synced.tracks.find((track) => track.id === childTrack.id);
+
+    expect(syncedChildGroup.role).toBe(TRACK_ROLES.OTHER);
+    expect(syncedChildTrack.role).toBe(TRACK_ROLES.OTHER);
   });
 });

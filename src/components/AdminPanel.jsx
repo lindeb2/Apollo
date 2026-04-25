@@ -11,12 +11,14 @@ import {
   deleteRbacRoleOidcLink,
   getRbacCatalog,
   getRbacRole,
+  listAdminArtists,
   listRbacRoles,
   listUsers,
   removeRbacRoleMember,
   removeUserRole,
   saveRbacRoleGrant,
   transferUserOwnership,
+  updateAdminArtist,
   updateRbacRole,
 } from '../lib/serverApi';
 
@@ -159,45 +161,51 @@ function CompactAccessRow({
   );
 }
 
-const CAPABILITY_HELP = {
-  player_tutti: 'Player only: listen to the built-in tutti mix. Cannot open DAW or create custom mixes.',
-  project_read: 'Can open DAW read-only and create personal practice mixes. Includes tutti listening.',
-  track_write_own: 'Can create, edit, delete, and lock tracks owned by this user. Includes project read.',
-  track_write_scope: 'Can create, edit, delete, and lock tracks for the selected group or part scope. Includes project read.',
-  manage_own_projects: 'Can create projects and fully manage projects created by this user. Does not allow access management.',
-  project_manager: 'Can fully manage targeted projects: metadata, tracks, media references, locks, and deletion. Does not allow access management.',
+const PERMISSION_HELP = {
+  show_manager: 'Full control inside the selected show, including its musical numbers and tracks. Does not create new shows.',
+  show_creator: 'Can create new shows. Shows you create become fully manageable by you.',
+  show_reader: 'Can only see that a show exists.',
+  project_manager: 'Full control of the selected musical numbers and everything inside them.',
+  project_creator: 'Can create new musical numbers inside the selected shows.',
+  project_reader: 'Can see musical numbers in the DAW dashboard and listen to their tutti mixes, but cannot open them.',
+  track_manager: 'Full control of tracks in the selected scope, including descendant subtracks.',
+  track_creator: 'Can create tracks or subtracks in the selected scope. Created tracks become fully manageable by you.',
+  track_reader: 'Can open musical numbers in the DAW and create mixes.',
 };
 
-const GENERAL_PERMISSION_DEFINITIONS = [
-  { capability: 'player_tutti', showTargetType: 'all_shows', projectTargetType: 'all_projects' },
-  { capability: 'project_read', showTargetType: 'all_shows', projectTargetType: 'all_projects' },
-  { capability: 'track_write_own', showTargetType: 'all_shows', projectTargetType: 'all_projects' },
-  { capability: 'manage_own_projects', showTargetType: 'all_shows', projectTargetType: null },
-  { capability: 'project_manager', showTargetType: 'all_shows', projectTargetType: 'all_projects' },
-];
-
-const CAPABILITY_COVERAGE = {
-  player_tutti: ['player_tutti'],
-  project_read: ['player_tutti', 'project_read'],
-  track_write_own: ['player_tutti', 'project_read', 'track_write_own'],
-  track_write_scope: ['player_tutti', 'project_read', 'track_write_scope'],
-  manage_own_projects: ['manage_own_projects'],
-  project_manager: [
-    'player_tutti',
-    'project_read',
-    'track_write_own',
-    'track_write_scope',
-    'project_manager',
-  ],
+const PERMISSION_COVERAGE = {
+  show_manager: ['show_manager', 'show_reader', 'project_manager', 'project_creator', 'project_reader', 'track_manager', 'track_creator', 'track_reader'],
+  show_creator: ['show_creator'],
+  show_reader: ['show_reader'],
+  project_manager: ['project_manager', 'project_reader', 'track_manager', 'track_creator', 'track_reader'],
+  project_creator: ['project_creator'],
+  project_reader: ['project_reader'],
+  track_manager: ['track_manager', 'track_creator', 'track_reader', 'project_reader'],
+  track_creator: ['track_creator'],
+  track_reader: ['track_reader', 'project_reader'],
 };
 
-function getCapabilityHelp(capability) {
-  return CAPABILITY_HELP[capability] || 'This permission controls what the user can do in Apollo.';
+const PERMISSION_SCOPE_FLOW = {
+  show_manager: ['show'],
+  show_creator: [],
+  show_reader: ['show'],
+  project_manager: ['show', 'project', 'group', 'part'],
+  project_creator: ['show'],
+  project_reader: ['show', 'project', 'group', 'part'],
+  track_manager: ['show', 'project', 'group', 'part', 'track'],
+  track_creator: ['show', 'project', 'group', 'part'],
+  track_reader: ['show', 'project', 'group', 'part', 'track'],
+};
+
+const ALL_SCOPE_VALUE = '__all__';
+
+function getPermissionHelp(permissionKey) {
+  return PERMISSION_HELP[permissionKey] || 'This permission controls what the user can do in Apollo.';
 }
 
-function getCapabilityLabel(catalog, capability) {
-  const option = (catalog?.capabilities || []).find((candidate) => candidate.value === capability);
-  return option?.label || capability || 'Access';
+function getPermissionLabel(catalog, permissionKey) {
+  const option = (catalog?.permissions || []).find((candidate) => candidate.value === permissionKey);
+  return option?.label || permissionKey || 'Permission';
 }
 
 function getRoleDisplayName(role) {
@@ -206,61 +214,36 @@ function getRoleDisplayName(role) {
 }
 
 function isGeneralGrant(grant) {
-  if (!grant?.capability) return false;
-  if ((grant.showTargetType || 'all_shows') !== 'all_shows') return false;
-  if (grant.capability === 'track_write_scope') return false;
-  if (grant.capability === 'manage_own_projects') return !grant.projectTargetType;
-  return grant.projectTargetType === 'all_projects';
+  return Boolean(grant?.permissionKey)
+    && grant.scopeType === 'all'
+    && !grant.scopeGroupNameValue
+    && !grant.scopePartNameValue;
 }
 
 function isSpecificGrant(grant) {
-  return Boolean(grant?.capability) && !isGeneralGrant(grant);
+  return Boolean(grant?.permissionKey) && !isGeneralGrant(grant);
 }
 
-function generalGrantMatches(grant, definition) {
-  if (!grant || !definition) return false;
+function scopeMatches(left, right) {
   return (
-    grant.capability === definition.capability
-    && (grant.showTargetType || 'all_shows') === (definition.showTargetType || 'all_shows')
-    && (grant.showTargetShowId || null) === (definition.showTargetShowId || null)
-    && (grant.projectTargetType || null) === (definition.projectTargetType || null)
+    (left?.scopeType || null) === (right?.scopeType || null)
+    && String(left?.scopeShowId || '') === String(right?.scopeShowId || '')
+    && String(left?.scopeProjectId || '') === String(right?.scopeProjectId || '')
+    && String(left?.scopeTrackId || '') === String(right?.scopeTrackId || '')
+    && String(left?.scopeNameValue || '') === String(right?.scopeNameValue || '')
+    && String(left?.scopeGroupNameValue || '') === String(right?.scopeGroupNameValue || '')
+    && String(left?.scopePartNameValue || '') === String(right?.scopePartNameValue || '')
   );
 }
 
-function buildGeneralGrantPayload(definition) {
-  return {
-    capability: definition.capability,
-    showTargetType: definition.showTargetType || 'all_shows',
-    showTargetShowId: definition.showTargetShowId || null,
-    projectTargetType: definition.projectTargetType,
-    projectTargetProjectId: null,
-    projectTargetValue: null,
-    trackScopeType: null,
-    trackScopeValue: null,
-  };
-}
-
-function trackScopeMatches(left, right) {
-  return (
-    (left?.trackScopeType || null) === (right?.trackScopeType || null)
-    && String(left?.trackScopeValue || '') === String(right?.trackScopeValue || '')
-  );
-}
-
-function capabilityCovers(broaderCapability, narrowerCapability) {
-  return (CAPABILITY_COVERAGE[broaderCapability] || [broaderCapability]).includes(narrowerCapability);
+function permissionCovers(broaderPermission, narrowerPermission) {
+  return (PERMISSION_COVERAGE[broaderPermission] || [broaderPermission]).includes(narrowerPermission);
 }
 
 function generalGrantCoversGrant(generalGrant, grant) {
   if (!generalGrant || !grant || !isSpecificGrant(grant)) return false;
-  if (generalGrant.capability === 'manage_own_projects') return false;
-  if ((generalGrant.showTargetType || 'all_shows') !== 'all_shows') return false;
-  if (generalGrant.projectTargetType !== 'all_projects') return false;
-  if (!capabilityCovers(generalGrant.capability, grant.capability)) return false;
-  if (generalGrant.capability === 'track_write_scope' && grant.capability === 'track_write_scope') {
-    return trackScopeMatches(generalGrant, grant);
-  }
-  return true;
+  if (generalGrant.scopeType !== 'all') return false;
+  return permissionCovers(generalGrant.permissionKey, grant.permissionKey);
 }
 
 function isGrantRedundant(grant, allGrants) {
@@ -271,7 +254,7 @@ function isGrantRedundant(grant, allGrants) {
 }
 
 function getGrantHoverTitle(grant) {
-  const parts = [getCapabilityHelp(grant.capability)];
+  const parts = [getPermissionHelp(grant.permissionKey)];
   if (grant.sourceType === 'inherited' && grant.sourceRoleName) {
     parts.push(`Inherited from ${grant.sourceRoleName}.`);
   }
@@ -282,27 +265,21 @@ function getGrantHoverTitle(grant) {
 }
 
 function formatGrantLabel(grant) {
-  const capabilityLabel = grant.capabilityLabel || grant.capability || grant.accessLevel || 'Access';
-  const showTargetType = grant.showTargetType || 'all_shows';
-  const showTargetLabel = grant.showTargetLabel || '';
-  const projectTargetType = grant.projectTargetType || grant.scopeType || null;
-  const projectTargetLabel = grant.projectTargetLabel || grant.scopeLabel || grant.projectTargetValue || grant.scopeValue || '';
-  const trackScopeType = grant.trackScopeType || null;
-  const trackScopeLabel = grant.trackScopeLabel || grant.trackScopeValue || '';
-
-  const showLabel = showTargetType === 'show' ? `${showTargetLabel || 'Show'} / ` : '';
-  let targetLabel = 'All projects';
-  if (projectTargetType === 'project') targetLabel = projectTargetLabel || 'Project';
-  if (projectTargetType === 'group_name') targetLabel = `Group: ${projectTargetLabel || ''}`;
-  if (projectTargetType === 'part_name') targetLabel = `Part: ${projectTargetLabel || ''}`;
-  if (!projectTargetType) targetLabel = 'All own projects';
-
-  if (grant.capability === 'track_write_scope' && trackScopeType && trackScopeLabel) {
-    const scopePrefix = trackScopeType === 'group_name' ? 'Track group' : 'Track part';
-    return `${capabilityLabel} • ${showLabel}${targetLabel} • ${scopePrefix}: ${trackScopeLabel}`;
+  const permissionLabel = grant.permissionLabel || grant.permissionKey || 'Permission';
+  const parts = [permissionLabel];
+  if (grant.scopeType === 'all') parts.push('All');
+  if (grant.scopeType === 'show') parts.push(`Show: ${grant.scopeLabel || 'Unknown show'}`);
+  if (grant.scopeType === 'project') parts.push(`Musical number: ${grant.scopeLabel || 'Unknown project'}`);
+  if (grant.scopeType === 'track') parts.push(`Track: ${grant.scopeLabel || 'Unknown track'}`);
+  if (grant.scopeType === 'group_name') parts.push(`Group: ${grant.scopeLabel || grant.scopeNameValue || ''}`);
+  if (grant.scopeType === 'part_name') parts.push(`Part: ${grant.scopeLabel || grant.scopeNameValue || ''}`);
+  if (grant.scopeGroupNameValue && grant.scopeType !== 'group_name') {
+    parts.push(`Group: ${grant.scopeGroupLabel || grant.scopeGroupNameValue}`);
   }
-
-  return `${capabilityLabel} • ${showLabel}${targetLabel}`;
+  if (grant.scopePartNameValue && grant.scopeType !== 'part_name') {
+    parts.push(`Part: ${grant.scopePartLabel || grant.scopePartNameValue}`);
+  }
+  return parts.join(' • ');
 }
 
 function GrantList({ grants = [], canRemove = true, onRemove }) {
@@ -353,252 +330,328 @@ function GrantList({ grants = [], canRemove = true, onRemove }) {
 function GrantEditor({
   catalog,
   disabled = false,
-  excludedCapabilities = [],
+  excludedPermissions = [],
   onSave,
-  targetMode = 'all',
 }) {
-  const excludedCapabilitySet = new Set(excludedCapabilities);
-  const capabilityOptions = (catalog?.capabilities || []).filter((option) => (
-    !excludedCapabilitySet.has(option.value)
-    && (targetMode !== 'specific' || option.projectTargetMode !== 'global_only')
+  const excludedPermissionSet = new Set(excludedPermissions);
+  const permissionOptions = (catalog?.permissions || []).filter((option) => (
+    !excludedPermissionSet.has(option.value)
   ));
-  const projectTargetOptions = catalog?.projectTargetTypes || [];
-  const showTargetOptions = catalog?.showTargetTypes || [
-    { value: 'all_shows', label: 'All shows' },
-    { value: 'show', label: 'Show' },
-  ];
-  const trackScopeOptions = catalog?.trackScopeTypes || [];
 
-  const [capability, setCapability] = useState(capabilityOptions[0]?.value || 'player_tutti');
-  const [showTargetType, setShowTargetType] = useState(showTargetOptions[0]?.value || 'all_shows');
-  const [showTargetShowId, setShowTargetShowId] = useState('');
-  const [projectTargetType, setProjectTargetType] = useState(projectTargetOptions[0]?.value || 'all_projects');
-  const [projectTargetProjectId, setProjectTargetProjectId] = useState('');
-  const [projectTargetValue, setProjectTargetValue] = useState('');
-  const [trackScopeType, setTrackScopeType] = useState(trackScopeOptions[0]?.value || 'group_name');
-  const [trackScopeValue, setTrackScopeValue] = useState('');
+  const [permissionKey, setPermissionKey] = useState(permissionOptions[0]?.value || 'project_reader');
+  const [scopeShowId, setScopeShowId] = useState(ALL_SCOPE_VALUE);
+  const [scopeProjectId, setScopeProjectId] = useState(ALL_SCOPE_VALUE);
+  const [groupScopeValue, setGroupScopeValue] = useState(ALL_SCOPE_VALUE);
+  const [partScopeValue, setPartScopeValue] = useState(ALL_SCOPE_VALUE);
+  const [scopeTrackId, setScopeTrackId] = useState(ALL_SCOPE_VALUE);
+
+  const scopeFlow = PERMISSION_SCOPE_FLOW[permissionKey] || [];
+  const hasShowScope = scopeFlow.includes('show');
+  const hasProjectScope = scopeFlow.includes('project');
+  const hasGroupScope = scopeFlow.includes('group');
+  const hasPartScope = scopeFlow.includes('part');
+  const hasTrackScope = scopeFlow.includes('track');
+
+  const showOptions = catalog?.shows || [];
+  const tracks = catalog?.tracks || [];
+  const groupLabelByValue = new Map((catalog?.groupNames || []).map((option) => [option.value, option.label]));
+  const partLabelByValue = new Map((catalog?.partNames || []).map((option) => [option.value, option.label]));
+
+  const applyPermissionDefaults = (nextPermissionKey) => {
+    setPermissionKey(nextPermissionKey);
+    setScopeShowId(ALL_SCOPE_VALUE);
+    setScopeProjectId(ALL_SCOPE_VALUE);
+    setGroupScopeValue(ALL_SCOPE_VALUE);
+    setPartScopeValue(ALL_SCOPE_VALUE);
+    setScopeTrackId(ALL_SCOPE_VALUE);
+  };
 
   useEffect(() => {
-    if (!capabilityOptions.some((option) => option.value === capability)) {
-      setCapability(capabilityOptions[0]?.value || 'player_tutti');
+    if (!permissionOptions.some((option) => option.value === permissionKey)) {
+      applyPermissionDefaults(permissionOptions[0]?.value || 'project_reader');
     }
-  }, [capability, capabilityOptions]);
+  }, [permissionKey, permissionOptions]);
+
+  const projectOptions = (catalog?.projects || []).filter((project) => (
+    scopeShowId === ALL_SCOPE_VALUE || project.showId === scopeShowId
+  ));
+  const scopedTrackOptions = tracks.filter((track) => (
+    (scopeShowId === ALL_SCOPE_VALUE || track.showId === scopeShowId)
+    && (scopeProjectId === ALL_SCOPE_VALUE || track.projectId === scopeProjectId)
+  ));
+  const groupOptions = Array.from(new Set(
+    scopedTrackOptions.flatMap((track) => Array.isArray(track.groupValues) ? track.groupValues : [])
+  ))
+    .sort((left, right) => (groupLabelByValue.get(left) || left).localeCompare(groupLabelByValue.get(right) || right, undefined, {
+      sensitivity: 'base',
+      numeric: true,
+    }))
+    .map((value) => ({ value, label: groupLabelByValue.get(value) || value }));
+  const partOptions = Array.from(new Set(
+    scopedTrackOptions
+      .filter((track) => groupScopeValue === ALL_SCOPE_VALUE || (track.groupValues || []).includes(groupScopeValue))
+      .flatMap((track) => Array.isArray(track.partValues) ? track.partValues : [])
+  ))
+    .sort((left, right) => (partLabelByValue.get(left) || left).localeCompare(partLabelByValue.get(right) || right, undefined, {
+      sensitivity: 'base',
+      numeric: true,
+    }))
+    .map((value) => ({ value, label: partLabelByValue.get(value) || value }));
+  const trackOptions = scopedTrackOptions.filter((track) => (
+    (groupScopeValue === ALL_SCOPE_VALUE || (track.groupValues || []).includes(groupScopeValue))
+    && (partScopeValue === ALL_SCOPE_VALUE || (track.partValues || []).includes(partScopeValue))
+  ));
 
   useEffect(() => {
-    if (!projectTargetOptions.some((option) => option.value === projectTargetType)) {
-      setProjectTargetType(projectTargetOptions[0]?.value || 'all_projects');
+    if (!hasShowScope) {
+      setScopeShowId(ALL_SCOPE_VALUE);
     }
-  }, [projectTargetOptions, projectTargetType]);
+  }, [hasShowScope]);
 
   useEffect(() => {
-    if (!showTargetOptions.some((option) => option.value === showTargetType)) {
-      setShowTargetType(showTargetOptions[0]?.value || 'all_shows');
+    if (!hasProjectScope) {
+      setScopeProjectId(ALL_SCOPE_VALUE);
     }
-  }, [showTargetOptions, showTargetType]);
+  }, [hasProjectScope]);
 
-  const capabilityMeta = capabilityOptions.find((option) => option.value === capability) || null;
-  const projectTargetMode = capabilityMeta?.projectTargetMode || 'scoped';
-  const requiresTrackScope = capabilityMeta?.requiresTrackScope === true;
+  useEffect(() => {
+    if (!hasGroupScope) {
+      setGroupScopeValue(ALL_SCOPE_VALUE);
+    }
+  }, [hasGroupScope]);
 
-  const namedTargetOptions = projectTargetType === 'group_name'
-    ? (catalog?.groupNames || [])
-    : (projectTargetType === 'part_name' ? (catalog?.partNames || []) : []);
-  const namedTrackScopeOptions = trackScopeType === 'group_name'
-    ? (catalog?.groupNames || [])
-    : (catalog?.partNames || []);
-  const projectOptions = showTargetType === 'show' && showTargetShowId
-    ? (catalog?.projects || []).filter((project) => project.showId === showTargetShowId)
-    : (catalog?.projects || []);
+  useEffect(() => {
+    if (!hasPartScope) {
+      setPartScopeValue(ALL_SCOPE_VALUE);
+    }
+  }, [hasPartScope]);
+
+  useEffect(() => {
+    if (!hasTrackScope) {
+      setScopeTrackId(ALL_SCOPE_VALUE);
+    }
+  }, [hasTrackScope]);
+
+  useEffect(() => {
+    if (scopeShowId === ALL_SCOPE_VALUE) {
+      setScopeProjectId(ALL_SCOPE_VALUE);
+      setScopeTrackId(ALL_SCOPE_VALUE);
+    }
+  }, [scopeShowId]);
+
+  useEffect(() => {
+    if (scopeProjectId === ALL_SCOPE_VALUE) {
+      setScopeTrackId(ALL_SCOPE_VALUE);
+    }
+  }, [scopeProjectId]);
+
+  useEffect(() => {
+    if (
+      scopeShowId !== ALL_SCOPE_VALUE
+      && !showOptions.some((show) => show.id === scopeShowId)
+    ) {
+      setScopeShowId(ALL_SCOPE_VALUE);
+    }
+  }, [scopeShowId, showOptions]);
+
+  useEffect(() => {
+    if (
+      scopeProjectId !== ALL_SCOPE_VALUE
+      && !projectOptions.some((project) => project.id === scopeProjectId)
+    ) {
+      setScopeProjectId(ALL_SCOPE_VALUE);
+      setGroupScopeValue(ALL_SCOPE_VALUE);
+      setPartScopeValue(ALL_SCOPE_VALUE);
+      setScopeTrackId(ALL_SCOPE_VALUE);
+    }
+  }, [projectOptions, scopeProjectId]);
+
+  useEffect(() => {
+    if (
+      groupScopeValue !== ALL_SCOPE_VALUE
+      && !groupOptions.some((option) => option.value === groupScopeValue)
+    ) {
+      setGroupScopeValue(ALL_SCOPE_VALUE);
+      setPartScopeValue(ALL_SCOPE_VALUE);
+      setScopeTrackId(ALL_SCOPE_VALUE);
+    }
+  }, [groupOptions, groupScopeValue]);
+
+  useEffect(() => {
+    if (
+      partScopeValue !== ALL_SCOPE_VALUE
+      && !partOptions.some((option) => option.value === partScopeValue)
+    ) {
+      setPartScopeValue(ALL_SCOPE_VALUE);
+      setScopeTrackId(ALL_SCOPE_VALUE);
+    }
+  }, [partOptions, partScopeValue]);
+
+  useEffect(() => {
+    if (
+      scopeTrackId !== ALL_SCOPE_VALUE
+      && !trackOptions.some((track) => track.id === scopeTrackId)
+    ) {
+      setScopeTrackId(ALL_SCOPE_VALUE);
+    }
+  }, [scopeTrackId, trackOptions]);
+
+  const effectiveScopeType = (() => {
+    if (hasTrackScope && scopeTrackId !== ALL_SCOPE_VALUE) return 'track';
+    if (hasProjectScope && scopeProjectId !== ALL_SCOPE_VALUE) return 'project';
+    if (hasShowScope && scopeShowId !== ALL_SCOPE_VALUE) return 'show';
+    return 'all';
+  })();
 
   const canSubmit = !disabled && (() => {
-    if (showTargetType === 'show' && !showTargetShowId) return false;
-    if (projectTargetMode === 'global_only') {
-      return !requiresTrackScope || Boolean(trackScopeValue);
-    }
-    const hasProjectTarget = (
-      projectTargetType === 'all_projects'
-      || (projectTargetType === 'project' && projectTargetProjectId)
-      || ((projectTargetType === 'group_name' || projectTargetType === 'part_name') && projectTargetValue)
-    );
-    if (!hasProjectTarget) return false;
-    if (requiresTrackScope) {
-      return Boolean(trackScopeType && trackScopeValue);
-    }
-    return true;
+    if (effectiveScopeType === 'all') return true;
+    if (effectiveScopeType === 'show') return scopeShowId !== ALL_SCOPE_VALUE;
+    if (effectiveScopeType === 'project') return scopeShowId !== ALL_SCOPE_VALUE && scopeProjectId !== ALL_SCOPE_VALUE;
+    if (effectiveScopeType === 'track') return scopeTrackId !== ALL_SCOPE_VALUE;
+    return false;
   })();
 
   const reset = () => {
-    setCapability(capabilityOptions[0]?.value || 'player_tutti');
-    setShowTargetType(showTargetOptions[0]?.value || 'all_shows');
-    setShowTargetShowId('');
-    setProjectTargetType(projectTargetOptions[0]?.value || 'all_projects');
-    setProjectTargetProjectId('');
-    setProjectTargetValue('');
-    setTrackScopeType(trackScopeOptions[0]?.value || 'group_name');
-    setTrackScopeValue('');
+    applyPermissionDefaults(permissionOptions[0]?.value || permissionKey || 'project_reader');
   };
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
     await onSave?.({
-      capability,
-      showTargetType,
-      showTargetShowId: showTargetType === 'show' ? showTargetShowId : null,
-      projectTargetType: projectTargetMode === 'global_only' ? null : projectTargetType,
-      projectTargetProjectId: projectTargetMode === 'global_only'
-        ? null
-        : (projectTargetType === 'project' ? projectTargetProjectId : null),
-      projectTargetValue: projectTargetMode === 'global_only'
-        ? null
-        : ((projectTargetType === 'group_name' || projectTargetType === 'part_name') ? projectTargetValue : null),
-      trackScopeType: requiresTrackScope ? trackScopeType : null,
-      trackScopeValue: requiresTrackScope ? trackScopeValue : null,
+      permissionKey,
+      scopeType: effectiveScopeType,
+      scopeShowId: effectiveScopeType === 'show' || effectiveScopeType === 'project' || effectiveScopeType === 'track'
+        ? scopeShowId
+        : null,
+      scopeProjectId: effectiveScopeType === 'project' || effectiveScopeType === 'track'
+        ? scopeProjectId
+        : null,
+      scopeTrackId: effectiveScopeType === 'track' ? scopeTrackId : null,
+      scopeNameValue: null,
+      scopeGroupNameValue: hasGroupScope && groupScopeValue !== ALL_SCOPE_VALUE ? groupScopeValue : null,
+      scopePartNameValue: hasPartScope && partScopeValue !== ALL_SCOPE_VALUE ? partScopeValue : null,
     });
     reset();
   };
 
   return (
     <div className="space-y-3 rounded-lg border border-gray-700 bg-gray-950/60 p-4">
-      <div className="grid gap-3 md:grid-cols-3">
+      <label className="space-y-2">
+        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-400">Access type</div>
         <select
-          value={capability}
+          value={permissionKey}
           disabled={disabled}
-          onChange={(event) => {
-            setCapability(event.target.value);
-            setProjectTargetProjectId('');
-            setProjectTargetValue('');
-            setTrackScopeValue('');
-          }}
-          className="rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
+          title={getPermissionHelp(permissionKey)}
+          onChange={(event) => applyPermissionDefaults(event.target.value)}
+          className="w-full rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
         >
-          {capabilityOptions.map((option) => (
-            <option key={option.value} value={option.value}>
+          {permissionOptions.map((option) => (
+            <option
+              key={option.value}
+              value={option.value}
+              title={getPermissionHelp(option.value)}
+            >
               {option.label}
             </option>
           ))}
         </select>
-        <select
-          value={showTargetType}
-          disabled={disabled}
-          onChange={(event) => {
-            setShowTargetType(event.target.value);
-            setShowTargetShowId('');
-            setProjectTargetProjectId('');
-          }}
-          className="rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
-        >
-          {showTargetOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-        {projectTargetMode !== 'global_only' ? (
-          <select
-            value={projectTargetType}
-            disabled={disabled}
-            onChange={(event) => {
-              setProjectTargetType(event.target.value);
-              setProjectTargetProjectId('');
-              setProjectTargetValue('');
-            }}
-            className="rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
-          >
-            {projectTargetOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <div className="rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-300">
-            Applies to own projects in the selected show scope
-          </div>
-        )}
-      </div>
+      </label>
 
-      {showTargetType === 'show' ? (
-        <select
-          value={showTargetShowId}
-          disabled={disabled}
-          onChange={(event) => {
-            setShowTargetShowId(event.target.value);
-            setProjectTargetProjectId('');
-          }}
-          className="w-full rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
-        >
-          <option value="">Select show...</option>
-          {(catalog?.shows || []).map((show) => (
-            <option key={show.id} value={show.id}>
-              {show.name}
-            </option>
-          ))}
-        </select>
-      ) : null}
+      {hasShowScope ? (
+        <>
+          <label className="space-y-2">
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-400">Scope: show</div>
+            <select
+              value={scopeShowId}
+              disabled={disabled}
+              onChange={(event) => setScopeShowId(event.target.value)}
+              className="w-full rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
+            >
+              <option value={ALL_SCOPE_VALUE}>All</option>
+              {showOptions.map((show) => (
+                <option key={show.id} value={show.id}>
+                  {show.name}
+                </option>
+              ))}
+            </select>
+          </label>
 
-      {projectTargetMode !== 'global_only' && projectTargetType === 'project' ? (
-        <select
-          value={projectTargetProjectId}
-          disabled={disabled}
-          onChange={(event) => setProjectTargetProjectId(event.target.value)}
-          className="w-full rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
-        >
-          <option value="">Select project...</option>
-          {projectOptions.map((project) => (
-            <option key={project.id} value={project.id}>
-              {project.showName ? `${project.showName} / ` : ''}{project.musicalNumber ? `${project.musicalNumber} - ` : ''}{project.name}
-            </option>
-          ))}
-        </select>
-      ) : null}
+          {scopeShowId !== ALL_SCOPE_VALUE && hasProjectScope ? (
+            <label className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-400">Scope: musical number</div>
+              <select
+                value={scopeProjectId}
+                disabled={disabled}
+                onChange={(event) => setScopeProjectId(event.target.value)}
+                className="w-full rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
+              >
+                <option value={ALL_SCOPE_VALUE}>All</option>
+                {projectOptions.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.musicalNumber ? `${project.musicalNumber} - ` : ''}{project.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
 
-      {projectTargetMode !== 'global_only' && (projectTargetType === 'group_name' || projectTargetType === 'part_name') ? (
-        <select
-          value={projectTargetValue}
-          disabled={disabled}
-          onChange={(event) => setProjectTargetValue(event.target.value)}
-          className="w-full rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
-        >
-          <option value="">Select...</option>
-          {namedTargetOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      ) : null}
+          {hasGroupScope ? (
+            <label className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-400">Scope: group track</div>
+              <select
+                value={groupScopeValue}
+                disabled={disabled}
+                onChange={(event) => setGroupScopeValue(event.target.value)}
+                className="w-full rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
+              >
+                <option value={ALL_SCOPE_VALUE}>All</option>
+                {groupOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
 
-      {requiresTrackScope ? (
-        <div className="grid gap-3 md:grid-cols-2">
-          <select
-            value={trackScopeType}
-            disabled={disabled}
-            onChange={(event) => {
-              setTrackScopeType(event.target.value);
-              setTrackScopeValue('');
-            }}
-            className="rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
-          >
-            {trackScopeOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-          <select
-            value={trackScopeValue}
-            disabled={disabled}
-            onChange={(event) => setTrackScopeValue(event.target.value)}
-            className="rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
-          >
-            <option value="">Select track scope...</option>
-            {namedTrackScopeOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </div>
+          {hasPartScope ? (
+            <label className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-400">Scope: part track</div>
+              <select
+                value={partScopeValue}
+                disabled={disabled}
+                onChange={(event) => setPartScopeValue(event.target.value)}
+                className="w-full rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
+              >
+                <option value={ALL_SCOPE_VALUE}>All</option>
+                {partOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+
+          {scopeProjectId !== ALL_SCOPE_VALUE && hasTrackScope ? (
+            <label className="space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-400">Scope: track</div>
+              <select
+                value={scopeTrackId}
+                disabled={disabled}
+                onChange={(event) => setScopeTrackId(event.target.value)}
+                className="w-full rounded border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100"
+              >
+                <option value={ALL_SCOPE_VALUE}>All</option>
+                {trackOptions.map((track) => (
+                  <option key={track.id} value={track.id}>
+                    {track.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+        </>
       ) : null}
 
       <div className="flex justify-end">
@@ -619,6 +672,8 @@ export default function AdminPanel({
   session = null,
   onClose,
   onLogout,
+  onOpenProfile = null,
+  onSessionRefresh = null,
 }) {
   const [tab, setTab] = useState('roles');
   const [loading, setLoading] = useState(false);
@@ -627,6 +682,7 @@ export default function AdminPanel({
 
   const [roles, setRoles] = useState([]);
   const [users, setUsers] = useState([]);
+  const [artists, setArtists] = useState({ users: [], groups: [], guests: [] });
   const [catalog, setCatalog] = useState({ shows: [], projects: [], groupNames: [], partNames: [] });
   const [selectedRoleId, setSelectedRoleId] = useState('');
   const [selectedRole, setSelectedRole] = useState(null);
@@ -654,22 +710,23 @@ export default function AdminPanel({
   const roleNameInputRef = useRef(null);
 
   const loadBaseData = async () => {
-    const [nextRoles, nextUsers, nextCatalog] = await Promise.all([
+    const [nextRoles, nextUsers, nextCatalog, nextArtists] = await Promise.all([
       listRbacRoles(session),
       listUsers(session),
       getRbacCatalog(session),
+      listAdminArtists(session),
     ]);
     setRoles(nextRoles);
     setUsers(nextUsers);
+    setArtists(nextArtists || { users: [], groups: [], guests: [] });
     setCatalog(nextCatalog || {
       projects: [],
       shows: [],
+      tracks: [],
       groupNames: [],
       partNames: [],
-      capabilities: [],
-      showTargetTypes: [],
-      projectTargetTypes: [],
-      trackScopeTypes: [],
+      permissions: [],
+      scopeTypes: [],
     });
     setSelectedRoleId((current) => (
       nextRoles.some((role) => role.id === current) ? current : ''
@@ -788,6 +845,15 @@ export default function AdminPanel({
     })
   ), [users, userSearch]);
 
+  const allArtists = useMemo(() => ([
+    ...(artists.users || []).map((artist) => ({ ...artist, kind: 'user', kindLabel: 'Account artist' })),
+    ...(artists.groups || []).map((artist) => ({ ...artist, kind: 'group', kindLabel: 'Music group' })),
+    ...(artists.guests || []).map((artist) => ({ ...artist, kind: 'guest', kindLabel: 'Guest artist' })),
+  ].sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), undefined, {
+    sensitivity: 'base',
+    numeric: true,
+  }))), [artists]);
+
   const availableRoleMembers = useMemo(() => {
     const currentIds = new Set((selectedRole?.members || []).map((member) => member.id));
     return users.filter((user) => !currentIds.has(user.id));
@@ -826,22 +892,8 @@ export default function AdminPanel({
     ...inheritedRoleGrants,
   ]), [roleGrants, inheritedRoleGrants]);
 
-  const generalPermissionRows = useMemo(() => (
-    GENERAL_PERMISSION_DEFINITIONS.map((definition) => {
-      const directGrant = roleGrants.find((grant) => generalGrantMatches(grant, definition)) || null;
-      const inheritedGrants = inheritedRoleGrants.filter((grant) => generalGrantMatches(grant, definition));
-      return {
-        ...definition,
-        label: getCapabilityLabel(catalog, definition.capability),
-        directGrant,
-        inheritedGrants,
-      };
-    })
-  ), [catalog, inheritedRoleGrants, roleGrants]);
-
-  const specificRoleGrants = useMemo(() => {
+  const visibleRoleGrants = useMemo(() => {
     const grants = allRoleGrants
-      .filter(isSpecificGrant)
       .map((grant) => ({
         ...grant,
         isRedundant: isGrantRedundant(grant, allRoleGrants),
@@ -854,6 +906,7 @@ export default function AdminPanel({
     setError('');
     try {
       await action();
+      await onSessionRefresh?.();
     } catch (actionError) {
       setError(actionError.message || fallbackMessage);
     } finally {
@@ -945,16 +998,26 @@ export default function AdminPanel({
     }, 'Failed to remove role access.');
   };
 
-  const handleToggleGeneralPermission = async (definition, shouldEnable) => {
-    if (!selectedRole) return;
-    const directGrant = roleGrants.find((grant) => generalGrantMatches(grant, definition));
-    if (shouldEnable && !directGrant) {
-      await handleSaveRoleGrant(buildGeneralGrantPayload(definition));
-      return;
-    }
-    if (!shouldEnable && directGrant) {
-      await handleDeleteRoleGrant(directGrant);
-    }
+  const handleEditArtistDescription = async (artist) => {
+    const nextName = artist.kind === 'user'
+      ? artist.name
+      : window.prompt(`${artist.kindLabel} name`, artist.name || '');
+    if (nextName == null) return;
+    const nextGroupType = artist.kind === 'group'
+      ? window.prompt('Music group type', artist.groupType || '')
+      : artist.groupType;
+    if (artist.kind === 'group' && nextGroupType == null) return;
+    const nextDescription = window.prompt(`Artist description for ${artist.name}`, artist.description || '');
+    if (nextDescription == null) return;
+    await runAction(async () => {
+      await updateAdminArtist(artist.kind, artist.id, {
+        name: nextName,
+        groupType: nextGroupType,
+        description: nextDescription,
+      }, session);
+      const nextArtists = await listAdminArtists(session);
+      setArtists(nextArtists || { users: [], groups: [], guests: [] });
+    }, 'Failed to update artist.');
   };
 
   const handleSaveRoleOidcLink = async () => {
@@ -1130,6 +1193,18 @@ export default function AdminPanel({
               </button>
               {profileMenuOpen ? (
                 <div className="absolute right-0 top-full z-30 mt-2 min-w-32 overflow-hidden rounded-md border border-gray-700 bg-gray-800 shadow-lg">
+                  {onOpenProfile ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProfileMenuOpen(false);
+                        onOpenProfile();
+                      }}
+                      className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+                    >
+                      My Profile
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => {
@@ -1166,6 +1241,26 @@ export default function AdminPanel({
           <div className="flex h-full flex-col overflow-hidden md:flex-row">
             <aside className="shrink-0 border-b border-gray-800 bg-gray-950 p-3 md:w-60 md:border-b-0 md:border-r">
               <nav className="flex gap-2 overflow-x-auto md:block md:space-y-2 md:overflow-visible">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedRoleId('');
+                    setTab('artists');
+                  }}
+                  className={`relative flex min-w-36 items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm transition md:w-full ${
+                    tab === 'artists'
+                      ? 'bg-gray-800 text-white ring-1 ring-blue-500/40'
+                      : 'text-gray-400 hover:bg-gray-900 hover:text-gray-100'
+                  }`}
+                >
+                  {tab === 'artists' ? (
+                    <span className="absolute inset-y-2 left-0 w-1 rounded-full bg-blue-500" />
+                  ) : null}
+                  <span className="pl-2 font-medium">Artists</span>
+                  <span className="rounded-full bg-gray-900 px-2 py-0.5 text-xs text-gray-400">
+                    {(artists.users?.length || 0) + (artists.groups?.length || 0) + (artists.guests?.length || 0)}
+                  </span>
+                </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -1212,6 +1307,51 @@ export default function AdminPanel({
             <div className="min-w-0 flex-1 overflow-auto p-5">
               {loading ? (
                 <Empty>Loading...</Empty>
+              ) : tab === 'artists' ? (
+                <div className="mx-auto max-w-6xl space-y-5">
+                  <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-950/50">
+                    <div className="grid grid-cols-[1fr,150px,110px] gap-4 border-b border-gray-800 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-gray-400">
+                      <span>Artist</span>
+                      <span>Type</span>
+                      <span />
+                    </div>
+                    {allArtists.map((artist) => (
+                      <div
+                        key={`${artist.kind}:${artist.id}`}
+                        className="grid grid-cols-[1fr,150px,110px] items-center gap-4 border-b border-gray-800 px-4 py-4 last:border-b-0 hover:bg-gray-900/70"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate font-semibold text-white">{artist.name}</div>
+                          {artist.description ? (
+                            <div className="mt-1 truncate text-sm text-gray-400">{artist.description}</div>
+                          ) : (
+                            <div className="mt-1 text-sm text-gray-600">No artist description.</div>
+                          )}
+                        </div>
+                        <div className="text-sm text-gray-300">
+                          {artist.kind === 'group' && artist.groupType
+                            ? artist.groupType
+                            : artist.kindLabel}
+                        </div>
+                        <div className="flex justify-end">
+                          <button
+                            type="button"
+                            disabled={saving}
+                            onClick={() => handleEditArtistDescription(artist)}
+                            className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs font-semibold text-gray-200 hover:bg-gray-800 disabled:opacity-50"
+                          >
+                            Edit
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    {!allArtists.length ? (
+                      <div className="px-4 py-6">
+                        <Empty>No artists found yet.</Empty>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
               ) : tab === 'roles' ? (
                 selectedRole ? (
                   <div className="grid gap-5 xl:grid-cols-[280px,1fr]">
@@ -1384,51 +1524,8 @@ export default function AdminPanel({
                             </CompactAccessSection>
 
                             <CompactAccessSection
-                              title="General permissions"
-                              count={generalPermissionRows.filter((row) => row.directGrant || row.inheritedGrants.length).length}
-                            >
-                                {generalPermissionRows.map((row) => {
-                                  const inheritedSources = row.inheritedGrants
-                                    .map((grant) => grant.sourceRoleName)
-                                    .filter(Boolean);
-                                  const checked = Boolean(row.directGrant || row.inheritedGrants.length);
-                                  const inheritedOnly = !row.directGrant && row.inheritedGrants.length > 0;
-                                  const disabled = !canEditRoleGrants || saving || inheritedOnly;
-                                  const hoverTitle = [
-                                    getCapabilityHelp(row.capability),
-                                    inheritedSources.length
-                                      ? `Inherited from ${Array.from(new Set(inheritedSources)).join(', ')}.`
-                                      : '',
-                                  ].filter(Boolean).join(' ');
-                                  return (
-                                    <CompactAccessRow
-                                      key={`${row.capability}-${row.projectTargetType || 'global'}`}
-                                      title={row.label}
-                                      titleAttr={hoverTitle}
-                                      muted={inheritedOnly}
-                                      badges={inheritedSources.length ? (
-                                        <>
-                                          <Badge tone="amber">
-                                            Inherited from {Array.from(new Set(inheritedSources)).join(', ')}
-                                          </Badge>
-                                        </>
-                                      ) : null}
-                                      actions={(
-                                        <ToggleSwitch
-                                          checked={checked}
-                                          disabled={disabled}
-                                          title={hoverTitle}
-                                          onChange={(nextChecked) => handleToggleGeneralPermission(row, nextChecked)}
-                                        />
-                                      )}
-                                    />
-                                  );
-                                })}
-                            </CompactAccessSection>
-
-                            <CompactAccessSection
-                              title="Specific access"
-                              count={specificRoleGrants.length}
+                              title="Access rules"
+                              count={visibleRoleGrants.length}
                               actions={(
                                 <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-gray-300">
                                   <input
@@ -1446,14 +1543,13 @@ export default function AdminPanel({
                                   <GrantEditor
                                     catalog={catalog}
                                     disabled={saving}
-                                    excludedCapabilities={['manage_own_projects']}
+                                    excludedPermissions={[]}
                                     onSave={handleSaveRoleGrant}
-                                    targetMode="specific"
                                   />
                                 </div>
                               ) : null}
                               <GrantList
-                                grants={specificRoleGrants}
+                                grants={visibleRoleGrants}
                                 canRemove={Boolean(canEditRoleGrants)}
                                 onRemove={handleDeleteRoleGrant}
                               />

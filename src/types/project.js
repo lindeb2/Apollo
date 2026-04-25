@@ -71,7 +71,9 @@ export function normalizeExportSettings(settings = {}) {
 /**
  * @typedef {Object} Track
  * @property {string} id - UUID
+ * @property {'audio'} type - Track node type
  * @property {string} name - Track name
+ * @property {boolean} part - Whether this track represents a musical part scope
  * @property {string} role - Track role (from TRACK_ROLES)
  * @property {string} icon - Track icon key
  * @property {number} volume - Volume (0-100, maps to -60dB to 0dB)
@@ -129,6 +131,12 @@ export function createEmptyProject(
     masterVolume: dbToVolume(0),
     autoPan: autoPan ?? { ...DEFAULT_AUTO_PAN_SETTINGS },
     exportSettings: normalizeExportSettings(exportSettings || {}),
+    credits: {
+      artist: [],
+      compositionLyrics: [],
+      productionEngineering: [],
+      performers: [],
+    },
     trackTree: [],
     tracks: [],
     loop: { enabled: false, startMs: 0, endMs: 0 },
@@ -141,7 +149,9 @@ export function createEmptyProject(
 export function createTrack(name, role = TRACK_ROLES.OTHER) {
   return {
     id: createId(),
+    type: 'audio',
     name,
+    part: false,
     role,
     icon: getDefaultIconByRole(role),
     volume: dbToVolume(0),

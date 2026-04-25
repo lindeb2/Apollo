@@ -9,6 +9,7 @@ import FileImport from './FileImport';
 import TrackList from './TrackList';
 import Timeline from './Timeline';
 import ExportDialog from './ExportDialog';
+import CreditsEditorDialog from './CreditsEditorDialog';
 import { dbToVolume, volumeToDb } from '../utils/audio';
 import { applyChoirAutoPanToProject } from '../utils/choirAutoPan';
 import { PlaybackDevicesSettingsPanel, ProjectSettingsPanel } from './SettingsPanels';
@@ -30,6 +31,7 @@ import {
 import { registerAndUploadMediaBlob } from '../lib/mediaUpload';
 import {
   GROUP_ROLE_CHOIRS,
+  GROUP_ROLE_NONE,
   isChoirRole,
   isGroupParentRole,
   isMetronomeRole,
@@ -49,6 +51,8 @@ import {
   renameGroupNode,
   reorderTracksByTree,
   syncDirectChildRolesFromGroupCategories,
+  TRACK_NODE_TYPE_AUDIO,
+  TRACK_NODE_TYPE_GROUP,
   toggleGroupCollapsed,
 } from '../utils/trackTree';
 import { usePlaybackDeviceSettings } from '../hooks/usePlaybackDeviceSettings';
@@ -110,6 +114,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   const [masterDragTooltip, setMasterDragTooltip] = useState(null);
   const [showDisconnectedIndicator, setShowDisconnectedIndicator] = useState(false);
   const [trackListContextMenu, setTrackListContextMenu] = useState(null);
+  const [trackCreditsEditor, setTrackCreditsEditor] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [selectedRowKind, setSelectedRowKind] = useState(null);
   const masterDragRef = useRef(null);
@@ -1517,6 +1522,18 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         tracks: nextTracks,
       };
 
+      if (updates.part !== undefined) {
+        const nextPart = Boolean(updates.part);
+        nextProject = normalizeTrackTree({
+          ...nextProject,
+          trackTree: (nextProject.trackTree || []).map((node) => (
+            node.kind === 'track' && node.trackId === trackId
+              ? { ...node, part: nextPart }
+              : node
+          )),
+        });
+      }
+
       if (updates.role !== undefined) {
         nextProject = normalizeTrackTree(nextProject);
         if (isMetronomeRole(nextTracks.find((track) => track.id === trackId)?.role)) {
@@ -1558,6 +1575,116 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         });
       }
     }
+  };
+
+  const artistRefsHaveSoloArtist = (artistRefs) => (
+    Array.isArray(artistRefs)
+    && artistRefs.some((ref) => {
+      const type = String(ref?.type || '').trim().toLowerCase();
+      return type === 'user' || type === 'guest';
+    })
+  );
+
+  const clearDescendantArtistRefs = (proj, ancestorNodeId) => {
+    const normalized = normalizeTrackTree(proj);
+    const childrenByParent = new Map();
+    (normalized.trackTree || []).forEach((node) => {
+      const parentKey = node.parentId || '__root__';
+      const children = childrenByParent.get(parentKey) || [];
+      children.push(node);
+      childrenByParent.set(parentKey, children);
+    });
+
+    const descendantNodeIds = new Set();
+    const stack = [ancestorNodeId];
+    while (stack.length) {
+      const parentId = stack.pop();
+      (childrenByParent.get(parentId) || []).forEach((child) => {
+        descendantNodeIds.add(child.id);
+        stack.push(child.id);
+      });
+    }
+    if (!descendantNodeIds.size) {
+      return normalized;
+    }
+
+    const descendantTrackIds = new Set();
+    const nextTree = (normalized.trackTree || []).map((node) => {
+      if (!descendantNodeIds.has(node.id)) return node;
+      if (node.kind === 'track' && node.trackId) {
+        descendantTrackIds.add(String(node.trackId));
+        return node;
+      }
+      if (node.kind === 'group' && Array.isArray(node.artistRefs) && node.artistRefs.length) {
+        return { ...node, artistRefs: [] };
+      }
+      return node;
+    });
+    const nextTracks = (normalized.tracks || []).map((track) => {
+      if (!descendantTrackIds.has(String(track.id)) || !Array.isArray(track.artistRefs) || !track.artistRefs.length) {
+        return track;
+      }
+      return { ...track, artistRefs: [] };
+    });
+    return normalizeTrackTree({
+      ...normalized,
+      trackTree: nextTree,
+      tracks: nextTracks,
+    });
+  };
+
+  const enforceSoloArtistAncestorRule = (proj) => {
+    const normalized = normalizeTrackTree(proj);
+    const tracksById = new Map((normalized.tracks || []).map((track) => [track.id, track]));
+    let nextProject = normalized;
+    (normalized.trackTree || []).forEach((node) => {
+      const artistRefs = node.kind === 'group'
+        ? node.artistRefs
+        : tracksById.get(node.trackId)?.artistRefs;
+      if (artistRefsHaveSoloArtist(artistRefs)) {
+        nextProject = clearDescendantArtistRefs(nextProject, node.id);
+      }
+    });
+    return nextProject;
+  };
+
+  const applyTrackArtistRefs = (trackId, artistRefs) => {
+    updateProject((proj) => {
+      let nextProject = normalizeTrackTree({
+        ...proj,
+        tracks: (proj.tracks || []).map((track) => (
+          track.id === trackId ? { ...track, artistRefs } : track
+        )),
+      });
+      return enforceSoloArtistAncestorRule(nextProject);
+    }, 'Update track artists');
+  };
+
+  const applyGroupArtistRefs = (groupNodeId, artistRefs) => {
+    updateProject((proj) => {
+      let nextProject = updateGroupNode(proj, groupNodeId, { artistRefs });
+      return enforceSoloArtistAncestorRule(nextProject);
+    }, 'Update group artists');
+  };
+
+  const handleEditTrackArtists = (track) => {
+    if (!track?.id) return;
+    setTrackCreditsEditor({
+      kind: 'track',
+      trackId: track.id,
+      title: `Artists - ${track.name || 'Untitled track'}`,
+      artistRefs: Array.isArray(track.artistRefs) ? track.artistRefs : [],
+    });
+  };
+
+  const handleEditGroupArtists = (group) => {
+    if (!group?.nodeId) return;
+    setTrackCreditsEditor({
+      kind: 'group',
+      groupNodeId: group.nodeId,
+      title: `Artists - ${group.name || 'Untitled group'}`,
+      artistRefs: Array.isArray(group.artistRefs) ? group.artistRefs : [],
+    });
   };
 
   const getDirectChildRoleSnapshot = (proj, groupNodeId) => {
@@ -1747,6 +1874,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       nextProject = syncDirectChildRolesFromGroupCategories(nextProject);
       nextProject = collapseEmptyGroupsToTracks(nextProject);
       nextProject = reorderTracksByTree(nextProject);
+      nextProject = enforceSoloArtistAncestorRule(nextProject);
       if (nextProject.autoPan?.enabled && !nextProject.autoPan?.manualChoirParts) {
         const result = applyChoirAutoPanToProject(nextProject);
         panUpdates = result.panUpdates;
@@ -1812,6 +1940,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       nextTree.push({
         id: groupNodeId,
         kind: 'group',
+        type: TRACK_NODE_TYPE_GROUP,
         parentId: sourceParentId,
         order: insertionIndex,
         name: sourceTrack.name,
@@ -1821,10 +1950,13 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         volume: Number.isFinite(sourceTrack.volume) ? sourceTrack.volume : 100,
         pan: Number.isFinite(sourceTrack.pan) ? sourceTrack.pan : 0,
         role: groupRole,
+        part: Boolean(sourceTrack.part) || groupRole !== GROUP_ROLE_NONE,
+        artistRefs: Array.isArray(sourceTrack.artistRefs) ? sourceTrack.artistRefs : [],
       });
 
       nextTree.push({
         ...movingNode,
+        type: movingNode.kind === 'track' ? TRACK_NODE_TYPE_AUDIO : TRACK_NODE_TYPE_GROUP,
         parentId: groupNodeId,
         order: 0,
       });
@@ -1841,6 +1973,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       nextProject = syncDirectChildRolesFromGroupCategories(nextProject);
       nextProject = collapseEmptyGroupsToTracks(nextProject);
       nextProject = reorderTracksByTree(nextProject);
+      nextProject = enforceSoloArtistAncestorRule(nextProject);
 
       if (nextProject.autoPan?.enabled && !nextProject.autoPan?.manualChoirParts) {
         const result = applyChoirAutoPanToProject(nextProject);
@@ -1930,13 +2063,17 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       restoredTrack.soloed = Boolean(group.soloed);
       restoredTrack.volume = Number.isFinite(Number(group.volume)) ? Number(group.volume) : restoredTrack.volume;
       restoredTrack.pan = Number.isFinite(Number(group.pan)) ? Number(group.pan) : restoredTrack.pan;
+      restoredTrack.part = Boolean(group.part);
+      restoredTrack.artistRefs = Array.isArray(group.artistRefs) ? group.artistRefs : [];
       nextTracks.push(restoredTrack);
       nextTree.push({
         id: createId(),
         kind: 'track',
+        type: TRACK_NODE_TYPE_AUDIO,
         parentId: group.parentId ?? null,
         order: Number.isFinite(Number(group.order)) ? Number(group.order) : 0,
         trackId: restoredTrack.id,
+        part: Boolean(group.part),
       });
     });
 
@@ -2468,6 +2605,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         {
           id: groupNodeId,
           kind: 'group',
+          type: TRACK_NODE_TYPE_GROUP,
           parentId: sourceNode.parentId ?? null,
           order: groupOrder,
           name: source.name,
@@ -2477,13 +2615,17 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
           volume: Number.isFinite(source.volume) ? source.volume : 100,
           pan: Number.isFinite(source.pan) ? source.pan : 0,
           role: groupRole,
+          part: Boolean(source.part) || groupRole !== GROUP_ROLE_NONE,
+          artistRefs: Array.isArray(source.artistRefs) ? source.artistRefs : [],
         },
         {
           id: childNodeId,
           kind: 'track',
+          type: TRACK_NODE_TYPE_AUDIO,
           parentId: groupNodeId,
           order: 0,
           trackId: newTrack.id,
+          part: false,
         },
       ];
 
@@ -2493,6 +2635,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         trackTree: nextTree,
       });
       nextProject = reorderTracksByTree(nextProject);
+      nextProject = enforceSoloArtistAncestorRule(nextProject);
 
       if (nextProject.autoPan?.enabled) {
         const result = applyChoirAutoPanToProject(nextProject);
@@ -2923,6 +3066,8 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
                       selectedTrackId={selectedTrackId}
                       onAddTrack={handleAddEmptyTrack}
                       onDeleteTrack={handleDeleteTrackById}
+                      onEditTrackArtists={remoteSession?.session ? handleEditTrackArtists : null}
+                      onEditGroupArtists={remoteSession?.session ? handleEditGroupArtists : null}
                       onSetAutoPanStrategy={handleSetAutoPanStrategy}
                       onToggleAutoPanInverted={handleToggleAutoPanInverted}
                       autoPanInverted={Boolean(treeProject.autoPan?.inverted)}
@@ -2973,6 +3118,29 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
           onClose={() => setShowExportDialog(false)}
         />
       )}
+
+      <CreditsEditorDialog
+        open={Boolean(trackCreditsEditor)}
+        mode="track"
+        title={trackCreditsEditor?.title || 'Track artist'}
+        session={remoteSession?.session || null}
+        initialArtistRefs={trackCreditsEditor?.artistRefs || []}
+        resetKey={
+          trackCreditsEditor?.kind === 'group'
+            ? `group:${trackCreditsEditor?.groupNodeId || ''}`
+            : `track:${trackCreditsEditor?.trackId || ''}`
+        }
+        onClose={() => setTrackCreditsEditor(null)}
+        onSave={async (artistRefs) => {
+          if (trackCreditsEditor?.kind === 'group') {
+            if (!trackCreditsEditor?.groupNodeId) return;
+            applyGroupArtistRefs(trackCreditsEditor.groupNodeId, artistRefs);
+            return;
+          }
+          if (!trackCreditsEditor?.trackId) return;
+          applyTrackArtistRefs(trackCreditsEditor.trackId, artistRefs);
+        }}
+      />
 
       {settingsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">

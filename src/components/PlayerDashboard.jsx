@@ -41,6 +41,7 @@ import {
   fetchPlayerGlobalMixes,
   fetchPlayerMyDevice,
   fetchPlayerTuttiMixes,
+  getProjectCredits,
   reorderPlayerPlaylistItems,
   updatePlayerFolder,
   updatePlayerPlaylist,
@@ -259,6 +260,124 @@ function buildMixCategoryOptions(snapshot) {
   ].filter(Boolean);
 }
 
+function CreditsDialog({ state, onClose }) {
+  if (!state) return null;
+  const data = state.data || null;
+  const renderArtists = (artists = []) => (
+    <div className="flex flex-wrap gap-1.5">
+      {artists.map((artist) => (
+        <span
+          key={`${artist.type}:${artist.id}`}
+          className="rounded-full bg-gray-800 px-2.5 py-1 text-xs font-medium text-gray-100"
+          title={artist.description || undefined}
+        >
+          {artist.name}
+        </span>
+      ))}
+      {!artists.length ? <span className="text-sm text-gray-500">-</span> : null}
+    </div>
+  );
+  const renderCategory = (title, rows = []) => (
+    <section className="space-y-2">
+      <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">{title}</h3>
+      {!rows.length ? (
+        <div className="text-sm text-gray-500">No credits.</div>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((row) => (
+            <div
+              key={`${title}:${row.roleKey || row.partName}`}
+              className="grid gap-2 rounded-lg border border-gray-800 bg-gray-950/50 px-3 py-2 sm:grid-cols-[150px,1fr]"
+            >
+              <div className="text-sm font-medium text-gray-300">{row.roleLabel || row.partName}</div>
+              {renderArtists(row.artists)}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+  const renderPerformerRow = (row, nested = false) => {
+    const artist = row.artist || row.artists?.[0] || null;
+    const contributionLabel = row.contributionLabel || row.contributionNames?.join(' · ') || row.roleLabel || row.partName || '';
+    return (
+      <div
+        key={`${nested ? 'member' : 'performer'}:${artist?.type || 'unknown'}:${artist?.id || contributionLabel}`}
+        className={`${nested ? 'ml-5 border-l border-gray-800 pl-4' : 'rounded-lg border border-gray-800 bg-gray-950/50 px-3 py-2'}`}
+      >
+        <div className="text-sm font-semibold text-gray-100" title={artist?.description || undefined}>
+          {artist?.name || '-'}
+        </div>
+        {contributionLabel ? (
+          <div className="mt-0.5 text-xs text-gray-400">{contributionLabel}</div>
+        ) : null}
+        {row.members?.length ? (
+          <div className="mt-2 space-y-2">
+            {row.members.map((member) => renderPerformerRow(member, true))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+  const renderPerformers = (rows = []) => (
+    <section className="space-y-2">
+      <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Performers</h3>
+      {!rows.length ? (
+        <div className="text-sm text-gray-500">No credits.</div>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((row) => renderPerformerRow(row))}
+        </div>
+      )}
+    </section>
+  );
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 px-4">
+      <button type="button" className="absolute inset-0 cursor-default" onClick={onClose} aria-label="Close credits" />
+      <div className="relative max-h-[86vh] w-full max-w-3xl overflow-hidden rounded-2xl border border-gray-700 bg-gray-900 text-white shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-gray-800 px-5 py-4">
+          <div>
+            <div className="text-lg font-semibold">Credits</div>
+            <div className="text-sm text-gray-400">{state.title || data?.project?.name || 'Musical number'}</div>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-lg border border-gray-700 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-800">
+            Close
+          </button>
+        </div>
+        <div className="max-h-[calc(86vh-76px)] overflow-auto px-5 py-4">
+          {state.status === 'loading' ? (
+            <div className="py-12 text-center text-sm text-gray-400">Loading credits...</div>
+          ) : state.error ? (
+            <div className="rounded-lg border border-red-700/50 bg-red-950/40 px-3 py-2 text-sm text-red-200">{state.error}</div>
+          ) : (
+            <div className="space-y-5">
+              {data?.show ? (
+                <section className="rounded-xl border border-gray-800 bg-gray-950/40 px-4 py-3">
+                  <div className="text-sm font-semibold text-gray-100">{data.show.name}</div>
+                  {data.show.description ? (
+                    <p className="mt-2 text-sm leading-6 text-gray-300">{data.show.description}</p>
+                  ) : null}
+                  {data.show.producers?.length ? (
+                    <div className="mt-3 grid gap-2 sm:grid-cols-[110px,1fr]">
+                      <div className="text-sm font-medium text-gray-400">Producer</div>
+                      {renderArtists(data.show.producers)}
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+              {renderCategory('Artist', data?.credits?.artist || [])}
+              {renderCategory('Composition & Lyrics', data?.credits?.compositionLyrics || [])}
+              {renderCategory('Production & Engineering', data?.credits?.productionEngineering || [])}
+              {renderPerformers(data?.credits?.performers || [])}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function buildGroupMixOptions(snapshot) {
   const options = [];
   if (listPresetVariants(snapshot, EXPORT_PRESETS.INSTRUMENT_PARTS).length) {
@@ -367,6 +486,7 @@ function PlayerDashboard({
   onLogout,
   onSwitchToDawDashboard,
   onOpenAdmin = null,
+  onOpenProfile = null,
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -404,6 +524,7 @@ function PlayerDashboard({
   const [libraryCreateMenuOpen, setLibraryCreateMenuOpen] = useState(false);
   const [libraryContextMenu, setLibraryContextMenu] = useState(null);
   const [projectContextMenu, setProjectContextMenu] = useState(null);
+  const [creditsDialog, setCreditsDialog] = useState(null);
   const [sliderDragTooltip, setSliderDragTooltip] = useState(null);
   const [sliderEditTooltip, setSliderEditTooltip] = useState(null);
   const [mixDialog, setMixDialog] = useState(null);
@@ -1971,6 +2092,20 @@ function PlayerDashboard({
     }
   }, [handleSelectCollection, handleSelectItem, myDeviceQueue]);
 
+  const openCreditsForMix = useCallback(async (mix) => {
+    if (!mix?.projectId) return;
+    const title = `${mix.musicalNumber ? `${mix.musicalNumber} - ` : ''}${mix.projectName || mix.name || 'Musical number'}`;
+    setLibraryContextMenu(null);
+    setProjectContextMenu(null);
+    setCreditsDialog({ status: 'loading', title, data: null, error: '' });
+    try {
+      const data = await getProjectCredits(mix.projectId, session);
+      setCreditsDialog({ status: 'ready', title, data, error: '' });
+    } catch (creditsError) {
+      setCreditsDialog({ status: 'error', title, data: null, error: creditsError.message || 'Failed to load credits' });
+    }
+  }, [session]);
+
   const handleLibraryContextAction = useCallback(async (action) => {
     const entry = libraryContextMenu?.entry;
     setLibraryContextMenu(null);
@@ -2026,6 +2161,10 @@ function PlayerDashboard({
       }
 
       if (entry.kind === 'mix' && entry.mix) {
+        if (action === 'credits') {
+          await openCreditsForMix(entry.mix);
+          return;
+        }
         if (action === 'rename') {
           await handleRenameMix(entry.mix);
           return;
@@ -2098,6 +2237,7 @@ function PlayerDashboard({
     handleRenameMix,
     handleRenamePlaylist,
     libraryContextMenu,
+    openCreditsForMix,
     playlistItemsByPlaylistId,
     playlists,
     promptCreateMixFromProject,
@@ -2110,7 +2250,7 @@ function PlayerDashboard({
     const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
     const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 720;
     const x = Math.max(8, Math.min(projectContextMenu.x, viewportWidth - 172));
-    const y = Math.max(8, Math.min(projectContextMenu.y, viewportHeight - 56));
+    const y = Math.max(8, Math.min(projectContextMenu.y, viewportHeight - 96));
     return { left: `${x}px`, top: `${y}px` };
   }, [projectContextMenu]);
 
@@ -2133,6 +2273,11 @@ function PlayerDashboard({
       setError(saveError.message || 'Failed to create mix');
     }
   }, [projectContextMenu, promptCreateMixFromProject]);
+
+  const handleShowCreditsFromContextMenu = useCallback(async () => {
+    const target = projectContextMenu?.mix;
+    await openCreditsForMix(target);
+  }, [openCreditsForMix, projectContextMenu]);
 
   const activePlaylistRows = useMemo(() => {
     if (!selectedPlaylist) return [];
@@ -2281,6 +2426,17 @@ function PlayerDashboard({
             </button>
             {profileMenuOpen ? (
               <div className="absolute right-0 top-full mt-2 min-w-32 rounded-md border border-gray-700 bg-gray-800 shadow-lg z-30 overflow-hidden">
+                {onOpenProfile ? (
+                  <button
+                    onClick={() => {
+                      setProfileMenuOpen(false);
+                      onOpenProfile();
+                    }}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+                  >
+                    My Profile
+                  </button>
+                ) : null}
                 <button
                   onClick={() => {
                     setMainPanelView('settings');
@@ -2759,7 +2915,6 @@ function PlayerDashboard({
                               }}
                               onContextMenu={(event) => {
                                 event.preventDefault();
-                                if (mix.canCreateMixes === false) return;
                                 handleSelectItem(PLAYER_COLLECTION_TYPES.TUTTI, collectionId, index);
                                 setProjectContextMenu({ mix, x: event.clientX, y: event.clientY });
                               }}
@@ -2787,7 +2942,6 @@ function PlayerDashboard({
                                 <button
                                   onClick={(event) => {
                                     event.stopPropagation();
-                                    if (mix.canCreateMixes === false) return;
                                     const rect = event.currentTarget.getBoundingClientRect();
                                     setProjectContextMenu({ mix, x: rect.right, y: rect.bottom + 4 });
                                   }}
@@ -2821,6 +2975,12 @@ function PlayerDashboard({
         >
           {libraryContextMenu.entry?.kind === 'mix' ? (
             <>
+              <button
+                onClick={async () => handleLibraryContextAction('credits')}
+                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+              >
+                Show Credits
+              </button>
               <button
                 onClick={async () => handleLibraryContextAction('rename')}
                 className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
@@ -2883,6 +3043,12 @@ function PlayerDashboard({
           className="fixed z-50 min-w-[160px] rounded-md border border-gray-700 bg-gray-800 shadow-xl overflow-hidden"
           style={projectContextMenuStyle || undefined}
         >
+          <button
+            onClick={handleShowCreditsFromContextMenu}
+            className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+          >
+            Show Credits
+          </button>
           {projectContextMenu.mix?.canCreateMixes !== false ? (
             <button
               onClick={handleCreateMixFromContextMenu}
@@ -2893,6 +3059,11 @@ function PlayerDashboard({
           ) : null}
         </div>
       ) : null}
+
+      <CreditsDialog
+        state={creditsDialog}
+        onClose={() => setCreditsDialog(null)}
+      />
 
       {mixDialog ? (
         <div

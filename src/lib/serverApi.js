@@ -105,6 +105,33 @@ export async function getCurrentSession() {
   }, null, true);
 }
 
+export async function updateMyProfile(profile, session) {
+  return await apiFetch('/api/me/profile', {
+    method: 'PATCH',
+    body: profile,
+  }, session);
+}
+
+export async function fetchArtistCatalog(session) {
+  return await apiFetch('/api/artists/catalog', {}, session);
+}
+
+export async function createMusicGroup(group, session) {
+  const payload = await apiFetch('/api/artists/music-groups', {
+    method: 'POST',
+    body: group,
+  }, session);
+  return payload.group || null;
+}
+
+export async function createGuestArtist(guest, session) {
+  const payload = await apiFetch('/api/artists/guest-artists', {
+    method: 'POST',
+    body: guest,
+  }, session);
+  return payload.guest || null;
+}
+
 export function beginOidcLogin() {
   window.location.assign(buildApiPath('/api/auth/oidc/start'));
 }
@@ -308,9 +335,54 @@ export async function bootstrapServerProject(projectId, session, knownSeq = 0, o
   return await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/bootstrap?${params.toString()}`, {}, session);
 }
 
+export async function getProjectCredits(projectId, session) {
+  return await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/credits`, {}, session);
+}
+
+export async function saveProjectCredits(projectId, credits, session) {
+  return await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/credits`, {
+    method: 'PUT',
+    body: { credits },
+  }, session);
+}
+
+export async function getShowMetadata(showId, session) {
+  return await apiFetch(`/api/shows/${encodeURIComponent(showId)}/metadata`, {}, session);
+}
+
+export async function saveShowMetadata(showId, metadata, session) {
+  const payload = await apiFetch(`/api/shows/${encodeURIComponent(showId)}/metadata`, {
+    method: 'PATCH',
+    body: metadata,
+  }, session);
+  return payload.show || null;
+}
+
+export async function saveTrackArtists(projectId, trackId, artistRefs, session) {
+  return await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/tracks/${encodeURIComponent(trackId)}/artists`, {
+    method: 'PATCH',
+    body: { artistRefs },
+  }, session);
+}
+
 export async function listUsers(session) {
   const payload = await apiFetch('/api/admin/users', {}, session);
   return payload.users || [];
+}
+
+export async function listAdminArtists(session) {
+  return await apiFetch('/api/admin/artists', {}, session);
+}
+
+export async function updateAdminArtist(kind, artistId, updates, session) {
+  const pathKind = kind === 'group'
+    ? 'music-groups'
+    : (kind === 'guest' ? 'guest-artists' : 'users');
+  const payload = await apiFetch(`/api/admin/artists/${pathKind}/${encodeURIComponent(artistId)}`, {
+    method: 'PATCH',
+    body: updates,
+  }, session);
+  return payload.artist || payload.group || payload.guest || null;
 }
 
 export async function createUser(user, session) {

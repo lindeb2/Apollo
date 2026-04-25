@@ -58,10 +58,11 @@ function TrackList({
   selectedTrackId,
   onAddTrack,
   onDeleteTrack,
+  onEditTrackArtists,
+  onEditGroupArtists,
   onSetAutoPanStrategy,
   onToggleAutoPanInverted,
   autoPanInverted = false,
-  autoPanManualChoirParts = false,
   onReorderTrack,
   onMoveNode,
   onCreateGroup,
@@ -86,29 +87,17 @@ function TrackList({
 
   const [typeMenuOpen, setTypeMenuOpen] = useState(false);
   const [typeMenuPos, setTypeMenuPos] = useState({ x: 0, y: 0 });
-  const [choirMenuOpen, setChoirMenuOpen] = useState(false);
-  const [choirMenuPos, setChoirMenuPos] = useState({ x: 0, y: 0 });
   const [autoPanMenuOpen, setAutoPanMenuOpen] = useState(false);
   const [autoPanMenuPos, setAutoPanMenuPos] = useState({ x: 0, y: 0 });
   const [groupTypeMenuOpen, setGroupTypeMenuOpen] = useState(false);
   const [groupTypeMenuPos, setGroupTypeMenuPos] = useState({ x: 0, y: 0 });
-  const [groupTrackTypeMenuOpen, setGroupTrackTypeMenuOpen] = useState(false);
-  const [groupTrackTypeMenuPos, setGroupTrackTypeMenuPos] = useState({ x: 0, y: 0 });
-  const [groupPartTypeMenuOpen, setGroupPartTypeMenuOpen] = useState(false);
-  const [groupPartTypeMenuPos, setGroupPartTypeMenuPos] = useState({ x: 0, y: 0 });
 
   const [isTypeTriggerHover, setIsTypeTriggerHover] = useState(false);
   const [isTypeMenuHover, setIsTypeMenuHover] = useState(false);
-  const [isChoirTriggerHover, setIsChoirTriggerHover] = useState(false);
-  const [isChoirMenuHover, setIsChoirMenuHover] = useState(false);
   const [isAutoPanTriggerHover, setIsAutoPanTriggerHover] = useState(false);
   const [isAutoPanMenuHover, setIsAutoPanMenuHover] = useState(false);
   const [isGroupTypeTriggerHover, setIsGroupTypeTriggerHover] = useState(false);
   const [isGroupTypeMenuHover, setIsGroupTypeMenuHover] = useState(false);
-  const [isGroupTrackTypeTriggerHover, setIsGroupTrackTypeTriggerHover] = useState(false);
-  const [isGroupTrackTypeMenuHover, setIsGroupTrackTypeMenuHover] = useState(false);
-  const [isGroupPartTypeTriggerHover, setIsGroupPartTypeTriggerHover] = useState(false);
-  const [isGroupPartTypeMenuHover, setIsGroupPartTypeMenuHover] = useState(false);
   const animatedValueByKeyRef = useRef({});
   const valueAnimationFrameRef = useRef(null);
 
@@ -131,6 +120,36 @@ function TrackList({
     [visibleRows]
   );
 
+  const rowArtistRefs = (row) => {
+    if (!row) return [];
+    if (row.kind === 'group') {
+      return Array.isArray(row.artistRefs) ? row.artistRefs : [];
+    }
+    const track = row.track || trackMap.get(row.trackId);
+    return Array.isArray(track?.artistRefs) ? track.artistRefs : [];
+  };
+
+  const hasSoloArtistRef = (artistRefs) => (
+    Array.isArray(artistRefs)
+    && artistRefs.some((ref) => {
+      const type = String(ref?.type || '').trim().toLowerCase();
+      return type === 'user' || type === 'guest';
+    })
+  );
+
+  const hasSoloArtistAncestor = (row) => {
+    let parentId = row?.parentId ?? null;
+    while (parentId) {
+      const parentRow = rowByNodeId.get(parentId);
+      if (!parentRow) return false;
+      if (hasSoloArtistRef(rowArtistRefs(parentRow))) {
+        return true;
+      }
+      parentId = parentRow.parentId ?? null;
+    }
+    return false;
+  };
+
   const iconOptions = useMemo(() => [
     { key: 'guitar', Icon: Guitar },
     { key: 'user', Icon: User },
@@ -142,6 +161,13 @@ function TrackList({
   ], []);
 
   const menuItemClass = 'w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-200 hover:bg-gray-700 whitespace-nowrap';
+  const trackTypeOptions = [
+    { value: TRACK_ROLES.INSTRUMENT, label: 'Instrument', groupRole: GROUP_ROLE_INSTRUMENTS },
+    { value: TRACK_ROLES.LEAD, label: 'Lead', groupRole: GROUP_ROLE_LEADS },
+    { value: TRACK_ROLES.CHOIR, label: 'Choir', groupRole: GROUP_ROLE_CHOIRS },
+    { value: TRACK_ROLES.METRONOME, label: 'Metronome', groupRole: null },
+    { value: TRACK_ROLES.OTHER, label: 'Other', groupRole: GROUP_ROLE_NONE },
+  ];
 
   const selectRow = (row) => {
     if (!row) return;
@@ -165,18 +191,31 @@ function TrackList({
     return null;
   };
 
+  const isLegacyPartTrackRow = (row) => (
+    row?.role === TRACK_ROLES.INSTRUMENT
+    || row?.role === TRACK_ROLES.LEAD
+    || row?.role === TRACK_ROLES.OTHER
+    || isChoirRole(row?.role)
+  );
+
+  const rowIsPartTrack = (row) => {
+    if (!row) return false;
+    if (row.part !== undefined) return Boolean(row.part);
+    if (row.kind === 'track' && row.track?.part !== undefined) return Boolean(row.track.part);
+    return isLegacyPartTrackRow(row);
+  };
+
   const hasDirectParentTypeLock = (row) => {
     const parentId = row?.parentId ?? null;
-    if (!parentId) return false;
-    const parentRow = rowByNodeId.get(parentId);
-    if (!parentRow || parentRow.kind !== 'group') return false;
-    const role = parentRow.role;
-    return (
-      isGroupParentRole(role)
-      || role === TRACK_ROLES.INSTRUMENT
-      || role === TRACK_ROLES.LEAD
-      || role === TRACK_ROLES.CHOIR
-    );
+    let currentParentId = parentId;
+    while (currentParentId) {
+      const parentRow = rowByNodeId.get(currentParentId);
+      if (!parentRow || parentRow.kind !== 'group') return false;
+      if (rowIsPartTrack(parentRow)) return true;
+      if (currentParentId === parentId) return true;
+      currentParentId = parentRow.parentId ?? null;
+    }
+    return false;
   };
 
   const getDirectParentForcedRole = (row) => {
@@ -187,14 +226,7 @@ function TrackList({
     if (isGroupParentRole(parentRow.role)) {
       return mapGroupParentRoleToTrackRole(parentRow.role);
     }
-    if (
-      parentRow.role === TRACK_ROLES.INSTRUMENT
-      || parentRow.role === TRACK_ROLES.LEAD
-      || parentRow.role === TRACK_ROLES.CHOIR
-    ) {
-      return parentRow.role;
-    }
-    return null;
+    return getTrackTypeValue(parentRow.role);
   };
 
   const setGlobalDragCursor = (active) => {
@@ -410,12 +442,9 @@ function TrackList({
   useEffect(() => {
     if (!contextMenu || contextMenu.type !== 'track') {
       setTypeMenuOpen(false);
-      setChoirMenuOpen(false);
       setAutoPanMenuOpen(false);
       setIsTypeTriggerHover(false);
       setIsTypeMenuHover(false);
-      setIsChoirTriggerHover(false);
-      setIsChoirMenuHover(false);
       setIsAutoPanTriggerHover(false);
       setIsAutoPanMenuHover(false);
     }
@@ -424,23 +453,15 @@ function TrackList({
   useEffect(() => {
     if (!contextMenu || contextMenu.type !== 'group') {
       setGroupTypeMenuOpen(false);
-      setGroupTrackTypeMenuOpen(false);
-      setGroupPartTypeMenuOpen(false);
       setIsGroupTypeTriggerHover(false);
       setIsGroupTypeMenuHover(false);
-      setIsGroupTrackTypeTriggerHover(false);
-      setIsGroupTrackTypeMenuHover(false);
-      setIsGroupPartTypeTriggerHover(false);
-      setIsGroupPartTypeMenuHover(false);
     }
   }, [contextMenu]);
 
   useEffect(() => {
-    const typeOpen = isTypeTriggerHover || isTypeMenuHover || isChoirTriggerHover || isChoirMenuHover;
-    const choirOpen = isChoirTriggerHover || isChoirMenuHover;
+    const typeOpen = isTypeTriggerHover || isTypeMenuHover;
     setTypeMenuOpen(typeOpen);
-    setChoirMenuOpen(choirOpen);
-  }, [isTypeTriggerHover, isTypeMenuHover, isChoirTriggerHover, isChoirMenuHover]);
+  }, [isTypeTriggerHover, isTypeMenuHover]);
 
   useEffect(() => {
     const autoOpen = isAutoPanTriggerHover || isAutoPanMenuHover;
@@ -448,25 +469,9 @@ function TrackList({
   }, [isAutoPanTriggerHover, isAutoPanMenuHover]);
 
   useEffect(() => {
-    const typeOpen = isGroupTypeTriggerHover
-      || isGroupTypeMenuHover
-      || isGroupTrackTypeTriggerHover
-      || isGroupTrackTypeMenuHover
-      || isGroupPartTypeTriggerHover
-      || isGroupPartTypeMenuHover;
-    const groupTrackOpen = isGroupTrackTypeTriggerHover || isGroupTrackTypeMenuHover;
-    const groupPartOpen = isGroupPartTypeTriggerHover || isGroupPartTypeMenuHover;
+    const typeOpen = isGroupTypeTriggerHover || isGroupTypeMenuHover;
     setGroupTypeMenuOpen(typeOpen);
-    setGroupTrackTypeMenuOpen(groupTrackOpen);
-    setGroupPartTypeMenuOpen(groupPartOpen);
-  }, [
-    isGroupTypeTriggerHover,
-    isGroupTypeMenuHover,
-    isGroupTrackTypeTriggerHover,
-    isGroupTrackTypeMenuHover,
-    isGroupPartTypeTriggerHover,
-    isGroupPartTypeMenuHover,
-  ]);
+  }, [isGroupTypeTriggerHover, isGroupTypeMenuHover]);
 
   useEffect(() => {
     const handleMove = (e) => {
@@ -504,12 +509,6 @@ function TrackList({
     setIsTypeTriggerHover(true);
   };
 
-  const openChoirMenu = (event) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    setChoirMenuPos({ x: rect.right + 1, y: rect.top - 1 });
-    setIsChoirTriggerHover(true);
-  };
-
   const openAutoPanMenu = (event) => {
     const rect = event.currentTarget.getBoundingClientRect();
     setAutoPanMenuPos({ x: rect.right + 1, y: rect.top - 1 });
@@ -522,18 +521,6 @@ function TrackList({
     setIsGroupTypeTriggerHover(true);
   };
 
-  const openGroupTrackTypeMenu = (event) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    setGroupTrackTypeMenuPos({ x: rect.right + 1, y: rect.top - 1 });
-    setIsGroupTrackTypeTriggerHover(true);
-  };
-
-  const openGroupPartTypeMenu = (event) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    setGroupPartTypeMenuPos({ x: rect.right + 1, y: rect.top - 1 });
-    setIsGroupPartTypeTriggerHover(true);
-  };
-
   const getDefaultIconKey = (role) => {
     return getDefaultIconByRole(role);
   };
@@ -543,12 +530,7 @@ function TrackList({
     while (parentId) {
       const parentRow = rowByNodeId.get(parentId);
       if (!parentRow || parentRow.kind !== 'group') return false;
-      if (
-        parentRow.role === TRACK_ROLES.INSTRUMENT
-        || parentRow.role === TRACK_ROLES.LEAD
-        || parentRow.role === TRACK_ROLES.OTHER
-        || isChoirRole(parentRow.role)
-      ) {
+      if (rowIsPartTrack(parentRow)) {
         return true;
       }
       parentId = parentRow.parentId ?? null;
@@ -580,27 +562,98 @@ function TrackList({
     onUpdateTrack(track.id, { icon: options[nextIndex].key });
   };
 
-  const commitGroupRoleChange = (source, groupRow, nextRole) => {
+  const commitGroupRoleChange = (source, groupRow, nextRole, nextPart = null) => {
     console.debug('[GroupRoleUI]', {
       source,
       groupNodeId: groupRow?.nodeId,
       groupName: groupRow?.name,
       fromRole: groupRow?.role,
       toRole: nextRole,
+      fromPart: groupRow?.part,
+      toPart: nextPart,
       parentId: groupRow?.parentId ?? null,
     });
-    onUpdateGroup?.(groupRow.nodeId, { role: nextRole });
+    onUpdateGroup?.(groupRow.nodeId, {
+      role: nextRole,
+      ...(nextPart !== null ? { part: Boolean(nextPart) } : {}),
+    });
   };
 
-  const isGroupTrackModeGroup = (role) => (
-    role === GROUP_ROLE_NONE
-    || role === GROUP_ROLE_OTHERS
-    || isGroupParentRole(role)
+  const getTrackTypeValue = (role) => {
+    if (role === TRACK_ROLES.METRONOME) return TRACK_ROLES.METRONOME;
+    if (role === TRACK_ROLES.INSTRUMENT) return TRACK_ROLES.INSTRUMENT;
+    if (role === TRACK_ROLES.LEAD) return TRACK_ROLES.LEAD;
+    if (isChoirRole(role)) return TRACK_ROLES.CHOIR;
+    return TRACK_ROLES.OTHER;
+  };
+
+  const getGroupTypeValue = (groupRow) => {
+    const role = groupRow?.role;
+    if (isGroupParentRole(role)) {
+      return mapGroupParentRoleToTrackRole(role) || TRACK_ROLES.OTHER;
+    }
+    return getTrackTypeValue(role);
+  };
+
+  const getRowTypeValue = (row, track = null) => (
+    row?.kind === 'group'
+      ? getGroupTypeValue(row)
+      : getTrackTypeValue(track?.role || row?.track?.role)
   );
+
+  const applyTrackType = (row, track, nextType) => {
+    if (!track?.id) return;
+    onUpdateTrack?.(track.id, {
+      role: nextType,
+      icon: getDefaultIconByRole(nextType),
+    });
+  };
+
+  const applyGroupType = (groupRow, nextType) => {
+    if (!groupRow?.nodeId) return;
+    if (nextType === TRACK_ROLES.METRONOME) return;
+    const option = trackTypeOptions.find((candidate) => candidate.value === nextType);
+    const nextPart = Boolean(groupRow.part);
+    const nextRole = nextPart ? nextType : (option?.groupRole || GROUP_ROLE_NONE);
+    commitGroupRoleChange('context-menu/change-type', groupRow, nextRole, nextPart);
+  };
+
+  const toggleTrackPart = (row, track) => {
+    if (!track?.id) return;
+    if (hasPartTrackAncestor(row)) return;
+    onUpdateTrack?.(track.id, { part: !Boolean(row?.part || track.part) });
+  };
+
+  const toggleGroupPart = (groupRow) => {
+    if (!groupRow?.nodeId) return;
+    if (hasPartTrackAncestor(groupRow)) return;
+    const nextPart = !Boolean(groupRow.part);
+    const currentType = getGroupTypeValue(groupRow);
+    const option = trackTypeOptions.find((candidate) => candidate.value === currentType);
+    if (currentType === TRACK_ROLES.METRONOME) return;
+    commitGroupRoleChange(
+      'context-menu/toggle-part',
+      groupRow,
+      nextPart ? currentType : (option?.groupRole || GROUP_ROLE_NONE),
+      nextPart
+    );
+  };
+
+  const isGroupTrackModeGroup = (rowOrRole) => {
+    if (rowOrRole && typeof rowOrRole === 'object') {
+      if (rowOrRole.part !== undefined) return !Boolean(rowOrRole.part);
+      return !isLegacyPartTrackRow(rowOrRole);
+    }
+    return (
+      rowOrRole === GROUP_ROLE_NONE
+      || rowOrRole === GROUP_ROLE_OTHERS
+      || isGroupParentRole(rowOrRole)
+    );
+  };
 
   const cycleGroupRole = (groupRow) => {
     if (hasDirectParentTypeLock(groupRow)) return;
-    const isGroupMode = isGroupTrackModeGroup(groupRow.role);
+    const isGroupMode = isGroupTrackModeGroup(groupRow);
     const groupRoles = [
       GROUP_ROLE_INSTRUMENTS,
       GROUP_ROLE_LEADS,
@@ -618,7 +671,7 @@ function TrackList({
     const nextRole = currentIndex >= 0
       ? options[(currentIndex + 1) % options.length]
       : options[0];
-    commitGroupRoleChange('icon-cycle', groupRow, nextRole);
+    commitGroupRoleChange('icon-cycle', groupRow, nextRole, !isGroupMode);
   };
 
   const handleVolumeChange = (trackId, value) => {
@@ -1659,10 +1712,21 @@ function TrackList({
               >
                 Rename track
               </button>
+              {onEditTrackArtists && !hasSoloArtistAncestor(contextMenu.row) ? (
+                <button
+                  className={menuItemClass}
+                  onClick={() => {
+                    onEditTrackArtists(contextMenu.track);
+                    setContextMenu(null);
+                  }}
+                >
+                  Edit track artist
+                </button>
+              ) : null}
 
               {hasDirectParentTypeLock(contextMenu.row) ? (
                 <div className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-500 whitespace-nowrap select-none">
-                  Change track type (inherited)
+                  Change type (inherited)
                 </div>
               ) : (
                 <div className="relative">
@@ -1671,18 +1735,29 @@ function TrackList({
                     onMouseEnter={openTypeMenu}
                     onMouseLeave={() => setIsTypeTriggerHover(false)}
                     style={{
-                      backgroundColor: (isTypeTriggerHover || isTypeMenuHover || isChoirTriggerHover || isChoirMenuHover)
+                      backgroundColor: (isTypeTriggerHover || isTypeMenuHover)
                         ? '#374151'
                         : undefined,
                     }}
                   >
                     <div className="flex items-center justify-between w-full">
-                      <span>Change track type</span>
+                      <span>Change type</span>
                       <ChevronRight size={14} className="text-gray-400 ml-0.5" />
                     </div>
                   </div>
                 </div>
               )}
+              {!hasPartTrackAncestor(contextMenu.row) ? (
+                <button
+                  className={menuItemClass}
+                  onClick={() => {
+                    toggleTrackPart(contextMenu.row, contextMenu.track);
+                    setContextMenu(null);
+                  }}
+                >
+                  {Boolean(contextMenu.row?.part || contextMenu.track.part) ? '✓ ' : ''}Is part
+                </button>
+              ) : null}
 
               {isChoirRole(contextMenu.track.role) && (
                 <div className="relative">
@@ -1752,9 +1827,20 @@ function TrackList({
               >
                 Rename group
               </button>
+              {onEditGroupArtists && !hasSoloArtistAncestor(contextMenu.group) ? (
+                <button
+                  className={menuItemClass}
+                  onClick={() => {
+                    onEditGroupArtists(contextMenu.group);
+                    setContextMenu(null);
+                  }}
+                >
+                  Edit track artist
+                </button>
+              ) : null}
               {hasDirectParentTypeLock(contextMenu.group) ? (
                 <div className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-500 whitespace-nowrap select-none">
-                  Change track type (inherited)
+                  Change type (inherited)
                 </div>
               ) : (
                 <div className="relative">
@@ -1766,22 +1852,29 @@ function TrackList({
                       backgroundColor: (
                         isGroupTypeTriggerHover
                         || isGroupTypeMenuHover
-                        || isGroupTrackTypeTriggerHover
-                        || isGroupTrackTypeMenuHover
-                        || isGroupPartTypeTriggerHover
-                        || isGroupPartTypeMenuHover
                       )
                         ? '#374151'
                         : undefined,
                     }}
                   >
                     <div className="flex items-center justify-between w-full">
-                      <span>Change track type</span>
+                      <span>Change type</span>
                       <ChevronRight size={14} className="text-gray-400 ml-0.5" />
                     </div>
                   </div>
                 </div>
               )}
+              {!hasPartTrackAncestor(contextMenu.group) ? (
+                <button
+                  className={menuItemClass}
+                  onClick={() => {
+                    toggleGroupPart(contextMenu.group);
+                    setContextMenu(null);
+                  }}
+                >
+                  {Boolean(contextMenu.group.part) ? '✓ ' : ''}Is part
+                </button>
+              ) : null}
               <button
                 className={menuItemClass}
                 onClick={() => {
@@ -1854,125 +1947,22 @@ function TrackList({
             e.stopPropagation();
           }}
         >
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.INSTRUMENT });
-              setContextMenu(null);
-            }}
-          >
-            Instrument
-          </button>
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.LEAD });
-              setContextMenu(null);
-            }}
-          >
-            Lead
-          </button>
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR });
-              setContextMenu(null);
-            }}
-          >
-            Choir Part
-          </button>
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.METRONOME });
-              setContextMenu(null);
-            }}
-          >
-            Metronome
-          </button>
-
-          {autoPanManualChoirParts && (
-            <div
-              className={`${menuItemClass} select-none cursor-pointer`}
-              onMouseEnter={openChoirMenu}
-              onMouseLeave={() => setIsChoirTriggerHover(false)}
-              style={{ backgroundColor: (isChoirTriggerHover || isChoirMenuHover) ? '#374151' : undefined }}
-            >
-              <div className="flex items-center justify-between w-full">
-                <span>Choir part</span>
-                <ChevronRight size={14} className="text-gray-400 ml-0.5" />
-              </div>
-            </div>
-          )}
-
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.OTHER });
-              setContextMenu(null);
-            }}
-          >
-            Other
-          </button>
-        </div>
-      )}
-
-      {contextMenu && contextMenu.type === 'track' && contextMenu.track && choirMenuOpen && autoPanManualChoirParts && !hasDirectParentTypeLock(contextMenu.row) && (
-        <div
-          className="fixed z-[120] bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[25px]"
-          style={{ left: choirMenuPos.x, top: choirMenuPos.y }}
-          onMouseEnter={() => setIsChoirMenuHover(true)}
-          onMouseLeave={() => setIsChoirMenuHover(false)}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-        >
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_1 });
-              setContextMenu(null);
-            }}
-          >
-            1
-          </button>
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_2 });
-              setContextMenu(null);
-            }}
-          >
-            2
-          </button>
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_3 });
-              setContextMenu(null);
-            }}
-          >
-            3
-          </button>
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_4 });
-              setContextMenu(null);
-            }}
-          >
-            4
-          </button>
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              onUpdateTrack?.(contextMenu.track.id, { role: TRACK_ROLES.CHOIR_PART_5 });
-              setContextMenu(null);
-            }}
-          >
-            5
-          </button>
+          {trackTypeOptions.map((option) => {
+            const isCurrent = getRowTypeValue(contextMenu.row, contextMenu.track) === option.value;
+            return (
+              <button
+                key={option.value}
+                className={menuItemClass}
+                onClick={() => {
+                  applyTrackType(contextMenu.row, contextMenu.track, option.value);
+                  setContextMenu(null);
+                }}
+              >
+                <span className="inline-block w-4 text-gray-300">{isCurrent ? '✓' : ''}</span>
+                {option.label}
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -1987,124 +1977,22 @@ function TrackList({
             e.stopPropagation();
           }}
         >
-          <div
-            className={`${menuItemClass} select-none cursor-pointer`}
-            onMouseEnter={openGroupTrackTypeMenu}
-            onMouseLeave={() => setIsGroupTrackTypeTriggerHover(false)}
-            style={{ backgroundColor: (isGroupTrackTypeTriggerHover || isGroupTrackTypeMenuHover) ? '#374151' : undefined }}
-          >
-            <div className="flex items-center justify-between w-full">
-              <span>Group track</span>
-              <ChevronRight size={14} className="text-gray-400 ml-0.5" />
-            </div>
-          </div>
-          <div
-            className={`${menuItemClass} select-none cursor-pointer`}
-            onMouseEnter={openGroupPartTypeMenu}
-            onMouseLeave={() => setIsGroupPartTypeTriggerHover(false)}
-            style={{ backgroundColor: (isGroupPartTypeTriggerHover || isGroupPartTypeMenuHover) ? '#374151' : undefined }}
-          >
-            <div className="flex items-center justify-between w-full">
-              <span>Part track</span>
-              <ChevronRight size={14} className="text-gray-400 ml-0.5" />
-            </div>
-          </div>
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              const mode = isGroupTrackModeGroup(contextMenu.group.role) ? 'group' : 'part';
-              commitGroupRoleChange(
-                'context-menu/other',
-                contextMenu.group,
-                mode === 'group' ? GROUP_ROLE_NONE : TRACK_ROLES.OTHER
-              );
-              setContextMenu(null);
-            }}
-          >
-            Other
-          </button>
-        </div>
-      )}
-
-      {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupTrackTypeMenuOpen && (
-        <div
-          className="fixed z-[120] bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[130px]"
-          style={{ left: groupTrackTypeMenuPos.x, top: groupTrackTypeMenuPos.y }}
-          onMouseEnter={() => setIsGroupTrackTypeMenuHover(true)}
-          onMouseLeave={() => setIsGroupTrackTypeMenuHover(false)}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-        >
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              commitGroupRoleChange('context-menu/group/instruments', contextMenu.group, GROUP_ROLE_INSTRUMENTS);
-              setContextMenu(null);
-            }}
-          >
-            Instruments
-          </button>
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              commitGroupRoleChange('context-menu/group/leads', contextMenu.group, GROUP_ROLE_LEADS);
-              setContextMenu(null);
-            }}
-          >
-            Leads
-          </button>
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              commitGroupRoleChange('context-menu/group/choir', contextMenu.group, GROUP_ROLE_CHOIRS);
-              setContextMenu(null);
-            }}
-          >
-            Choir
-          </button>
-        </div>
-      )}
-
-      {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupPartTypeMenuOpen && (
-        <div
-          className="fixed z-[120] bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[120px]"
-          style={{ left: groupPartTypeMenuPos.x, top: groupPartTypeMenuPos.y }}
-          onMouseEnter={() => setIsGroupPartTypeMenuHover(true)}
-          onMouseLeave={() => setIsGroupPartTypeMenuHover(false)}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-        >
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              commitGroupRoleChange('context-menu/part/instrument', contextMenu.group, TRACK_ROLES.INSTRUMENT);
-              setContextMenu(null);
-            }}
-          >
-            Instrument
-          </button>
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              commitGroupRoleChange('context-menu/part/lead', contextMenu.group, TRACK_ROLES.LEAD);
-              setContextMenu(null);
-            }}
-          >
-            Lead
-          </button>
-          <button
-            className={menuItemClass}
-            onClick={() => {
-              commitGroupRoleChange('context-menu/part/choir', contextMenu.group, TRACK_ROLES.CHOIR);
-              setContextMenu(null);
-            }}
-          >
-            Choir Part
-          </button>
+          {trackTypeOptions.filter((option) => option.value !== TRACK_ROLES.METRONOME).map((option) => {
+            const isCurrent = getRowTypeValue(contextMenu.group) === option.value;
+            return (
+              <button
+                key={option.value}
+                className={menuItemClass}
+                onClick={() => {
+                  applyGroupType(contextMenu.group, option.value);
+                  setContextMenu(null);
+                }}
+              >
+                <span className="inline-block w-4 text-gray-300">{isCurrent ? '✓' : ''}</span>
+                {option.label}
+              </button>
+            );
+          })}
         </div>
       )}
 

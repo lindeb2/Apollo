@@ -50,6 +50,7 @@ import {
   toAdminUser,
   touchUserLogin,
   transferUserOwnership,
+  updateUserProfile,
 } from './userAccounts.js';
 import {
   addRoleMember,
@@ -65,6 +66,7 @@ import {
   getProjectAccess,
   getProjectAccessCatalog,
   getProjectAccessMap,
+  getShowAccessMap,
   getRoleById,
   getUserAccessSummary,
   listRoleChildren,
@@ -102,6 +104,9 @@ function toSessionUser(user) {
   return {
     id: user.id,
     username: user.username,
+    artistDisplayName: user.artist_display_name || user.artistDisplayName || '',
+    artistDescription: user.artist_description || user.artistDescription || '',
+    oidcDisplayName: user.oidc_display_name || user.oidcDisplayName || '',
     isAdmin: Boolean(user.is_admin ?? user.isAdmin),
   };
 }
@@ -270,16 +275,38 @@ async function buildProjectPermissionMapForRows(userId, rows = []) {
   return await getProjectAccessMap(userId, projectRows);
 }
 
+async function buildShowAccessMapForRows(userId, rows = []) {
+  const showIds = Array.from(new Set(rows.map((row) => String(row?.id || '')).filter(Boolean)));
+  const showRows = showIds.map((showId) => {
+    const row = rows.find((entry) => String(entry?.id || '') === showId) || {};
+    return {
+      id: showId,
+      name: row.name,
+      orderIndex: row.orderIndex,
+      createdByUserId: row.createdByUserId,
+    };
+  });
+  return await getShowAccessMap(userId, showRows);
+}
+
 function attachProjectAccess(row, permissionMap) {
   const projectId = String(row?.id || row?.projectId || '');
   const access = permissionMap.get(projectId) || null;
   return {
     ...row,
     access,
-    canRead: Boolean(access?.compatibility?.canRead),
+    canRead: Boolean(access?.canOpenProject),
     canWrite: Boolean(access?.compatibility?.canWrite),
+    canSeeShow: Boolean(access?.canSeeShow),
+    canManageShow: Boolean(access?.canManageShow),
+    canCreateShows: Boolean(access?.canCreateShows),
+    canSeeProject: Boolean(access?.canSeeProject),
+    canOpenProject: Boolean(access?.canOpenProject),
+    canCreateProjects: Boolean(access?.canCreateProjects),
+    canCreateTracks: Boolean(access?.canCreateTracks),
+    canManageTracks: Boolean(access?.canManageTracks),
     canListenTutti: Boolean(access?.canListenTutti),
-    canReadProject: Boolean(access?.canReadProject),
+    canReadProject: Boolean(access?.canOpenProject),
     canCreateMixes: Boolean(access?.canCreateMixes),
     canWriteOwnTracks: Boolean(access?.canWriteOwnTracks),
     canWriteScopedTracks: Boolean(access?.canWriteScopedTracks),
@@ -288,23 +315,39 @@ function attachProjectAccess(row, permissionMap) {
   };
 }
 
+function attachShowAccess(row, accessMap) {
+  const showId = String(row?.id || '');
+  const access = accessMap.get(showId) || null;
+  return {
+    ...row,
+    access,
+    canSeeShow: Boolean(access?.canSeeShow),
+    canManageShow: Boolean(access?.canManageShow),
+    canCreateProjects: Boolean(access?.canCreateProjects),
+    canCreateShows: Boolean(access?.canCreateShows),
+  };
+}
+
 function canAccessProjectInPlayer(access) {
-  return Boolean(access?.canListenTutti || access?.canReadProject || access?.canManageOwnProject || access?.canManageProject);
+  return Boolean(access?.canListenTutti);
 }
 
 function canAccessProjectInDaw(access) {
-  return Boolean(access?.canReadProject || access?.canManageOwnProject || access?.canManageProject);
+  return Boolean(access?.canSeeProject);
+}
+
+function canOpenProjectInDaw(access) {
+  return Boolean(access?.canOpenProject);
 }
 
 function canCreateProjectMixes(access) {
-  return Boolean(access?.canCreateMixes || access?.canManageOwnProject || access?.canManageProject);
+  return Boolean(access?.canCreateMixes);
 }
 
 function canWriteProjectTracks(access) {
   return Boolean(
-    access?.canWriteOwnTracks
-    || access?.canWriteScopedTracks
-    || access?.canManageOwnProject
+    access?.canCreateTracks
+    || access?.canManageTracks
     || access?.canManageProject
   );
 }
@@ -438,6 +481,13 @@ async function appendProjectOp({ projectId, userId, clientOpId, op }) {
         projectMetadataUpdates.push(`musical_number = $${metadataIdx++}`);
         projectMetadataValues.push(nextMusicalNumber);
       }
+    }
+
+    const nextCreditsJson = JSON.stringify(normalizeProjectCredits(nextSnapshot?.credits || {}));
+    const currentCreditsJson = JSON.stringify(normalizeProjectCredits(currentSnapshot?.credits || {}));
+    if (nextCreditsJson !== currentCreditsJson) {
+      projectMetadataUpdates.push(`credits_json = $${metadataIdx++}::jsonb`);
+      projectMetadataValues.push(nextCreditsJson);
     }
 
     await client.query(
@@ -637,6 +687,486 @@ function normalizeOptionalText(value) {
   return normalized || null;
 }
 
+function toFiniteNumber(value, fallback = 0) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+const ARTIST_REF_TYPES = new Set(['user', 'group', 'guest']);
+const CREDIT_ROLE_OPTIONS = {
+  artist: [
+    { key: 'primary_artist', label: 'Primary artist' },
+    { key: 'featured_artist', label: 'Featured artist' },
+    { key: 'ensemble', label: 'Ensemble' },
+    { key: 'conductor', label: 'Conductor' },
+    { key: 'arranger_artist', label: 'Arranger artist' },
+  ],
+  compositionLyrics: [
+    { key: 'composer', label: 'Composer' },
+    { key: 'lyricist', label: 'Lyricist' },
+    { key: 'writer', label: 'Writer' },
+    { key: 'arranger', label: 'Arranger' },
+    { key: 'translator', label: 'Translator' },
+    { key: 'original_writer', label: 'Original writer' },
+  ],
+  productionEngineering: [
+    { key: 'producer', label: 'Producer' },
+    { key: 'executive_producer', label: 'Executive producer' },
+    { key: 'recording_engineer', label: 'Recording engineer' },
+    { key: 'mixing_engineer', label: 'Mixing engineer' },
+    { key: 'mastering_engineer', label: 'Mastering engineer' },
+    { key: 'editor', label: 'Editor' },
+    { key: 'sound_designer', label: 'Sound designer' },
+  ],
+};
+
+function getEffectiveArtistName(row = {}) {
+  return normalizeText(row.artistDisplayName || row.artist_display_name || row.oidcDisplayName || row.oidc_display_name || row.username || row.name);
+}
+
+function normalizeArtistRefs(value) {
+  const rows = Array.isArray(value) ? value : [];
+  const seen = new Set();
+  const refs = [];
+  rows.forEach((candidate) => {
+    const type = normalizeText(candidate?.type).toLowerCase();
+    const id = normalizeText(candidate?.id || candidate?.userId || candidate?.groupId || candidate?.guestId);
+    if (!ARTIST_REF_TYPES.has(type) || !id) return;
+    const key = `${type}:${id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    refs.push({ type, id });
+  });
+  return refs;
+}
+
+function artistRefsHaveSoloArtist(value) {
+  return normalizeArtistRefs(value).some((ref) => ref.type === 'user' || ref.type === 'guest');
+}
+
+function normalizeCreditEntries(value, options = []) {
+  const optionKeys = new Set(options.map((option) => option.key));
+  const rows = Array.isArray(value) ? value : [];
+  return rows.map((entry) => {
+    const roleKey = normalizeText(entry?.roleKey || entry?.key).toLowerCase();
+    if (!optionKeys.has(roleKey)) return null;
+    return {
+      roleKey,
+      artists: normalizeArtistRefs(entry?.artists || entry?.artistRefs),
+    };
+  }).filter((entry) => entry && entry.artists.length);
+}
+
+function normalizePerformerCredits(value) {
+  const rows = Array.isArray(value) ? value : [];
+  return rows.map((entry) => {
+    const partName = normalizeText(entry?.partName || entry?.label);
+    return {
+      partTrackId: normalizeText(entry?.partTrackId || ''),
+      partName,
+      artists: normalizeArtistRefs(entry?.artists || entry?.artistRefs),
+    };
+  }).filter((entry) => entry.partName && entry.artists.length);
+}
+
+function normalizeProjectCredits(value = {}) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    artist: normalizeCreditEntries(source.artist, CREDIT_ROLE_OPTIONS.artist),
+    compositionLyrics: normalizeCreditEntries(source.compositionLyrics, CREDIT_ROLE_OPTIONS.compositionLyrics),
+    productionEngineering: normalizeCreditEntries(source.productionEngineering, CREDIT_ROLE_OPTIONS.productionEngineering),
+    performers: normalizePerformerCredits(source.performers),
+  };
+}
+
+function projectCreditsHaveContent(value = {}) {
+  const credits = normalizeProjectCredits(value);
+  return (
+    credits.artist.length > 0
+    || credits.compositionLyrics.length > 0
+    || credits.productionEngineering.length > 0
+    || credits.performers.length > 0
+  );
+}
+
+function chooseStoredProjectCredits(projectCredits = {}, snapshotCredits = {}) {
+  const normalizedProjectCredits = normalizeProjectCredits(projectCredits);
+  if (projectCreditsHaveContent(normalizedProjectCredits)) {
+    return normalizedProjectCredits;
+  }
+  const normalizedSnapshotCredits = normalizeProjectCredits(snapshotCredits);
+  if (projectCreditsHaveContent(normalizedSnapshotCredits)) {
+    return normalizedSnapshotCredits;
+  }
+  return normalizedProjectCredits;
+}
+
+function buildArtistCatalogKey(ref) {
+  return `${normalizeText(ref?.type).toLowerCase()}:${normalizeText(ref?.id)}`;
+}
+
+async function loadArtistCatalog(db = pool) {
+  const [userResult, groupResult, guestResult] = await Promise.all([
+    db.query(
+      `SELECT id,
+              username,
+              artist_display_name AS "artistDisplayName",
+              artist_description AS "artistDescription",
+              oidc_display_name AS "oidcDisplayName"
+       FROM users
+       ORDER BY COALESCE(NULLIF(artist_display_name, ''), NULLIF(oidc_display_name, ''), username) ASC`
+    ),
+    db.query(
+      `SELECT id, name, group_type AS "groupType", description
+       FROM music_groups
+       ORDER BY name ASC`
+    ),
+    db.query(
+      `SELECT id, name, description
+       FROM guest_artists
+       ORDER BY name ASC`
+    ),
+  ]);
+
+  const users = userResult.rows.map((row) => ({
+    type: 'user',
+    id: row.id,
+    username: row.username,
+    name: getEffectiveArtistName(row),
+    description: row.artistDescription || '',
+  }));
+  const groups = groupResult.rows.map((row) => ({
+    type: 'group',
+    id: row.id,
+    name: row.name,
+    groupType: row.groupType || '',
+    description: row.description || '',
+  }));
+  const guests = guestResult.rows.map((row) => ({
+    type: 'guest',
+    id: row.id,
+    name: row.name,
+    description: row.description || '',
+  }));
+  const byKey = new Map([...users, ...groups, ...guests].map((artist) => [buildArtistCatalogKey(artist), artist]));
+  return { users, groups, guests, byKey };
+}
+
+function resolveArtistRefs(refs, catalog) {
+  return normalizeArtistRefs(refs).map((ref) => {
+    const artist = catalog.byKey.get(buildArtistCatalogKey(ref));
+    return artist ? {
+      ...ref,
+      name: artist.name,
+      description: artist.description || '',
+      groupType: artist.groupType || '',
+    } : null;
+  }).filter(Boolean);
+}
+
+function resolveCreditEntries(entries, options, catalog) {
+  const labelByKey = new Map(options.map((option) => [option.key, option.label]));
+  return (entries || []).map((entry) => ({
+    roleKey: entry.roleKey,
+    roleLabel: labelByKey.get(entry.roleKey) || entry.roleKey,
+    artists: resolveArtistRefs(entry.artists, catalog),
+  })).filter((entry) => entry.artists.length);
+}
+
+function collectArtistRefKeys(refs, targetSet) {
+  normalizeArtistRefs(refs).forEach((ref) => targetSet.add(buildArtistCatalogKey(ref)));
+}
+
+function collectCreditArtistRefKeys(credits, targetSet) {
+  ['artist', 'compositionLyrics', 'productionEngineering'].forEach((category) => {
+    (credits?.[category] || []).forEach((entry) => collectArtistRefKeys(entry.artists, targetSet));
+  });
+  (credits?.performers || []).forEach((entry) => collectArtistRefKeys(entry.artists, targetSet));
+}
+
+function resolvePartNamesByTrackId(snapshot = {}) {
+  const tracksById = new Map((snapshot.tracks || []).map((track) => [String(track.id), track]));
+  const partNameByTrackId = new Map();
+  const nodes = Array.isArray(snapshot.trackTree) ? snapshot.trackTree : [];
+  const childrenByParent = new Map();
+  nodes.forEach((node) => {
+    const parentId = node.parentId ?? null;
+    if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
+    childrenByParent.get(parentId).push(node);
+  });
+  const walk = (parentId = null, inheritedPart = '') => {
+    (childrenByParent.get(parentId) || []).forEach((node) => {
+      let nextPart = inheritedPart;
+      if (node.kind === 'track') {
+        const track = tracksById.get(String(node.trackId));
+        if (track?.part) nextPart = track.name || nextPart;
+        if (track?.id) partNameByTrackId.set(String(track.id), nextPart || track.name || '');
+      } else if (node.kind === 'group') {
+        if (node.part) nextPart = node.name || nextPart;
+      }
+      walk(node.id, nextPart);
+    });
+  };
+  walk(null, '');
+  (snapshot.tracks || []).forEach((track) => {
+    if (!partNameByTrackId.has(String(track.id))) {
+      partNameByTrackId.set(String(track.id), track.part ? track.name : '');
+    }
+  });
+  return partNameByTrackId;
+}
+
+function addContributionName(target, contributionName) {
+  const normalized = normalizeText(contributionName);
+  if (!normalized) return;
+  if (!Array.isArray(target.contributionNames)) target.contributionNames = [];
+  if (!target.contributionNames.includes(normalized)) {
+    target.contributionNames.push(normalized);
+  }
+}
+
+function mergePerformerRows(rows = []) {
+  const byArtist = new Map();
+  rows.forEach((row) => {
+    const artist = normalizeArtistRefs([row?.artist || row?.artists?.[0]])[0];
+    if (!artist) return;
+    const key = buildArtistCatalogKey(artist);
+    if (!byArtist.has(key)) {
+      byArtist.set(key, {
+        artist,
+        artists: [artist],
+        contributionNames: [],
+        members: [],
+      });
+    }
+    const entry = byArtist.get(key);
+    (Array.isArray(row.contributionNames) ? row.contributionNames : [row.contributionName || row.partName])
+      .forEach((name) => addContributionName(entry, name));
+    if (Array.isArray(row.members)) {
+      entry.members.push(...row.members);
+    }
+  });
+  return Array.from(byArtist.values()).map((entry) => ({
+    ...entry,
+    members: mergePerformerRows(entry.members || []),
+  }));
+}
+
+function buildPerformerCreditsFromTracks(snapshot = {}) {
+  const tracksById = new Map((snapshot.tracks || []).map((track) => [String(track.id), track]));
+  const nodes = (Array.isArray(snapshot.trackTree) ? snapshot.trackTree : [])
+    .map((node) => {
+      if (!node || typeof node !== 'object') return null;
+      const kind = node.kind === 'group' ? 'group' : (node.kind === 'track' || node.type === 'audio' ? 'track' : null);
+      if (!kind) return null;
+      const id = normalizeText(node.id || node.nodeId);
+      if (!id) return null;
+      return {
+        ...node,
+        id,
+        kind,
+        parentId: node.parentId || null,
+      };
+    })
+    .filter(Boolean);
+  const existingTrackIds = new Set(nodes.filter((node) => node.kind === 'track').map((node) => String(node.trackId || '')));
+  (snapshot.tracks || []).forEach((track) => {
+    if (!track?.id || existingTrackIds.has(String(track.id))) return;
+    nodes.push({
+      id: String(track.id),
+      kind: 'track',
+      parentId: null,
+      trackId: track.id,
+    });
+  });
+
+  const childrenByParent = new Map();
+  nodes.forEach((node) => {
+    const key = node.parentId || '__root__';
+    if (!childrenByParent.has(key)) childrenByParent.set(key, []);
+    childrenByParent.get(key).push(node);
+  });
+  for (const children of childrenByParent.values()) {
+    children.sort((left, right) => toFiniteNumber(left.order, 0) - toFiniteNumber(right.order, 0));
+  }
+
+  const nodeName = (node) => {
+    if (node.kind === 'group') return normalizeText(node.name) || 'Group track';
+    const track = tracksById.get(String(node.trackId || ''));
+    return normalizeText(track?.name) || 'Track';
+  };
+  const nodeArtistRefs = (node) => {
+    if (node.kind === 'group') return normalizeArtistRefs(node.artistRefs);
+    const track = tracksById.get(String(node.trackId || ''));
+    return normalizeArtistRefs(track?.artistRefs);
+  };
+
+  const topLevelRows = [];
+  const walk = (parentId = null, activeGroupRows = [], hasSoloArtistAncestor = false) => {
+    const key = parentId || '__root__';
+    (childrenByParent.get(key) || []).forEach((node) => {
+      const contributionName = nodeName(node);
+      const rawRefs = nodeArtistRefs(node);
+      const refs = hasSoloArtistAncestor ? [] : rawRefs;
+      const nextActiveGroupRows = [...activeGroupRows];
+      const nextHasSoloArtistAncestor = hasSoloArtistAncestor || artistRefsHaveSoloArtist(rawRefs);
+
+      if (refs.length && activeGroupRows.length) {
+        activeGroupRows.forEach((groupRow) => {
+          refs.forEach((artist) => {
+            groupRow.members.push({ artist, artists: [artist], contributionName });
+          });
+        });
+      }
+
+      if (refs.length && !activeGroupRows.length) {
+        refs.forEach((artist) => {
+          const row = {
+            artist,
+            artists: [artist],
+            contributionName,
+            members: [],
+          };
+          topLevelRows.push(row);
+          if (artist.type === 'group') {
+            nextActiveGroupRows.push(row);
+          }
+        });
+      }
+
+      walk(node.id, nextActiveGroupRows, nextHasSoloArtistAncestor);
+    });
+  };
+  walk(null, []);
+
+  return mergePerformerRows(topLevelRows).sort((left, right) => (
+    buildArtistCatalogKey(left.artist).localeCompare(buildArtistCatalogKey(right.artist), undefined, { sensitivity: 'base', numeric: true })
+  ));
+}
+
+function clearDescendantArtistRefsFromSnapshot(snapshot = {}, ancestorNodeId) {
+  const normalizedAncestorNodeId = normalizeText(ancestorNodeId);
+  const trackTree = Array.isArray(snapshot.trackTree) ? snapshot.trackTree : [];
+  if (!normalizedAncestorNodeId || !trackTree.length) {
+    return snapshot;
+  }
+
+  const childrenByParent = new Map();
+  trackTree.forEach((node) => {
+    const parentKey = normalizeText(node?.parentId) || '__root__';
+    const children = childrenByParent.get(parentKey) || [];
+    children.push(node);
+    childrenByParent.set(parentKey, children);
+  });
+
+  const descendantNodeIds = new Set();
+  const stack = [normalizedAncestorNodeId];
+  while (stack.length) {
+    const parentId = stack.pop();
+    (childrenByParent.get(parentId) || []).forEach((child) => {
+      const childId = normalizeText(child?.id || child?.nodeId);
+      if (!childId || descendantNodeIds.has(childId)) return;
+      descendantNodeIds.add(childId);
+      stack.push(childId);
+    });
+  }
+  if (!descendantNodeIds.size) {
+    return snapshot;
+  }
+
+  const descendantTrackIds = new Set();
+  const nextTrackTree = trackTree.map((node) => {
+    const nodeId = normalizeText(node?.id || node?.nodeId);
+    if (!descendantNodeIds.has(nodeId)) return node;
+    const kind = node.kind === 'group' ? 'group' : (node.kind === 'track' || node.type === 'audio' ? 'track' : null);
+    if (kind === 'track' && node.trackId) {
+      descendantTrackIds.add(String(node.trackId));
+      return node;
+    }
+    if (kind === 'group' && Array.isArray(node.artistRefs) && node.artistRefs.length) {
+      return { ...node, artistRefs: [] };
+    }
+    return node;
+  });
+
+  const tracks = Array.isArray(snapshot.tracks) ? snapshot.tracks : [];
+  const nextTracks = tracks.map((track) => {
+    if (!descendantTrackIds.has(String(track?.id)) || !Array.isArray(track?.artistRefs) || !track.artistRefs.length) {
+      return track;
+    }
+    return { ...track, artistRefs: [] };
+  });
+
+  return {
+    ...snapshot,
+    trackTree: nextTrackTree,
+    tracks: nextTracks,
+  };
+}
+
+function applyTrackArtistRefsToSnapshot(snapshot = {}, trackId, artistRefs) {
+  const normalizedTrackId = String(trackId || '');
+  const tracks = Array.isArray(snapshot.tracks) ? snapshot.tracks : [];
+  let nextSnapshot = {
+    ...snapshot,
+    tracks: tracks.map((track) => (
+      String(track?.id) === normalizedTrackId ? { ...track, artistRefs } : track
+    )),
+  };
+  if (!artistRefsHaveSoloArtist(artistRefs)) {
+    return nextSnapshot;
+  }
+  const trackNode = (Array.isArray(snapshot.trackTree) ? snapshot.trackTree : []).find((node) => {
+    const kind = node?.kind === 'track' || node?.type === 'audio';
+    return kind && String(node?.trackId || '') === normalizedTrackId;
+  });
+  if (!trackNode) {
+    return nextSnapshot;
+  }
+  return clearDescendantArtistRefsFromSnapshot(nextSnapshot, trackNode.id || trackNode.nodeId);
+}
+
+function resolvePerformerRows(rows = [], catalog) {
+  return mergePerformerRows(rows).map((entry) => {
+    const artist = resolveArtistRefs([entry.artist], catalog)[0];
+    if (!artist) return null;
+    const contributionNames = Array.isArray(entry.contributionNames) ? entry.contributionNames : [];
+    const displayContributionNames = artist.type === 'group' && artist.groupType
+      ? [artist.groupType]
+      : contributionNames;
+    return {
+      ...entry,
+      artist,
+      artists: [artist],
+      contributionNames: displayContributionNames,
+      contributionLabel: displayContributionNames.join(' · '),
+      members: resolvePerformerRows(entry.members || [], catalog),
+    };
+  }).filter(Boolean);
+}
+
+function resolveProjectCreditsPayload(rawCredits, snapshot, catalog) {
+  const credits = normalizeProjectCredits(rawCredits);
+  const manualPerformerRows = (credits.performers || []).flatMap((entry) => (
+    normalizeArtistRefs(entry.artists).map((artist) => ({
+      artist,
+      artists: [artist],
+      contributionName: entry.partName,
+      members: [],
+    }))
+  ));
+  const performerRows = [
+    ...manualPerformerRows,
+    ...buildPerformerCreditsFromTracks(snapshot),
+  ];
+  return {
+    artist: resolveCreditEntries(credits.artist, CREDIT_ROLE_OPTIONS.artist, catalog),
+    compositionLyrics: resolveCreditEntries(credits.compositionLyrics, CREDIT_ROLE_OPTIONS.compositionLyrics, catalog),
+    productionEngineering: resolveCreditEntries(credits.productionEngineering, CREDIT_ROLE_OPTIONS.productionEngineering, catalog),
+    performers: resolvePerformerRows(performerRows, catalog),
+  };
+}
+
 function normalizeOrderIndex(value) {
   if (value == null || value === '') return null;
   const numeric = Number(value);
@@ -692,6 +1222,10 @@ async function canUserEditTrackInProject(userId, projectId, trackId) {
     track,
     trackInfoById: buildTrackAccessInfoMap(snapshot),
     userId,
+    project: {
+      id: projectId,
+      showId: headResult.rows[0]?.latest_snapshot_json?.showId || null,
+    },
     projectCreatedByUserId: projectResult.rows[0].createdByUserId,
   });
 }
@@ -846,8 +1380,15 @@ async function buildEffectiveProjectPermissions(projectId) {
     permissions.push({
       userId: user.id,
       username: user.username,
+      canSeeShow: Boolean(access.canSeeShow),
+      canManageShow: Boolean(access.canManageShow),
+      canSeeProject: Boolean(access.canSeeProject),
+      canOpenProject: Boolean(access.canOpenProject),
+      canCreateProjects: Boolean(access.canCreateProjects),
+      canCreateTracks: Boolean(access.canCreateTracks),
+      canManageTracks: Boolean(access.canManageTracks),
       canListenTutti: Boolean(access.canListenTutti),
-      canReadProject: Boolean(access.canReadProject),
+      canReadProject: Boolean(access.canOpenProject),
       canCreateMixes: Boolean(access.canCreateMixes),
       canWriteOwnTracks: Boolean(access.canWriteOwnTracks),
       canWriteScopedTracks: Boolean(access.canWriteScopedTracks),
@@ -992,6 +1533,236 @@ app.get('/api/me', requireAuth, async (req, res) => {
     res.json(await buildSessionPayload(await loadCurrentSessionUser(req.user.id)));
   } catch {
     res.status(401).json({ error: 'User not found' });
+  }
+});
+
+app.patch('/api/me/profile', requireAuth, async (req, res) => {
+  try {
+    const updatedUser = await updateUserProfile(req.user.id, {
+      artistDisplayName: req.body?.artistDisplayName,
+      artistDescription: req.body?.artistDescription,
+    });
+    if (!updatedUser) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    res.json(await buildSessionPayload(updatedUser));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to update profile';
+    if (/artist display name|artist description/i.test(message)) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+app.get('/api/artists/catalog', requireAuth, async (_req, res) => {
+  try {
+    const catalog = await loadArtistCatalog();
+    res.json({
+      users: catalog.users,
+      groups: catalog.groups,
+      guests: catalog.guests,
+      artistOptions: [...catalog.users, ...catalog.groups, ...catalog.guests],
+      creditRoleOptions: CREDIT_ROLE_OPTIONS,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to load artist catalog' });
+  }
+});
+
+app.post('/api/artists/music-groups', requireAuth, async (req, res) => {
+  try {
+    const name = normalizeText(req.body?.name);
+    const groupType = normalizeText(req.body?.groupType);
+    const description = normalizeText(req.body?.description);
+    if (!name) {
+      res.status(400).json({ error: 'Music group name is required' });
+      return;
+    }
+    const result = await pool.query(
+      `INSERT INTO music_groups(id, name, group_type, description, created_by)
+       VALUES($1, $2, $3, $4, $5)
+       RETURNING id, name, group_type AS "groupType", description`,
+      [randomUUID(), name, groupType, description, req.user.id]
+    );
+    res.status(201).json({ group: { type: 'group', ...result.rows[0] } });
+  } catch (error) {
+    const message = String(error?.message || '');
+    if (/duplicate key|unique/i.test(message)) {
+      res.status(409).json({ error: 'A music group with that name already exists' });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to create music group' });
+  }
+});
+
+app.post('/api/artists/guest-artists', requireAuth, async (req, res) => {
+  try {
+    const name = normalizeText(req.body?.name);
+    const description = normalizeText(req.body?.description);
+    if (!name) {
+      res.status(400).json({ error: 'Guest artist name is required' });
+      return;
+    }
+    const result = await pool.query(
+      `INSERT INTO guest_artists(id, name, description, created_by)
+       VALUES($1, $2, $3, $4)
+       RETURNING id, name, description`,
+      [randomUUID(), name, description, req.user.id]
+    );
+    res.status(201).json({ guest: { type: 'guest', ...result.rows[0] } });
+  } catch (error) {
+    const message = String(error?.message || '');
+    if (/duplicate key|unique/i.test(message)) {
+      res.status(409).json({ error: 'A guest artist with that name already exists' });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to create guest artist' });
+  }
+});
+
+app.get('/api/admin/artists', requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    const catalog = await loadArtistCatalog();
+    const usedKeys = new Set();
+    const rowsResult = await pool.query(
+      `SELECT p.credits_json AS "projectCredits",
+              s.producers AS "showProducers",
+              ph.latest_snapshot_json AS "snapshot"
+       FROM projects p
+       LEFT JOIN shows s
+         ON s.id = p.show_id
+       LEFT JOIN project_heads ph
+         ON ph.project_id = p.id`
+    );
+    rowsResult.rows.forEach((row) => {
+      collectArtistRefKeys(row.showProducers, usedKeys);
+      collectCreditArtistRefKeys(chooseStoredProjectCredits(row.projectCredits, row.snapshot?.credits), usedKeys);
+      (row.snapshot?.tracks || []).forEach((track) => collectArtistRefKeys(track?.artistRefs, usedKeys));
+      (row.snapshot?.trackTree || []).forEach((node) => collectArtistRefKeys(node?.artistRefs, usedKeys));
+    });
+
+    const users = catalog.users.filter((artist) => usedKeys.has(buildArtistCatalogKey(artist)));
+    res.json({
+      users,
+      groups: catalog.groups,
+      guests: catalog.guests,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to load artists' });
+  }
+});
+
+app.patch('/api/admin/artists/users/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const description = normalizeText(req.body?.description);
+    if (description.length > 2000) {
+      res.status(400).json({ error: 'Artist description must be 2000 characters or fewer' });
+      return;
+    }
+    const result = await pool.query(
+      `UPDATE users
+       SET artist_description = $2,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING id,
+                 username,
+                 artist_display_name AS "artistDisplayName",
+                 artist_description AS "artistDescription",
+                 oidc_display_name AS "oidcDisplayName"`,
+      [req.params.id, description || null]
+    );
+    if (result.rowCount === 0) {
+      res.status(404).json({ error: 'Artist not found' });
+      return;
+    }
+    const row = result.rows[0];
+    res.json({
+      artist: {
+        type: 'user',
+        id: row.id,
+        username: row.username,
+        name: getEffectiveArtistName(row),
+        description: row.artistDescription || '',
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to update artist' });
+  }
+});
+
+app.patch('/api/admin/artists/music-groups/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const name = normalizeText(req.body?.name);
+    const groupType = normalizeText(req.body?.groupType);
+    const description = normalizeText(req.body?.description);
+    if (!name) {
+      res.status(400).json({ error: 'Music group name is required' });
+      return;
+    }
+    const result = await pool.query(
+      `UPDATE music_groups
+       SET name = $2,
+           group_type = $3,
+           description = $4,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, name, group_type AS "groupType", description`,
+      [req.params.id, name, groupType, description]
+    );
+    if (result.rowCount === 0) {
+      res.status(404).json({ error: 'Music group not found' });
+      return;
+    }
+    res.json({ group: { type: 'group', ...result.rows[0] } });
+  } catch (error) {
+    const message = String(error?.message || '');
+    if (/duplicate key|unique/i.test(message)) {
+      res.status(409).json({ error: 'A music group with that name already exists' });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to update music group' });
+  }
+});
+
+app.patch('/api/admin/artists/guest-artists/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const name = normalizeText(req.body?.name);
+    const description = normalizeText(req.body?.description);
+    if (!name) {
+      res.status(400).json({ error: 'Guest artist name is required' });
+      return;
+    }
+    const result = await pool.query(
+      `UPDATE guest_artists
+       SET name = $2,
+           description = $3,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, name, description`,
+      [req.params.id, name, description]
+    );
+    if (result.rowCount === 0) {
+      res.status(404).json({ error: 'Guest artist not found' });
+      return;
+    }
+    res.json({ guest: { type: 'guest', ...result.rows[0] } });
+  } catch (error) {
+    const message = String(error?.message || '');
+    if (/duplicate key|unique/i.test(message)) {
+      res.status(409).json({ error: 'A guest artist with that name already exists' });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to update guest artist' });
   }
 });
 
@@ -1395,6 +2166,12 @@ app.delete('/api/admin/roles/:roleId/members/:userId', requireAuth, requireAdmin
 app.post('/api/admin/roles/:id/grants', requireAuth, requireAdmin, async (req, res) => {
   try {
     const grant = await upsertRoleGrant(req.params.id, {
+      permissionKey: req.body?.permissionKey ?? req.body?.permission,
+      scopeType: req.body?.scopeType,
+      scopeShowId: req.body?.scopeShowId,
+      scopeProjectId: req.body?.scopeProjectId,
+      scopeTrackId: req.body?.scopeTrackId,
+      scopeNameValue: req.body?.scopeNameValue,
       capability: req.body?.capability,
       showTargetType: req.body?.showTargetType,
       showTargetShowId: req.body?.showTargetShowId,
@@ -1493,6 +2270,12 @@ app.delete('/api/admin/users/:userId/roles/:roleId', requireAuth, requireAdmin, 
 app.post('/api/admin/users/:id/grants', requireAuth, requireAdmin, async (req, res) => {
   try {
     const grant = await upsertUserGrant(req.params.id, {
+      permissionKey: req.body?.permissionKey ?? req.body?.permission,
+      scopeType: req.body?.scopeType,
+      scopeShowId: req.body?.scopeShowId,
+      scopeProjectId: req.body?.scopeProjectId,
+      scopeTrackId: req.body?.scopeTrackId,
+      scopeNameValue: req.body?.scopeNameValue,
       capability: req.body?.capability,
       showTargetType: req.body?.showTargetType,
       showTargetShowId: req.body?.showTargetShowId,
@@ -1604,7 +2387,7 @@ app.post('/api/projects', requireAuth, async (req, res) => {
 
     const projectId = String(req.body?.projectId || randomUUID());
     const snapshot = initialSnapshot && typeof initialSnapshot === 'object'
-      ? { ...initialSnapshot, projectId, projectName: name, musicalNumber: requestedMusicalNumber, showId: show.id, showName: show.name }
+      ? { ...initialSnapshot, projectId, projectName: name, musicalNumber: requestedMusicalNumber, showId: show.id, showName: show.name, credits: normalizeProjectCredits(initialSnapshot.credits || {}) }
       : {
         projectId,
         projectName: name,
@@ -1613,6 +2396,7 @@ app.post('/api/projects', requireAuth, async (req, res) => {
         musicalNumber: requestedMusicalNumber,
         sampleRate: 44100,
         masterVolume: 100,
+        credits: normalizeProjectCredits({}),
         tracks: [],
         trackTree: [],
         loop: { enabled: false, startMs: 0, endMs: 0 },
@@ -1622,9 +2406,9 @@ app.post('/api/projects', requireAuth, async (req, res) => {
     try {
       await client.query('BEGIN');
       await client.query(
-        `INSERT INTO projects(id, name, musical_number, scene_order, show_id, created_by)
-         VALUES($1, $2, $3, $4, $5, $6)`,
-        [projectId, name, requestedMusicalNumber, requestedSceneOrder, show.id, req.user.id]
+        `INSERT INTO projects(id, name, musical_number, scene_order, show_id, created_by, credits_json)
+         VALUES($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+        [projectId, name, requestedMusicalNumber, requestedSceneOrder, show.id, req.user.id, JSON.stringify(normalizeProjectCredits(snapshot.credits || {}))]
       );
 
       await client.query(
@@ -1923,12 +2707,12 @@ app.get('/api/projects/:id/bootstrap', requireAuth, async (req, res) => {
     const access = await getProjectAccess(req.user.id, projectId);
     const canBootstrap = purpose === 'player'
       ? canAccessProjectInPlayer(access)
-      : canAccessProjectInDaw(access);
+      : canOpenProjectInDaw(access);
     if (!canBootstrap) {
       res.status(403).json({
         error: purpose === 'player'
           ? 'No player access for this project'
-          : 'No read permission for this project',
+          : 'No DAW access for this project',
       });
       return;
     }
@@ -1943,6 +2727,169 @@ app.get('/api/projects/:id/bootstrap', requireAuth, async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(404).json({ error: 'Project not found' });
+  }
+});
+
+app.get('/api/projects/:id/credits', requireAuth, async (req, res) => {
+  try {
+    const projectId = String(req.params.id || '');
+    const access = await getProjectAccess(req.user.id, projectId);
+    if (!canAccessProjectInPlayer(access) && !canAccessProjectInDaw(access)) {
+      res.status(403).json({ error: 'No access for this project' });
+      return;
+    }
+    const result = await pool.query(
+      `SELECT p.id,
+              p.name,
+              p.musical_number AS "musicalNumber",
+              p.credits_json AS "projectCredits",
+              s.id AS "showId",
+              s.name AS "showName",
+              s.description AS "showDescription",
+              s.producers AS "showProducers",
+              ph.latest_snapshot_json AS "snapshot"
+       FROM projects p
+       LEFT JOIN shows s
+         ON s.id = p.show_id
+       LEFT JOIN project_heads ph
+         ON ph.project_id = p.id
+       WHERE p.id = $1`,
+      [projectId]
+    );
+    if (result.rowCount === 0) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+    const row = result.rows[0];
+    const snapshot = row.snapshot || {};
+    const catalog = await loadArtistCatalog();
+    const rawCredits = chooseStoredProjectCredits(row.projectCredits, snapshot.credits);
+    res.json({
+      show: {
+        id: row.showId,
+        name: row.showName || '',
+        description: row.showDescription || '',
+        producers: resolveArtistRefs(row.showProducers, catalog),
+      },
+      project: {
+        id: row.id,
+        name: row.name,
+        musicalNumber: row.musicalNumber,
+      },
+      credits: resolveProjectCreditsPayload(rawCredits, snapshot, catalog),
+      creditRoleOptions: CREDIT_ROLE_OPTIONS,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to load credits' });
+  }
+});
+
+app.put('/api/projects/:id/credits', requireAuth, async (req, res) => {
+  try {
+    const projectId = String(req.params.id || '');
+    const access = await getProjectAccess(req.user.id, projectId);
+    if (!access?.canManageProject) {
+      res.status(403).json({ error: 'Project manager access is required to edit project credits' });
+      return;
+    }
+    const headResult = await pool.query(
+      `SELECT latest_snapshot_json
+       FROM project_heads
+       WHERE project_id = $1`,
+      [projectId]
+    );
+    if (headResult.rowCount === 0) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+    const currentSnapshot = headResult.rows[0].latest_snapshot_json || {};
+    const credits = normalizeProjectCredits(req.body?.credits || {});
+    const result = await appendProjectOp({
+      projectId,
+      userId: req.user.id,
+      clientOpId: null,
+      op: {
+        type: 'project.replace',
+        project: {
+          ...currentSnapshot,
+          credits,
+        },
+      },
+    });
+    await pool.query(
+      `UPDATE projects
+       SET credits_json = $2::jsonb
+       WHERE id = $1`,
+      [projectId, JSON.stringify(credits)]
+    );
+    broadcastToProject(projectId, 'op.broadcast', {
+      projectId,
+      serverSeq: result.serverSeq,
+      clientOpId: null,
+      op: result.op,
+      actor: {
+        userId: req.user.id,
+        username: req.user.username,
+      },
+    });
+    res.json({ credits, latestSeq: result.serverSeq });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to save project credits' });
+  }
+});
+
+app.patch('/api/projects/:id/tracks/:trackId/artists', requireAuth, async (req, res) => {
+  try {
+    const projectId = String(req.params.id || '');
+    const trackId = String(req.params.trackId || '');
+    const headResult = await pool.query(
+      `SELECT latest_snapshot_json
+       FROM project_heads
+       WHERE project_id = $1`,
+      [projectId]
+    );
+    if (headResult.rowCount === 0) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+    const currentSnapshot = headResult.rows[0].latest_snapshot_json || {};
+    const tracks = Array.isArray(currentSnapshot.tracks) ? currentSnapshot.tracks : [];
+    if (!tracks.some((track) => String(track.id) === trackId)) {
+      res.status(404).json({ error: 'Track not found' });
+      return;
+    }
+    const artistRefs = normalizeArtistRefs(req.body?.artistRefs);
+    const nextSnapshot = applyTrackArtistRefsToSnapshot(currentSnapshot, trackId, artistRefs);
+    const result = await appendProjectOp({
+      projectId,
+      userId: req.user.id,
+      clientOpId: null,
+      op: {
+        type: 'project.replace',
+        project: nextSnapshot,
+      },
+    });
+    broadcastToProject(projectId, 'op.broadcast', {
+      projectId,
+      serverSeq: result.serverSeq,
+      clientOpId: null,
+      op: result.op,
+      actor: {
+        userId: req.user.id,
+        username: req.user.username,
+      },
+    });
+    res.json({ artistRefs, latestSeq: result.serverSeq });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to save track artists');
+    if (/permission|scope|edit|create|manage/i.test(message)) {
+      res.status(403).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to save track artists' });
   }
 });
 
@@ -2020,28 +2967,39 @@ app.put('/api/projects/:projectId/permissions/:userId', requireAuth, requireAdmi
   }
 });
 
-app.get('/api/shows', requireAuth, async (_req, res) => {
+app.get('/api/shows', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT s.id,
               s.name,
               s.order_index AS "orderIndex",
+              s.created_by AS "createdByUserId",
               COUNT(p.id)::integer AS "projectCount"
        FROM shows s
        LEFT JOIN projects p
          ON p.show_id = s.id
-       GROUP BY s.id, s.name, s.order_index
+       GROUP BY s.id, s.name, s.order_index, s.created_by
        ORDER BY s.order_index ASC, s.name ASC`
     );
-    res.json({ shows: result.rows });
+    const accessMap = await buildShowAccessMapForRows(req.user.id, result.rows);
+    res.json({
+      shows: result.rows
+        .map((row) => attachShowAccess(row, accessMap))
+        .filter((row) => row.canSeeShow || row.canCreateProjects || row.canManageShow),
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to load shows' });
   }
 });
 
-app.post('/api/admin/shows', requireAuth, requireAdmin, async (req, res) => {
+app.post('/api/admin/shows', requireAuth, async (req, res) => {
   try {
+    const accessSummary = await getUserAccessSummary(req.user.id);
+    if (!accessSummary.canCreateShows) {
+      res.status(403).json({ error: 'You do not have permission to create shows' });
+      return;
+    }
     const name = String(req.body?.name || '').trim();
     if (!name) {
       res.status(400).json({ error: 'Show name is required' });
@@ -2067,11 +3025,17 @@ app.post('/api/admin/shows', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-app.patch('/api/admin/shows/:id', requireAuth, requireAdmin, async (req, res) => {
+app.patch('/api/admin/shows/:id', requireAuth, async (req, res) => {
   const showId = String(req.params.id || '').trim();
   const name = String(req.body?.name || '').trim();
   if (!showId || !name) {
     res.status(400).json({ error: 'Show name is required' });
+    return;
+  }
+
+  const showAccessMap = await getShowAccessMap(req.user.id, [{ id: showId }], pool);
+  if (!showAccessMap.get(showId)?.canManageShow) {
+    res.status(403).json({ error: 'You do not have permission to rename this show' });
     return;
   }
 
@@ -2131,6 +3095,85 @@ app.patch('/api/admin/shows/:id', requireAuth, requireAdmin, async (req, res) =>
     res.status(500).json({ error: 'Failed to rename show' });
   } finally {
     client.release();
+  }
+});
+
+app.get('/api/shows/:id/metadata', requireAuth, async (req, res) => {
+  try {
+    const showId = String(req.params.id || '').trim();
+    const accessMap = await getShowAccessMap(req.user.id, [{ id: showId }], pool);
+    if (!accessMap.get(showId)?.canSeeShow && !accessMap.get(showId)?.canManageShow) {
+      res.status(403).json({ error: 'No access for this show' });
+      return;
+    }
+    const result = await pool.query(
+      `SELECT id, name, description, producers
+       FROM shows
+       WHERE id = $1`,
+      [showId]
+    );
+    if (result.rowCount === 0) {
+      res.status(404).json({ error: 'Show not found' });
+      return;
+    }
+    const catalog = await loadArtistCatalog();
+    const show = result.rows[0];
+    res.json({
+      show: {
+        id: show.id,
+        name: show.name,
+        description: show.description || '',
+        producers: resolveArtistRefs(show.producers, catalog),
+        producerRefs: normalizeArtistRefs(show.producers),
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to load show metadata' });
+  }
+});
+
+app.patch('/api/shows/:id/metadata', requireAuth, async (req, res) => {
+  try {
+    const showId = String(req.params.id || '').trim();
+    const accessMap = await getShowAccessMap(req.user.id, [{ id: showId }], pool);
+    if (!accessMap.get(showId)?.canManageShow) {
+      res.status(403).json({ error: 'Show manager access is required to edit show metadata' });
+      return;
+    }
+    const description = normalizeText(req.body?.description);
+    if (description.length > 4000) {
+      res.status(400).json({ error: 'Show description must be 4000 characters or fewer' });
+      return;
+    }
+    const producers = normalizeArtistRefs(req.body?.producers || req.body?.producerRefs);
+    const result = await pool.query(
+      `UPDATE shows
+       SET description = $2,
+           producers = $3::jsonb,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, name, description, producers`,
+      [showId, description, JSON.stringify(producers)]
+    );
+    if (result.rowCount === 0) {
+      res.status(404).json({ error: 'Show not found' });
+      return;
+    }
+    const catalog = await loadArtistCatalog();
+    const show = result.rows[0];
+    res.json({
+      show: {
+        id: show.id,
+        name: show.name,
+        description: show.description || '',
+        producers: resolveArtistRefs(show.producers, catalog),
+        producerRefs: normalizeArtistRefs(show.producers),
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to save show metadata' });
   }
 });
 
@@ -3389,8 +4432,8 @@ wsServer.on('connection', (ws, req) => {
           }
 
           const access = await getProjectAccess(ws.session.userId, projectId);
-          if (!canAccessProjectInDaw(access)) {
-            sendWs(ws, 'error', { code: 'NO_READ_PERMISSION', message: 'No read permission', retryable: false });
+          if (!canOpenProjectInDaw(access)) {
+            sendWs(ws, 'error', { code: 'NO_READ_PERMISSION', message: 'No DAW access', retryable: false });
             return;
           }
 

@@ -3,6 +3,8 @@ import { ChevronDown, Plus, Download, FileAudio, CircleUserRound } from 'lucide-
 import { isValidMusicalNumber, normalizeMusicalNumber, normalizeProjectName } from '../utils/naming';
 import { PlaybackDevicesSettingsPanel } from './SettingsPanels';
 import { usePlaybackDeviceSettings } from '../hooks/usePlaybackDeviceSettings';
+import CreditsEditorDialog from './CreditsEditorDialog';
+import { getProjectCredits, getShowMetadata, saveProjectCredits, saveShowMetadata } from '../lib/serverApi';
 
 function HostedDashboard({
   session,
@@ -21,6 +23,7 @@ function HostedDashboard({
   error = '',
   onSwitchToPlayerMode = null,
   onOpenAdmin = null,
+  onOpenProfile = null,
 }) {
   const [newProjectName, setNewProjectName] = useState('');
   const [newMusicalNumber, setNewMusicalNumber] = useState('0.0');
@@ -29,10 +32,9 @@ function HostedDashboard({
   const [showDropdownOpen, setShowDropdownOpen] = useState(false);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
-  const canCreateProjects = Boolean(session?.accessSummary?.canCreateProjects);
-  const canManageShows = Boolean(session?.user?.isAdmin && onCreateShow);
-  const canRenameShows = Boolean(session?.user?.isAdmin && onRenameShow);
+  const canCreateShows = Boolean(session?.accessSummary?.canCreateShows && onCreateShow);
   const [contextMenu, setContextMenu] = useState(null);
+  const [creditsEditor, setCreditsEditor] = useState(null);
   const [editingProjectId, setEditingProjectId] = useState(null);
   const [editingProjectName, setEditingProjectName] = useState('');
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
@@ -58,12 +60,14 @@ function HostedDashboard({
   );
   const projectShowIds = new Set((projects || []).map((project) => project.showId).filter(Boolean));
   const selectableShows = (shows || []).filter((show) => (
-    canCreateProjects || canManageShows || projectShowIds.has(show.id)
+    show.canSeeShow || show.canCreateProjects || show.canManageShow || projectShowIds.has(show.id)
   ));
   const selectableShowIds = selectableShows.map((show) => show.id).join('|');
   const selectedShow = selectableShows.find((show) => show.id === selectedShowId)
     || selectableShows[0]
     || null;
+  const canCreateProjectsInSelectedShow = Boolean(selectedShow?.canCreateProjects);
+  const canRenameSelectedShow = Boolean(selectedShow?.canManageShow && onRenameShow);
   const visibleProjects = (projects || []).filter((project) => (
     selectedShow ? project.showId === selectedShow.id : false
   ));
@@ -136,6 +140,40 @@ function HostedDashboard({
     if (updated?.id) setSelectedShowId(updated.id);
   };
 
+  const openShowCreditsEditor = async (show) => {
+    if (!show?.id) return;
+    setContextMenu(null);
+    try {
+      const payload = await getShowMetadata(show.id, session);
+      setCreditsEditor({
+        mode: 'show',
+        title: `Show credits - ${show.name}`,
+        showId: show.id,
+        description: payload?.show?.description || '',
+        producerRefs: payload?.show?.producerRefs || payload?.show?.producers || [],
+      });
+    } catch (error) {
+      window.alert(error.message || 'Failed to load show credits');
+    }
+  };
+
+  const openProjectCreditsEditor = async (project) => {
+    if (!project?.id) return;
+    setContextMenu(null);
+    try {
+      const payload = await getProjectCredits(project.id, session);
+      setCreditsEditor({
+        mode: 'project',
+        title: `Credits - ${project.musicalNumber || '0.0'} ${project.name || ''}`.trim(),
+        projectId: project.id,
+        credits: payload?.credits || {},
+        creditRoleOptions: payload?.creditRoleOptions || null,
+      });
+    } catch (error) {
+      window.alert(error.message || 'Failed to load project credits');
+    }
+  };
+
   useEffect(() => {
     const closeMenu = () => setContextMenu(null);
     window.addEventListener('click', closeMenu);
@@ -199,7 +237,7 @@ function HostedDashboard({
               }
             }}
             onContextMenu={(event) => {
-              if (!canRenameShows || !selectedShow) return;
+              if (!canRenameSelectedShow || !selectedShow) return;
               event.preventDefault();
               setContextMenu({
                 type: 'show',
@@ -229,7 +267,7 @@ function HostedDashboard({
                       setShowDropdownOpen(false);
                     }}
                     onContextMenu={(event) => {
-                      if (!canRenameShows) return;
+                      if (!show?.canManageShow || !onRenameShow) return;
                       event.preventDefault();
                       setContextMenu({
                         type: 'show',
@@ -254,14 +292,14 @@ function HostedDashboard({
           <div className="relative" ref={createMenuRef}>
             <button
               onClick={() => {
-                if (canManageShows) {
+                if (canCreateShows) {
                   setCreateMenuOpen((previous) => !previous);
                   return;
                 }
                 setShowNewProjectDialog(true);
               }}
               className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg p-2 flex items-center justify-center transition-colors disabled:bg-gray-700"
-              disabled={loading || (!canCreateProjects && !canManageShows) || (!selectedShow && !canManageShows)}
+              disabled={loading || (!canCreateProjectsInSelectedShow && !canCreateShows) || (!selectedShow && !canCreateShows)}
               title={selectedShow ? `Create in ${selectedShow.name}` : 'Create'}
             >
               <Plus size={18} />
@@ -270,7 +308,7 @@ function HostedDashboard({
               <div className="absolute right-0 top-full z-30 mt-2 min-w-52 overflow-hidden rounded-md border border-gray-700 bg-gray-800 py-1 shadow-lg">
                 <button
                   type="button"
-                  disabled={!canCreateProjects || !selectedShow || loading}
+                  disabled={!canCreateProjectsInSelectedShow || !selectedShow || loading}
                   onClick={() => {
                     setCreateMenuOpen(false);
                     setShowNewProjectDialog(true);
@@ -279,7 +317,7 @@ function HostedDashboard({
                 >
                   Create musical number
                 </button>
-                {canManageShows ? (
+                {canCreateShows ? (
                   <button
                     type="button"
                     disabled={loading}
@@ -297,7 +335,7 @@ function HostedDashboard({
           </div>
 
           <label
-            className={`bg-green-600 hover:bg-green-700 text-white rounded-lg p-2 flex items-center justify-center transition-colors cursor-pointer ${(loading || !canCreateProjects || !selectedShow) ? 'opacity-60 pointer-events-none' : ''}`}
+            className={`bg-green-600 hover:bg-green-700 text-white rounded-lg p-2 flex items-center justify-center transition-colors cursor-pointer ${(loading || !canCreateProjectsInSelectedShow || !selectedShow) ? 'opacity-60 pointer-events-none' : ''}`}
             title={isImporting ? 'Importing project...' : 'Import Project'}
           >
             <Download size={18} />
@@ -350,6 +388,17 @@ function HostedDashboard({
             </button>
             {profileMenuOpen ? (
               <div className="absolute right-0 top-full mt-2 min-w-32 rounded-md border border-gray-700 bg-gray-800 shadow-lg z-30 overflow-hidden">
+                {onOpenProfile ? (
+                  <button
+                    onClick={() => {
+                      setProfileMenuOpen(false);
+                      onOpenProfile();
+                    }}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+                  >
+                    My Profile
+                  </button>
+                ) : null}
                 <button
                   onClick={() => {
                     setProfileMenuOpen(false);
@@ -475,10 +524,11 @@ function HostedDashboard({
                       key={project.id}
                       onClick={() => {
                         if (editingProjectId === project.id) return;
+                        if (!project?.canOpenProject) return;
                         onOpenProject(project);
                       }}
                       onContextMenu={(e) => {
-                        if (!(project?.canManageOwnProject || project?.canManageProject)) return;
+                        if (!project?.canManageProject) return;
                         e.preventDefault();
                         setContextMenu({
                           type: 'project',
@@ -487,7 +537,11 @@ function HostedDashboard({
                           project,
                         });
                       }}
-                      className="grid grid-cols-[68px_minmax(150px,1fr)_70px_106px] items-center px-2 py-2.5 bg-gray-900 hover:bg-gray-800 transition-colors cursor-pointer"
+                      className={`grid grid-cols-[68px_minmax(150px,1fr)_70px_106px] items-center px-2 py-2.5 transition-colors ${
+                        project?.canOpenProject
+                          ? 'bg-gray-900 hover:bg-gray-800 cursor-pointer'
+                          : 'bg-gray-900/70 text-gray-500 cursor-default'
+                      }`}
                     >
                       <div className="text-lg text-gray-300 font-mono truncate">
                         {project.musicalNumber || '0.0'}
@@ -511,7 +565,10 @@ function HostedDashboard({
                             className="font-semibold text-xl bg-transparent border-b border-blue-500 px-0 py-0 leading-none focus:outline-none w-full"
                           />
                         ) : (
-                          <h3 className="font-semibold text-xl truncate">{project.name}</h3>
+                          <h3 className="font-semibold text-xl truncate">
+                            {project.name}
+                            {!project?.canOpenProject ? <span className="ml-2 text-xs font-medium text-gray-500">Read only in dashboard</span> : null}
+                          </h3>
                         )}
                       </div>
                       <div className="text-lg text-gray-300">
@@ -543,6 +600,12 @@ function HostedDashboard({
             }}
           >
             Rename show
+          </button>
+          <button
+            className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700"
+            onClick={() => openShowCreditsEditor(contextMenu.show)}
+          >
+            Edit show credits
           </button>
         </div>
       )}
@@ -582,6 +645,12 @@ function HostedDashboard({
             Set Musical Number
           </button>
           <button
+            className="w-full text-left px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-700"
+            onClick={() => openProjectCreditsEditor(contextMenu.project)}
+          >
+            Edit credits
+          </button>
+          <button
             className="w-full text-left px-3 py-1.5 text-sm text-red-300 hover:bg-gray-700"
             onClick={async () => {
               setContextMenu(null);
@@ -594,6 +663,30 @@ function HostedDashboard({
           </button>
         </div>
       )}
+
+      <CreditsEditorDialog
+        open={Boolean(creditsEditor)}
+        mode={creditsEditor?.mode || 'project'}
+        title={creditsEditor?.title || 'Credits'}
+        session={session}
+        initialDescription={creditsEditor?.description || ''}
+        initialProducerRefs={creditsEditor?.producerRefs || []}
+        initialCredits={creditsEditor?.credits || null}
+        creditRoleOptions={creditsEditor?.creditRoleOptions || null}
+        resetKey={
+          creditsEditor?.mode === 'show'
+            ? `show:${creditsEditor?.showId || ''}`
+            : `project:${creditsEditor?.projectId || ''}`
+        }
+        onClose={() => setCreditsEditor(null)}
+        onSave={async (payload) => {
+          if (creditsEditor?.mode === 'show') {
+            await saveShowMetadata(creditsEditor.showId, payload, session);
+          } else if (creditsEditor?.mode === 'project') {
+            await saveProjectCredits(creditsEditor.projectId, payload, session);
+          }
+        }}
+      />
 
       {settingsOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">

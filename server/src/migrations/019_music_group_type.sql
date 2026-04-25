@@ -1,0 +1,2 @@
+ALTER TABLE music_groups
+  ADD COLUMN IF NOT EXISTS group_type TEXT NOT NULL DEFAULT '';

@@ -7,6 +7,7 @@ import {
   TRACK_ROLE_METRONOME,
   TRACK_ROLE_OTHER,
   GROUP_ROLE_NONE,
+  GROUP_ROLE_OTHERS,
   isChoirPartRole,
   isChoirRole,
   isGroupParentRole,
@@ -19,6 +20,9 @@ import {
 
 const GROUP_HEIGHT = 100;
 const ROOT_PARENT_ID = null;
+
+export const TRACK_NODE_TYPE_GROUP = 'group';
+export const TRACK_NODE_TYPE_AUDIO = 'audio';
 
 function toNumber(value, fallback = 0) {
   return Number.isFinite(Number(value)) ? Number(value) : fallback;
@@ -40,9 +44,11 @@ function makeTrackNode(trackId, order = 0, parentId = ROOT_PARENT_ID) {
   return {
     id: createId(),
     kind: 'track',
+    type: TRACK_NODE_TYPE_AUDIO,
     parentId,
     order,
     trackId,
+    part: false,
   };
 }
 
@@ -58,6 +64,57 @@ function getGroupHeight(groupNode) {
   return GROUP_HEIGHT;
 }
 
+function isLegacyPartGroupRole(role) {
+  const normalized = normalizeGroupRole(role);
+  return (
+    normalized !== GROUP_ROLE_NONE
+    && normalized !== GROUP_ROLE_OTHERS
+    && !isGroupParentRole(normalized)
+  );
+}
+
+function normalizePartFlag(value, fallback = false) {
+  if (value === true) return true;
+  if (value === false) return false;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+  return Boolean(fallback);
+}
+
+function normalizeArtistRefs(value) {
+  const seen = new Set();
+  return (Array.isArray(value) ? value : [])
+    .map((ref) => ({
+      type: String(ref?.type || '').trim(),
+      id: String(ref?.id || '').trim(),
+    }))
+    .filter((ref) => {
+      const key = `${ref.type}:${ref.id}`;
+      if (!ref.type || !ref.id || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function enforcePartNestingRule(nodes) {
+  const childrenMap = getChildrenMap(nodes);
+  const walk = (parentId, hasPartAncestor) => {
+    const key = parentId || '__root__';
+    const children = childrenMap.get(key) || [];
+    children.forEach((node) => {
+      if (hasPartAncestor && node.part) {
+        node.part = false;
+      }
+      walk(node.id, hasPartAncestor || Boolean(node.part));
+    });
+  };
+  walk(ROOT_PARENT_ID, false);
+  return nodes;
+}
+
 export function normalizeTrackTree(project) {
   if (!project) return project;
   const tracks = Array.isArray(project.tracks) ? project.tracks : [];
@@ -71,7 +128,13 @@ export function normalizeTrackTree(project) {
   for (const rawNode of rawNodes) {
     if (!rawNode || typeof rawNode !== 'object') continue;
     const rawKind = rawNode.kind ?? rawNode.type;
-    const kind = rawKind === 'group' ? 'group' : (rawKind === 'track' ? 'track' : null);
+    const kind = rawKind === 'group'
+      ? 'group'
+      : (
+        rawKind === 'track' || rawKind === TRACK_NODE_TYPE_AUDIO
+          ? 'track'
+          : null
+      );
     if (!kind) continue;
     const legacyNodeId = rawNode.id ?? rawNode.nodeId;
     const nodeId = typeof legacyNodeId === 'string' && legacyNodeId && !seenNodeIds.has(legacyNodeId)
@@ -86,20 +149,25 @@ export function normalizeTrackTree(project) {
       if (!trackIds.has(legacyTrackId) || seenTrackIds.has(legacyTrackId)) {
         continue;
       }
+      const track = tracks.find((candidate) => candidate.id === legacyTrackId);
       seenTrackIds.add(legacyTrackId);
       normalizedNodes.push({
         id: nodeId,
         kind: 'track',
+        type: TRACK_NODE_TYPE_AUDIO,
         parentId: typeof legacyParentId === 'string' ? legacyParentId : ROOT_PARENT_ID,
         order: toNumber(rawNode.order, 0),
         trackId: legacyTrackId,
+        part: normalizePartFlag(rawNode.part, track?.part),
       });
       continue;
     }
 
+    const role = normalizeGroupRole(rawNode.role);
     normalizedNodes.push({
       id: nodeId,
       kind: 'group',
+      type: TRACK_NODE_TYPE_GROUP,
       parentId: typeof legacyParentId === 'string' ? legacyParentId : ROOT_PARENT_ID,
       order: toNumber(rawNode.order, 0),
       name: typeof rawNode.name === 'string' && rawNode.name.trim() ? rawNode.name : 'Group',
@@ -108,7 +176,9 @@ export function normalizeTrackTree(project) {
       soloed: Boolean(rawNode.soloed),
       volume: Math.max(0, Math.min(100, toNumber(rawNode.volume, 100))),
       pan: clampPan(rawNode.pan),
-      role: normalizeGroupRole(rawNode.role),
+      role,
+      part: normalizePartFlag(rawNode.part, isLegacyPartGroupRole(role)),
+      artistRefs: normalizeArtistRefs(rawNode.artistRefs),
     });
   }
 
@@ -134,8 +204,14 @@ export function normalizeTrackTree(project) {
     .reduce((max, node) => Math.max(max, toNumber(node.order, 0)), -1);
 
   missingTrackIds.forEach((trackId, idx) => {
-    normalizedNodes.push(makeTrackNode(trackId, rootOrderBase + idx + 1, ROOT_PARENT_ID));
+    const track = tracks.find((candidate) => candidate.id === trackId);
+    normalizedNodes.push({
+      ...makeTrackNode(trackId, rootOrderBase + idx + 1, ROOT_PARENT_ID),
+      part: normalizePartFlag(track?.part, false),
+    });
   });
+
+  enforcePartNestingRule(normalizedNodes);
 
   const grouped = new Map();
   for (const node of normalizedNodes) {
@@ -188,6 +264,8 @@ export function getVisibleTimelineRows(project) {
           parentId: node.parentId || ROOT_PARENT_ID,
           depth,
           name: node.name,
+          type: TRACK_NODE_TYPE_GROUP,
+          part: Boolean(node.part),
           collapsed: Boolean(node.collapsed),
           height: getGroupHeight(node),
           muted: Boolean(node.muted),
@@ -195,6 +273,7 @@ export function getVisibleTimelineRows(project) {
           volume: Math.max(0, Math.min(100, toNumber(node.volume, 100))),
           pan: clampPan(node.pan),
           role: normalizeGroupRole(node.role),
+          artistRefs: normalizeArtistRefs(node.artistRefs),
         });
         if (!node.collapsed) {
           walk(node.id, depth + 1);
@@ -202,13 +281,16 @@ export function getVisibleTimelineRows(project) {
       } else {
         const track = trackById.get(node.trackId);
         if (!track) continue;
+        const part = normalizePartFlag(node.part, track.part);
         rows.push({
           kind: 'track',
           nodeId: node.id,
           trackId: track.id,
+          type: TRACK_NODE_TYPE_AUDIO,
+          part,
           parentId: node.parentId || ROOT_PARENT_ID,
           depth,
-          track,
+          track: { ...track, type: TRACK_NODE_TYPE_AUDIO, part },
           height: getTrackHeight(track),
         });
       }
@@ -317,7 +399,7 @@ export function attachTrackNode(project, trackId, parentId = ROOT_PARENT_ID, ind
       order: insertionIndex,
     });
 
-    return { ...normalized, trackTree: nextTree };
+    return normalizeTrackTree({ ...normalized, trackTree: nextTree });
   }
 
   const siblings = normalized.trackTree
@@ -331,13 +413,13 @@ export function attachTrackNode(project, trackId, parentId = ROOT_PARENT_ID, ind
     }
   }
 
-  return {
+  return normalizeTrackTree({
     ...normalized,
     trackTree: [
       ...normalized.trackTree,
       makeTrackNode(trackId, insertionIndex, targetParentId),
     ],
-  };
+  });
 }
 
 export function removeTrackNode(project, trackId) {
@@ -367,6 +449,7 @@ export function createGroupNode(project, name = 'Group', parentId = ROOT_PARENT_
   const nextNode = {
     id: createId(),
     kind: 'group',
+    type: TRACK_NODE_TYPE_GROUP,
     parentId: parentId || ROOT_PARENT_ID,
     order: insertionIndex,
     name: name || 'Group',
@@ -376,22 +459,31 @@ export function createGroupNode(project, name = 'Group', parentId = ROOT_PARENT_
     volume: 100,
     pan: 0,
     role: GROUP_ROLE_NONE,
+    part: false,
+    artistRefs: [],
   };
-  return { ...normalized, trackTree: [...normalized.trackTree, nextNode] };
+  return normalizeTrackTree({ ...normalized, trackTree: [...normalized.trackTree, nextNode] });
 }
 
 export function updateGroupNode(project, groupNodeId, updates = {}) {
   const normalized = normalizeTrackTree(project);
-  return {
+  return normalizeTrackTree({
     ...normalized,
     trackTree: normalized.trackTree.map((node) => {
       if (node.id !== groupNodeId || node.kind !== 'group') return node;
       const nextRole = updates.role !== undefined
         ? normalizeGroupRole(updates.role)
         : node.role;
+      const nextPart = updates.part !== undefined
+        ? Boolean(updates.part)
+        : Boolean(node.part);
+      const nextArtistRefs = updates.artistRefs !== undefined
+        ? normalizeArtistRefs(updates.artistRefs)
+        : normalizeArtistRefs(node.artistRefs);
       return {
         ...node,
         ...updates,
+        type: TRACK_NODE_TYPE_GROUP,
         volume: updates.volume !== undefined
           ? Math.max(0, Math.min(100, toNumber(updates.volume, 100)))
           : node.volume,
@@ -399,9 +491,11 @@ export function updateGroupNode(project, groupNodeId, updates = {}) {
         muted: updates.muted !== undefined ? Boolean(updates.muted) : node.muted,
         soloed: updates.soloed !== undefined ? Boolean(updates.soloed) : node.soloed,
         role: nextRole,
+        part: nextPart,
+        artistRefs: nextArtistRefs,
       };
     }),
-  };
+  });
 }
 
 export function syncDirectChildRolesFromGroupCategories(project) {
@@ -412,61 +506,70 @@ export function syncDirectChildRolesFromGroupCategories(project) {
   let changed = false;
   const applied = [];
 
-  for (const groupNode of nextTrackTree) {
-    if (groupNode.kind !== 'group') continue;
-    const groupRole = groupNode.role;
-    let inheritedRole = null;
-    if (isGroupParentRole(groupRole)) {
-      inheritedRole = mapGroupParentRoleToTrackRole(groupRole);
-    } else {
-      const categoryRole = toCategoryRole(groupRole);
-      if (
-        categoryRole === TRACK_ROLE_INSTRUMENT
-        || categoryRole === TRACK_ROLE_LEAD
-        || categoryRole === TRACK_ROLE_CHOIR
-      ) {
-        inheritedRole = categoryRole;
+  let passChanged = true;
+  let guard = 0;
+  while (passChanged && guard < nextTrackTree.length + 1) {
+    passChanged = false;
+    guard += 1;
+
+    for (const groupNode of nextTrackTree) {
+      if (groupNode.kind !== 'group') continue;
+      const groupRole = groupNode.role;
+      let inheritedRole = null;
+      if (isGroupParentRole(groupRole)) {
+        inheritedRole = mapGroupParentRoleToTrackRole(groupRole);
+      } else {
+        const categoryRole = toCategoryRole(groupRole);
+        if (
+          categoryRole === TRACK_ROLE_INSTRUMENT
+          || categoryRole === TRACK_ROLE_LEAD
+          || categoryRole === TRACK_ROLE_CHOIR
+          || categoryRole === TRACK_ROLE_OTHER
+        ) {
+          inheritedRole = categoryRole;
+        }
       }
-    }
-    if (!inheritedRole) continue;
-    if (inheritedRole === TRACK_ROLE_OTHER) continue;
+      if (!inheritedRole) continue;
 
-    for (let idx = 0; idx < nextTrackTree.length; idx += 1) {
-      const child = nextTrackTree[idx];
-      if ((child.parentId || ROOT_PARENT_ID) !== groupNode.id) continue;
+      for (let idx = 0; idx < nextTrackTree.length; idx += 1) {
+        const child = nextTrackTree[idx];
+        if ((child.parentId || ROOT_PARENT_ID) !== groupNode.id) continue;
 
-      if (child.kind === 'track') {
-        const trackIdx = trackIndexById.get(child.trackId);
-        if (trackIdx === undefined) continue;
-        const track = nextTracks[trackIdx];
-        if (track.role !== inheritedRole) {
-          const previousRole = track.role;
-          nextTracks[trackIdx].role = inheritedRole;
-          nextTracks[trackIdx].icon = getDefaultIconByRole(inheritedRole);
+        if (child.kind === 'track') {
+          const trackIdx = trackIndexById.get(child.trackId);
+          if (trackIdx === undefined) continue;
+          const track = nextTracks[trackIdx];
+          if (track.role !== inheritedRole) {
+            const previousRole = track.role;
+            nextTracks[trackIdx].role = inheritedRole;
+            nextTracks[trackIdx].icon = getDefaultIconByRole(inheritedRole);
+            applied.push({
+              parentGroupId: groupNode.id,
+              childKind: 'track',
+              childNodeId: child.id,
+              trackId: child.trackId,
+              fromRole: previousRole,
+              toRole: inheritedRole,
+            });
+            changed = true;
+            passChanged = true;
+          }
+          continue;
+        }
+
+        if (child.kind === 'group' && child.role !== inheritedRole) {
+          const previousRole = child.role;
+          nextTrackTree[idx].role = inheritedRole;
           applied.push({
             parentGroupId: groupNode.id,
-            childKind: 'track',
+            childKind: 'group',
             childNodeId: child.id,
-            trackId: child.trackId,
             fromRole: previousRole,
             toRole: inheritedRole,
           });
           changed = true;
+          passChanged = true;
         }
-        continue;
-      }
-
-      if (child.kind === 'group' && child.role !== inheritedRole) {
-        const previousRole = child.role;
-        nextTrackTree[idx].role = inheritedRole;
-        applied.push({
-          parentGroupId: groupNode.id,
-          childKind: 'group',
-          childNodeId: child.id,
-          fromRole: previousRole,
-          toRole: inheritedRole,
-        });
-        changed = true;
       }
     }
   }
@@ -574,7 +677,7 @@ export function moveTrackTreeNode(project, nodeId, targetNodeId, placement = 'af
     sibling.order = idx;
   });
 
-  return reorderTracksByTree({ ...normalized, trackTree: [...normalized.trackTree] });
+  return reorderTracksByTree(normalizeTrackTree({ ...normalized, trackTree: [...normalized.trackTree] }));
 }
 
 export function deleteGroupPromoteChildren(project, groupNodeId) {
@@ -599,7 +702,7 @@ export function deleteGroupPromoteChildren(project, groupNodeId) {
   });
 
   const nextTree = normalized.trackTree.filter((node) => node.id !== group.id);
-  return reorderTracksByTree({ ...normalized, trackTree: nextTree });
+  return reorderTracksByTree(normalizeTrackTree({ ...normalized, trackTree: nextTree }));
 }
 
 export function getEffectiveTrackMix(project) {
