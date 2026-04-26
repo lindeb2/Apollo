@@ -242,6 +242,17 @@ function uniqueTextValues(values = []) {
   return Array.from(new Set(values.filter(Boolean).map((value) => String(value))));
 }
 
+function normalizeArtistUserIds(value = []) {
+  const refs = Array.isArray(value) ? value : [];
+  return new Set(refs
+    .map((ref) => {
+      const type = normalizeLowerText(ref?.type);
+      const id = normalizeText(ref?.id || ref?.userId);
+      return type === 'user' && id ? id : null;
+    })
+    .filter(Boolean));
+}
+
 function isChoirPartRole(role) {
   return typeof role === 'string' && role.startsWith('choir-part-');
 }
@@ -686,9 +697,11 @@ function collectTrackBindingInfo(snapshot = {}) {
       infoByTrackId.set(track.id, {
         trackId: track.id,
         nodeId: node.id,
+        name: normalizeText(track.name) || 'Untitled track',
         parentId: node.parentId || null,
         ancestorTrackIds: nextAncestorTrackIds,
         createdByUserId: normalizeText(track.createdByUserId) || null,
+        artistUserIds: normalizeArtistUserIds(track.artistRefs),
         accessScopeType: TRACK_BINDING_SCOPE_TYPES.includes(normalizeLowerText(track.accessScopeType))
           ? normalizeLowerText(track.accessScopeType)
           : null,
@@ -742,9 +755,11 @@ function collectTrackBindingInfo(snapshot = {}) {
     infoByTrackId.set(track.id, {
       trackId: track.id,
       nodeId: `track-node:${track.id}`,
+      name: normalizeText(track.name) || 'Untitled track',
       parentId: null,
       ancestorTrackIds: [],
       createdByUserId: normalizeText(track.createdByUserId) || null,
+      artistUserIds: normalizeArtistUserIds(track.artistRefs),
       accessScopeType: TRACK_BINDING_SCOPE_TYPES.includes(normalizeLowerText(track.accessScopeType))
         ? normalizeLowerText(track.accessScopeType)
         : null,
@@ -1947,17 +1962,7 @@ function emptyShowAccessSummary() {
 
 function mergeGrantedScope(scopesMap, grant) {
   const shape = normalizeGrantShape(grant);
-  const key = [
-    shape.scopeType,
-    shape.scopeShowId || '',
-    shape.scopeProjectId || '',
-    shape.scopeTrackId || '',
-    shape.scopeNameValue || '',
-    shape.scopeGroupNameValue || '',
-    shape.scopePartNameValue || '',
-  ].join(':');
-  if (scopesMap.has(key)) return;
-  scopesMap.set(key, {
+  mergeScopeEntry(scopesMap, {
     type: shape.scopeType,
     showId: shape.scopeShowId || null,
     projectId: shape.scopeProjectId || null,
@@ -1969,6 +1974,112 @@ function mergeGrantedScope(scopesMap, grant) {
     partLabel: shape.scopePartLabel || '',
     label: normalizeText(shape.scopeLabel || shape.scopeNameValue || shape.scopeTrackId || shape.scopeType),
   });
+}
+
+function mergeScopeEntry(scopesMap, scope) {
+  const key = [
+    scope.type,
+    scope.showId || '',
+    scope.projectId || '',
+    scope.trackId || '',
+    scope.value || '',
+    scope.groupNameValue || '',
+    scope.partNameValue || '',
+    scope.source || '',
+  ].join(':');
+  if (scopesMap.has(key)) return;
+  scopesMap.set(key, {
+    type: scope.type,
+    showId: scope.showId || null,
+    projectId: scope.projectId || null,
+    trackId: scope.trackId || null,
+    value: scope.value || scope.trackId || null,
+    groupNameValue: scope.groupNameValue || null,
+    groupLabel: scope.groupLabel || '',
+    partNameValue: scope.partNameValue || null,
+    partLabel: scope.partLabel || '',
+    label: normalizeText(scope.label || scope.value || scope.trackId || scope.type),
+    source: scope.source || null,
+  });
+}
+
+function buildTrackArtistManagerScopes(trackInfoById, userId, project = null) {
+  const normalizedUserId = normalizeText(userId);
+  if (!normalizedUserId || !trackInfoById) return [];
+  return Array.from(trackInfoById.values())
+    .filter((trackInfo) => trackInfo.artistUserIds?.has(normalizedUserId))
+    .map((trackInfo) => ({
+      type: RBAC_SCOPE_TRACK,
+      showId: project?.showId || project?.show_id || null,
+      projectId: project?.id || project?.projectId || null,
+      trackId: String(trackInfo.trackId || ''),
+      value: String(trackInfo.trackId || ''),
+      label: trackInfo.name || 'Track artist',
+      source: 'track_artist',
+    }))
+    .filter((scope) => scope.trackId);
+}
+
+function withoutTrackArtistScopes(access = {}) {
+  const filterScopes = (scopes) => (
+    Array.isArray(scopes)
+      ? scopes.filter((scope) => scope?.source !== 'track_artist')
+      : []
+  );
+  return {
+    ...access,
+    creatableTrackScopes: filterScopes(access?.creatableTrackScopes),
+    manageableTrackScopes: filterScopes(access?.manageableTrackScopes),
+    editableTrackScopes: filterScopes(access?.editableTrackScopes),
+  };
+}
+
+function trackArtistSelfRemoved(currentTrack = {}, nextTrack = {}, userId) {
+  const normalizedUserId = normalizeText(userId);
+  if (!normalizedUserId) return false;
+  const currentArtistUserIds = normalizeArtistUserIds(currentTrack?.artistRefs);
+  if (!currentArtistUserIds.has(normalizedUserId)) return false;
+  return !normalizeArtistUserIds(nextTrack?.artistRefs).has(normalizedUserId);
+}
+
+function assertTrackArtistSelfRemovalAllowed({
+  currentTrack,
+  nextTrack,
+  currentTrackInfo,
+  nextTrackInfo,
+  access,
+  userId,
+  project = null,
+  projectCreatedByUserId = null,
+}) {
+  if (!trackArtistSelfRemoved(currentTrack, nextTrack, userId)) return;
+  const accessWithoutArtist = withoutTrackArtistScopes(access);
+  if (
+    trackIsEditable(
+      currentTrackInfo,
+      accessWithoutArtist,
+      userId,
+      project,
+      projectCreatedByUserId,
+      { includeArtistAccess: false }
+    )
+    && trackIsEditable(
+      nextTrackInfo,
+      accessWithoutArtist,
+      userId,
+      project,
+      projectCreatedByUserId,
+      { includeArtistAccess: false }
+    )
+  ) {
+    return;
+  }
+  throw new Error('You cannot remove yourself as track artist when that is your only track manager access');
+}
+
+function isTrackArtist(trackInfo, userId) {
+  const normalizedUserId = normalizeText(userId);
+  return Boolean(normalizedUserId && trackInfo?.artistUserIds?.has(normalizedUserId));
 }
 
 function projectHasOwnedTrack(trackInfoById, userId) {
@@ -1989,6 +2100,8 @@ function buildProjectAccessSummary(userId, project, grants = [], projectTags = n
   const ownsShow = Boolean(showCreatedByUserId && showCreatedByUserId === normalizedUserId);
   const ownsProject = Boolean(createdByUserId && createdByUserId === normalizedUserId);
   const ownsAnyTrack = projectHasOwnedTrack(trackInfoById, userId);
+  const artistManagerScopes = buildTrackArtistManagerScopes(trackInfoById, userId, project);
+  const managesArtistTracks = artistManagerScopes.length > 0;
   const published = isProjectPublished(project, snapshot);
 
   if (isAdmin) {
@@ -2037,13 +2150,17 @@ function buildProjectAccessSummary(userId, project, grants = [], projectTags = n
     summary.canListenTutti = true;
     summary.canManageProjectUnconditionally = true;
   }
-  if (ownsAnyTrack) {
+  if (ownsAnyTrack || managesArtistTracks) {
     summary.canSeeProject = true;
     summary.canOpenProject = true;
     summary.canCreateTracks = true;
     summary.canManageTracks = true;
     summary.canCreateMixes = true;
     summary.canListenTutti = true;
+  }
+  for (const scope of artistManagerScopes) {
+    mergeScopeEntry(creatableTrackScopes, scope);
+    mergeScopeEntry(manageableTrackScopes, scope);
   }
   if (published) {
     summary.canSeeShow = true;
@@ -3213,7 +3330,7 @@ function projectMatchesScopeEntry(scope, project = null, projectTags = null, tra
     && projectMatchesShapeNameFilters(shape, projectTags, trackInfoById);
 }
 
-function trackIsEditable(trackInfo, access, userId, project = null, projectCreatedByUserId = null) {
+function trackIsEditable(trackInfo, access, userId, project = null, projectCreatedByUserId = null, options = {}) {
   if (projectLevelWriteEnabled(access)) return true;
   if (!trackInfo) return false;
   const normalizedUserId = normalizeText(userId);
@@ -3229,6 +3346,9 @@ function trackIsEditable(trackInfo, access, userId, project = null, projectCreat
     if (ownerUserId && ownerUserId === normalizedUserId) {
       return true;
     }
+  }
+  if (options.includeArtistAccess !== false && isTrackArtist(trackInfo, normalizedUserId)) {
+    return true;
   }
   return false;
 }
@@ -3476,6 +3596,16 @@ export async function validateAndTransformProjectWrite({
     if (!editable) {
       throw new Error('You can only edit tracks that you are allowed to edit');
     }
+    assertTrackArtistSelfRemovalAllowed({
+      currentTrack,
+      nextTrack,
+      currentTrackInfo: currentTrackInfo.get(trackId),
+      nextTrackInfo: nextTrackInfo.get(trackId),
+      access,
+      userId,
+      project: normalizedProject,
+      projectCreatedByUserId,
+    });
     if (!trackIsEditable(nextTrackInfo.get(trackId), access, userId, normalizedProject, projectCreatedByUserId)) {
       throw new Error('That change would move or rename the track outside your permitted scope');
     }

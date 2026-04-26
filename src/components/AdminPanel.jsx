@@ -9,14 +9,17 @@ import {
   deleteRbacRole,
   deleteRbacRoleGrant,
   deleteRbacRoleOidcLink,
+  deleteUserGrant,
   getRbacCatalog,
   getRbacRole,
+  getUserAccessDetail,
   listAdminArtists,
   listRbacRoles,
   listUsers,
   removeRbacRoleMember,
   removeUserRole,
   saveRbacRoleGrant,
+  saveUserGrant,
   transferUserOwnership,
   updateAdminArtist,
   updateRbacRole,
@@ -702,7 +705,9 @@ export default function AdminPanel({
   const [rolePickerUserId, setRolePickerUserId] = useState('');
   const [userActionMenuId, setUserActionMenuId] = useState('');
   const [userActionModal, setUserActionModal] = useState(null);
+  const [userAccessModal, setUserAccessModal] = useState(null);
   const [showRedundantAccesses, setShowRedundantAccesses] = useState(false);
+  const [showRedundantUserAccesses, setShowRedundantUserAccesses] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const profileMenuRef = useRef(null);
   const rolePickerRef = useRef(null);
@@ -901,6 +906,18 @@ export default function AdminPanel({
     return showRedundantAccesses ? grants : grants.filter((grant) => !grant.isRedundant);
   }, [allRoleGrants, showRedundantAccesses]);
 
+  const userDirectGrants = useMemo(() => (
+    userAccessModal?.detail?.directGrants || []
+  ), [userAccessModal]);
+
+  const visibleUserDirectGrants = useMemo(() => {
+    const grants = userDirectGrants.map((grant) => ({
+      ...grant,
+      isRedundant: isGrantRedundant(grant, userDirectGrants),
+    }));
+    return showRedundantUserAccesses ? grants : grants.filter((grant) => !grant.isRedundant);
+  }, [showRedundantUserAccesses, userDirectGrants]);
+
   const runAction = async (action, fallbackMessage) => {
     setSaving(true);
     setError('');
@@ -1094,6 +1111,60 @@ export default function AdminPanel({
         await loadRole(selectedRoleId);
       }
     }, shouldHaveRole ? 'Failed to add role.' : 'Failed to remove role.');
+  };
+
+  const loadUserAccess = async (userId) => {
+    const detail = await getUserAccessDetail(userId, session);
+    setUserAccessModal((current) => (
+      current?.userId === userId
+        ? {
+          ...current,
+          loading: false,
+          detail,
+          user: detail?.user || current.user,
+        }
+        : current
+    ));
+    return detail;
+  };
+
+  const openUserAccessModal = async (user) => {
+    if (!user?.id) return;
+    setUserActionMenuId('');
+    setShowRedundantUserAccesses(false);
+    setUserAccessModal({
+      userId: user.id,
+      user,
+      detail: null,
+      loading: true,
+    });
+    setError('');
+    try {
+      await loadUserAccess(user.id);
+    } catch (loadError) {
+      setUserAccessModal(null);
+      setError(loadError.message || 'Failed to load user access.');
+    }
+  };
+
+  const handleSaveUserGrant = async (grant) => {
+    if (!userAccessModal?.userId) return;
+    const userId = userAccessModal.userId;
+    await runAction(async () => {
+      await saveUserGrant(userId, grant, session);
+      await loadBaseData();
+      await loadUserAccess(userId);
+    }, 'Failed to save user access.');
+  };
+
+  const handleDeleteUserGrant = async (grant) => {
+    if (!userAccessModal?.userId || !grant?.id) return;
+    const userId = userAccessModal.userId;
+    await runAction(async () => {
+      await deleteUserGrant(userId, grant.id, session);
+      await loadBaseData();
+      await loadUserAccess(userId);
+    }, 'Failed to remove user access.');
   };
 
   const openUserActionModal = (type, user) => {
@@ -1915,6 +1986,13 @@ export default function AdminPanel({
                               <div className="absolute right-0 top-full z-40 mt-2 w-56 overflow-hidden rounded-xl border border-gray-700 bg-gray-900 p-1 shadow-2xl">
                                 <button
                                   type="button"
+                                  onClick={() => openUserAccessModal(user)}
+                                  className="w-full rounded-lg px-3 py-2 text-left text-sm text-gray-100 hover:bg-gray-800"
+                                >
+                                  Manage direct access
+                                </button>
+                                <button
+                                  type="button"
                                   onClick={() => openUserActionModal('transfer', user)}
                                   className="w-full rounded-lg px-3 py-2 text-left text-sm text-gray-100 hover:bg-gray-800"
                                 >
@@ -1945,6 +2023,86 @@ export default function AdminPanel({
           </div>
         </div>
       </div>
+      {userAccessModal ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div className="max-h-[90vh] w-full max-w-3xl overflow-hidden rounded-2xl border border-gray-700 bg-gray-900 shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-gray-700 px-5 py-4">
+              <div className="min-w-0">
+                <h2 className="truncate text-lg font-semibold text-white">
+                  Direct access: {userAccessModal.user?.username || 'User'}
+                </h2>
+                <div className="mt-1 truncate text-sm text-gray-400">
+                  {userAccessModal.user?.oidcDisplayName || userAccessModal.user?.oidcEmail || 'Apollo user'}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUserAccessModal(null)}
+                className="rounded bg-gray-800 px-3 py-1.5 text-sm text-gray-100 hover:bg-gray-700"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="max-h-[calc(90vh-78px)] overflow-auto p-5">
+              {userAccessModal.loading ? (
+                <Empty>Loading access...</Empty>
+              ) : (
+                <div className="space-y-5">
+                  <CompactAccessSection
+                    title="Roles"
+                    count={(userAccessModal.detail?.roles || []).length}
+                  >
+                    {(userAccessModal.detail?.roles || []).length ? (
+                      (userAccessModal.detail?.roles || []).map((role) => (
+                        <CompactAccessRow
+                          key={role.id}
+                          title={getRoleDisplayName(role)}
+                          badges={role.isSystem ? <Badge tone="blue">System</Badge> : null}
+                        />
+                      ))
+                    ) : (
+                      <div className="p-4">
+                        <Empty>No roles.</Empty>
+                      </div>
+                    )}
+                  </CompactAccessSection>
+
+                  <CompactAccessSection
+                    title="Direct access rules"
+                    count={visibleUserDirectGrants.length}
+                    actions={(
+                      <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-gray-300">
+                        <input
+                          type="checkbox"
+                          checked={showRedundantUserAccesses}
+                          onChange={(event) => setShowRedundantUserAccesses(event.target.checked)}
+                          className="h-4 w-4 rounded border-gray-600 bg-gray-950 accent-blue-600"
+                        />
+                        Show redundant accesses
+                      </label>
+                    )}
+                  >
+                    <div className="border-b border-gray-800 p-4">
+                      <GrantEditor
+                        catalog={catalog}
+                        disabled={saving}
+                        excludedPermissions={[]}
+                        onSave={handleSaveUserGrant}
+                      />
+                    </div>
+                    <GrantList
+                      grants={visibleUserDirectGrants}
+                      canRemove
+                      onRemove={handleDeleteUserGrant}
+                    />
+                  </CompactAccessSection>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
       {userActionModal ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
           <div className="w-full max-w-md rounded-2xl border border-gray-700 bg-gray-900 p-5 shadow-2xl">

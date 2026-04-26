@@ -514,4 +514,133 @@ describe('validateAndTransformProjectWrite', () => {
     expect(transformed.loop).toEqual({ enabled: true, startMs: 1000, endMs: 4000 });
     expect(transformed.trackTree[0].collapsed).toBe(true);
   });
+
+  it('allows a track artist to create descendant tracks through track-manager scope', async () => {
+    const currentSnapshot = {
+      projectId: 'project-1',
+      projectName: 'Test',
+      musicalNumber: '1.1',
+      published: false,
+      sampleRate: 44100,
+      masterVolume: 100,
+      showId: 'show-1',
+      tracks: [
+        {
+          id: 'track-1',
+          name: 'Lead',
+          role: 'lead',
+          icon: 'mic',
+          volume: 100,
+          pan: 0,
+          muted: false,
+          soloed: false,
+          clips: [],
+          createdByUserId: 'owner-1',
+          artistRefs: [{ type: 'user', id: 'user-5' }],
+        },
+      ],
+      trackTree: [
+        { id: 'node-1', kind: 'track', trackId: 'track-1', order: 0 },
+      ],
+      loop: { enabled: false, startMs: 0, endMs: 0 },
+    };
+    const nextSnapshot = {
+      ...currentSnapshot,
+      tracks: [
+        ...currentSnapshot.tracks,
+        {
+          id: 'child-track',
+          name: 'Harmony',
+          role: 'lead',
+          icon: 'mic',
+          volume: 100,
+          pan: 0,
+          muted: false,
+          soloed: false,
+          clips: [],
+        },
+      ],
+      trackTree: [
+        { id: 'node-1', kind: 'track', trackId: 'track-1', order: 0 },
+        { id: 'node-child', kind: 'track', trackId: 'child-track', parentId: 'node-1', order: 0 },
+      ],
+    };
+
+    const transformed = await validateAndTransformProjectWrite({
+      userId: 'user-5',
+      project: { id: 'project-1', createdByUserId: 'owner-1', showId: 'show-1' },
+      access: {
+        canCreateTracks: true,
+        canManageTracks: true,
+        creatableTrackScopes: [{
+          type: 'track',
+          trackId: 'track-1',
+          value: 'track-1',
+          label: 'Lead',
+          source: 'track_artist',
+        }],
+      },
+      currentSnapshot,
+      nextSnapshot,
+    });
+
+    expect(transformed.tracks[1]).toMatchObject({
+      createdByUserId: 'user-5',
+      accessScopeType: 'track',
+      accessScopeValue: 'track-1',
+    });
+  });
+
+  it('prevents a track artist from removing themselves when that is their only track manager access', async () => {
+    const currentSnapshot = {
+      projectId: 'project-1',
+      projectName: 'Test',
+      musicalNumber: '1.1',
+      published: false,
+      sampleRate: 44100,
+      masterVolume: 100,
+      showId: 'show-1',
+      tracks: [
+        {
+          id: 'track-1',
+          name: 'Lead',
+          role: 'lead',
+          icon: 'mic',
+          volume: 100,
+          pan: 0,
+          muted: false,
+          soloed: false,
+          clips: [],
+          createdByUserId: 'owner-1',
+          artistRefs: [{ type: 'user', id: 'user-5' }],
+        },
+      ],
+      trackTree: [
+        { id: 'node-1', kind: 'track', trackId: 'track-1', order: 0 },
+      ],
+      loop: { enabled: false, startMs: 0, endMs: 0 },
+    };
+
+    await expect(validateAndTransformProjectWrite({
+      userId: 'user-5',
+      project: { id: 'project-1', createdByUserId: 'owner-1', showId: 'show-1' },
+      access: {
+        canManageTracks: true,
+        manageableTrackScopes: [{
+          type: 'track',
+          trackId: 'track-1',
+          value: 'track-1',
+          label: 'Lead',
+          source: 'track_artist',
+        }],
+      },
+      currentSnapshot,
+      nextSnapshot: {
+        ...currentSnapshot,
+        tracks: currentSnapshot.tracks.map((track) => (
+          track.id === 'track-1' ? { ...track, artistRefs: [] } : track
+        )),
+      },
+    })).rejects.toThrow('cannot remove yourself as track artist');
+  });
 });
