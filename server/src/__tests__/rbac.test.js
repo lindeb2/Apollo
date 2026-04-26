@@ -356,6 +356,128 @@ describe('validateAndTransformProjectWrite', () => {
     })).rejects.toThrow('Project-level settings require project manager access');
   });
 
+  it('rejects solo changes when the writer cannot edit every track', async () => {
+    const currentSnapshot = {
+      projectId: 'project-1',
+      projectName: 'Test',
+      musicalNumber: '1.1',
+      published: false,
+      sampleRate: 44100,
+      masterVolume: 100,
+      showId: 'show-1',
+      tracks: [
+        {
+          id: 'track-1',
+          name: 'Lead',
+          role: 'lead',
+          icon: 'mic',
+          volume: 100,
+          pan: 0,
+          muted: false,
+          soloed: false,
+          clips: [],
+          createdByUserId: 'user-4',
+        },
+        {
+          id: 'track-2',
+          name: 'Band',
+          role: 'instrument',
+          icon: 'guitar',
+          volume: 100,
+          pan: 0,
+          muted: false,
+          soloed: false,
+          clips: [],
+          createdByUserId: 'owner-1',
+        },
+      ],
+      trackTree: [
+        { id: 'node-1', kind: 'track', trackId: 'track-1', order: 0 },
+        { id: 'node-2', kind: 'track', trackId: 'track-2', order: 1 },
+      ],
+      loop: { enabled: false, startMs: 0, endMs: 0 },
+    };
+
+    await expect(validateAndTransformProjectWrite({
+      userId: 'user-4',
+      project: { id: 'project-1', createdByUserId: 'owner-1', showId: 'show-1' },
+      access: {
+        canManageTracks: true,
+        manageableTrackScopes: [{ type: 'track', trackId: 'track-1', value: 'track-1', label: 'Lead' }],
+      },
+      currentSnapshot,
+      nextSnapshot: {
+        ...currentSnapshot,
+        tracks: currentSnapshot.tracks.map((track) => (
+          track.id === 'track-1' ? { ...track, soloed: true } : track
+        )),
+      },
+    })).rejects.toThrow('Soloing tracks requires permission to edit every track in the project');
+  });
+
+  it('allows solo changes when a track manager can edit every track', async () => {
+    const currentSnapshot = {
+      projectId: 'project-1',
+      projectName: 'Test',
+      musicalNumber: '1.1',
+      published: false,
+      sampleRate: 44100,
+      masterVolume: 100,
+      showId: 'show-1',
+      tracks: [
+        {
+          id: 'track-1',
+          name: 'Lead',
+          role: 'lead',
+          icon: 'mic',
+          volume: 100,
+          pan: 0,
+          muted: false,
+          soloed: false,
+          clips: [],
+          createdByUserId: 'owner-1',
+        },
+        {
+          id: 'track-2',
+          name: 'Band',
+          role: 'instrument',
+          icon: 'guitar',
+          volume: 100,
+          pan: 0,
+          muted: false,
+          soloed: false,
+          clips: [],
+          createdByUserId: 'owner-1',
+        },
+      ],
+      trackTree: [
+        { id: 'node-1', kind: 'track', trackId: 'track-1', order: 0 },
+        { id: 'node-2', kind: 'track', trackId: 'track-2', order: 1 },
+      ],
+      loop: { enabled: false, startMs: 0, endMs: 0 },
+    };
+
+    const nextSnapshot = {
+      ...currentSnapshot,
+      tracks: currentSnapshot.tracks.map((track) => (
+        track.id === 'track-1' ? { ...track, soloed: true } : track
+      )),
+    };
+
+    const transformed = await validateAndTransformProjectWrite({
+      userId: 'user-4',
+      project: { id: 'project-1', createdByUserId: 'owner-1', showId: 'show-1' },
+      access: {
+        canManageTracks: true,
+        manageableTrackScopes: [{ type: RBAC_SCOPE_PROJECT, projectId: 'project-1', label: 'Project' }],
+      },
+      currentSnapshot,
+      nextSnapshot,
+    });
+
+    expect(transformed.tracks[0].soloed).toBe(true);
+  });
+
   it('allows track-level writers to submit local-only loop and fold state without project manager access', async () => {
     const currentSnapshot = {
       projectId: 'project-1',

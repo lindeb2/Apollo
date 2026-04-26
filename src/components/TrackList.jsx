@@ -77,6 +77,7 @@ function TrackList({
   onToggleAdvancedGroupFocus = null,
   advancedMixLocked = false,
   localSessionMode = false,
+  canSoloTracks = true,
   emptyContextMenu,
   onClearEmptyContextMenu,
 }) {
@@ -135,7 +136,7 @@ function TrackList({
     advancedMixEnabled ? getAdvancedMixFocusMode(advancedMixFocus, trackId) : null
   ), [advancedMixEnabled, advancedMixFocus, getAdvancedMixFocusMode]);
   const getGroupFocusState = useCallback((groupNodeId) => (
-    advancedMixGroupEnabled && typeof getAdvancedMixGroupFocusState === 'function'
+  advancedMixGroupEnabled && typeof getAdvancedMixGroupFocusState === 'function'
       ? getAdvancedMixGroupFocusState(groupNodeId)
       : 'none'
   ), [advancedMixGroupEnabled, getAdvancedMixGroupFocusState]);
@@ -1030,6 +1031,10 @@ function TrackList({
   };
 
   const handleToggleSolo = (trackId, currentSoloed) => {
+    if (!canSoloTracks) {
+      window.alert('Solo requires permission to edit every track in the project.');
+      return;
+    }
     onUpdateTrack(trackId, { soloed: !currentSoloed });
   };
 
@@ -1038,6 +1043,10 @@ function TrackList({
   };
 
   const handleToggleGroupSolo = (groupNodeId, currentSoloed) => {
+    if (!canSoloTracks) {
+      window.alert('Solo requires permission to edit every track in the project.');
+      return;
+    }
     onUpdateGroup?.(groupNodeId, { soloed: !currentSoloed });
   };
 
@@ -1297,8 +1306,14 @@ function TrackList({
                           }}
                           className={`w-7 h-7 flex items-center justify-center rounded-r-md rounded-l-none border border-l-0 border-gray-600 transition-colors ${
                             row.soloed ? 'bg-yellow-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
-                          }`}
-                          title={advancedMixGroupEnabled ? 'Left click solo group, right click toggle mix slider target' : (row.soloed ? 'Unsolo group' : 'Solo group')}
+                          } ${canSoloTracks ? '' : 'opacity-60 cursor-not-allowed'}`}
+                          title={
+                            advancedMixGroupEnabled
+                              ? 'Left click solo group, right click toggle mix slider target'
+                              : canSoloTracks
+                                ? (row.soloed ? 'Unsolo group' : 'Solo group')
+                                : 'Solo requires permission to edit every track in the project'
+                          }
                         >
                           <Headphones size={16} />
                         </button>
@@ -1616,8 +1631,14 @@ function TrackList({
 	                        }}
 	                        className={`w-7 h-7 flex items-center justify-center rounded-r-md rounded-l-none border border-l-0 border-gray-600 transition-colors ${
 	                          track.soloed ? 'bg-yellow-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
-	                        }`}
-	                        title={advancedMixEnabled ? 'Left click solo, right click toggle mix slider target' : (track.soloed ? 'Unsolo' : 'Solo')}
+	                        } ${canSoloTracks ? '' : 'opacity-60 cursor-not-allowed'}`}
+	                        title={
+	                          advancedMixEnabled
+	                            ? 'Left click solo, right click toggle mix slider target'
+	                            : canSoloTracks
+	                              ? (track.soloed ? 'Unsolo' : 'Solo')
+	                              : 'Solo requires permission to edit every track in the project'
+	                        }
 	                      >
                         <Headphones size={16} />
                       </button>

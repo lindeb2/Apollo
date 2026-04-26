@@ -341,6 +341,10 @@ function Editor({
     && (isHostedSession || isLocalRecordingSession)
   );
   const remoteUserId = remoteSession?.session?.user?.id || null;
+  const canSoloTracksInProject = isAdvancedMixSession
+    || isLocalRecordingSession
+    || !remoteSession?.projectAccess
+    || Boolean(remoteSession.projectAccess.canEditAllTracks || remoteSession.projectAccess.canManageProject);
   const [advancedMixFocus, setAdvancedMixFocus] = useState(() => (
     normalizeAdvancedMixFocus(advancedMixSession?.mix?.advancedMix?.focus)
   ));
@@ -2352,6 +2356,10 @@ function Editor({
       ? pickAllowedUpdates(updates, ADVANCED_MIX_ALLOWED_TRACK_UPDATE_KEYS)
       : updates;
     if (!safeUpdates || !Object.keys(safeUpdates).length) return;
+    if (!canSoloTracksInProject && Object.prototype.hasOwnProperty.call(safeUpdates, 'soloed')) {
+      window.alert('Solo requires permission to edit every track in the project.');
+      return;
+    }
 
     let nextProjectAfter = null;
     updateProject((proj) => {
@@ -2570,6 +2578,10 @@ function Editor({
       ? pickAllowedUpdates(updates, ADVANCED_MIX_ALLOWED_TRACK_UPDATE_KEYS)
       : updates;
     if (!safeUpdates || !Object.keys(safeUpdates).length) return;
+    if (!canSoloTracksInProject && Object.prototype.hasOwnProperty.call(safeUpdates, 'soloed')) {
+      window.alert('Solo requires permission to edit every track in the project.');
+      return;
+    }
 
     let nextProjectAfter = null;
     const beforeChildren = safeUpdates.role !== undefined
@@ -4112,6 +4124,7 @@ function Editor({
           deleteClipShortcutEnabled={!isAdvancedMixSession}
           onDeleteTrackShortcut={isAdvancedMixSession || isLocalRecordingSession ? null : handleDeleteTrackById}
           advancedMixLocked={isAdvancedMixSession}
+          canSoloTracks={canSoloTracksInProject}
           sharedVerticalScroll
           scrollContainerRef={timelineScrollRef}
         >
@@ -4175,6 +4188,7 @@ function Editor({
                       onToggleGroupCollapse={handleToggleGroupCollapse}
                       advancedMixLocked={isAdvancedMixSession}
                       localSessionMode={isLocalRecordingSession}
+                      canSoloTracks={canSoloTracksInProject}
                       advancedMixFocus={isAdvancedMixSession ? advancedMixFocus : null}
                       getAdvancedMixFocusMode={getAdvancedMixFocusModeForTrack}
                       onToggleAdvancedTrackFocus={isAdvancedMixSession ? handleToggleAdvancedTrackFocus : null}

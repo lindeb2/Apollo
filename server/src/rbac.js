@@ -1917,6 +1917,7 @@ function emptyProjectAccessSummary() {
     canManageProject: false,
     canCreateTracks: false,
     canManageTracks: false,
+    canEditAllTracks: false,
     canListenTutti: false,
     canReadProject: false,
     canCreateMixes: false,
@@ -2002,6 +2003,7 @@ function buildProjectAccessSummary(userId, project, grants = [], projectTags = n
       canManageProject: true,
       canCreateTracks: true,
       canManageTracks: true,
+      canEditAllTracks: true,
       canListenTutti: true,
       canReadProject: true,
       canCreateMixes: true,
@@ -2158,6 +2160,16 @@ function buildProjectAccessSummary(userId, project, grants = [], projectTags = n
     canRead: summary.canSeeProject,
     canWrite: summary.canManageProject,
   };
+  summary.canEditAllTracks = canEditAllTracksInSnapshot({
+    snapshot,
+    access: summary,
+    userId,
+    project: {
+      id: project?.id || snapshot?.projectId || null,
+      showId: project?.showId || project?.show_id || snapshot?.showId || null,
+    },
+    projectCreatedByUserId: createdByUserId,
+  });
   return summary;
 }
 
@@ -3112,6 +3124,7 @@ function stripTrackWriteRestrictedShape(track = {}) {
   return {
     ...normalized,
     role: null,
+    soloed: false,
     createdByUserId: null,
     accessScopeType: null,
     accessScopeValue: null,
@@ -3217,6 +3230,48 @@ function trackIsEditable(trackInfo, access, userId, project = null, projectCreat
       return true;
     }
   }
+  return false;
+}
+
+function canEditAllTracksInSnapshot({
+  snapshot = {},
+  access,
+  userId,
+  project = null,
+  projectCreatedByUserId = null,
+}) {
+  if (!hasTrackLevelWrite(access)) return false;
+  const tracks = Array.isArray(snapshot?.tracks) ? snapshot.tracks : [];
+  if (!tracks.length) return true;
+  const trackInfoById = collectTrackBindingInfo(snapshot);
+  return tracks.every((track) => trackIsEditable(
+    trackInfoById.get(track?.id),
+    access,
+    userId,
+    project,
+    projectCreatedByUserId
+  ));
+}
+
+function soloStateChanged(currentSnapshot = {}, nextSnapshot = {}) {
+  const currentTracks = snapshotTrackMap(currentSnapshot);
+  const nextTracks = snapshotTrackMap(nextSnapshot);
+  const trackIds = new Set([...currentTracks.keys(), ...nextTracks.keys()]);
+  for (const trackId of trackIds) {
+    if (Boolean(currentTracks.get(trackId)?.soloed) !== Boolean(nextTracks.get(trackId)?.soloed)) {
+      return true;
+    }
+  }
+
+  const currentGroups = snapshotGroupNodeMap(currentSnapshot);
+  const nextGroups = snapshotGroupNodeMap(nextSnapshot);
+  const groupIds = new Set([...currentGroups.keys(), ...nextGroups.keys()]);
+  for (const groupId of groupIds) {
+    if (Boolean(currentGroups.get(groupId)?.soloed) !== Boolean(nextGroups.get(groupId)?.soloed)) {
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -3378,6 +3433,19 @@ export async function validateAndTransformProjectWrite({
     id: project?.id || currentSnapshot?.projectId || nextSnapshot?.projectId,
     showId: project?.showId || currentSnapshot?.showId || nextSnapshot?.showId || null,
   };
+
+  if (
+    soloStateChanged(currentSnapshot, nextSnapshot)
+    && !canEditAllTracksInSnapshot({
+      snapshot: currentSnapshot,
+      access,
+      userId,
+      project: normalizedProject,
+      projectCreatedByUserId,
+    })
+  ) {
+    throw new Error('Soloing tracks requires permission to edit every track in the project');
+  }
 
   const nextTracksArray = Array.isArray(nextSnapshot?.tracks) ? [...nextSnapshot.tracks] : [];
   const nextTrackIndexById = new Map(nextTracksArray.map((track, index) => [track.id, index]));

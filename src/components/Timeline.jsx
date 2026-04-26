@@ -80,6 +80,7 @@ function Timeline({
   deleteClipShortcutEnabled = false,
   onDeleteTrackShortcut = null,
   advancedMixLocked = false,
+  canSoloTracks = true,
   sharedVerticalScroll = false,
   children,
 }) {
@@ -1666,6 +1667,10 @@ function Timeline({
 
       if (e.code === 'KeyS' && hasTrackSelection) {
         e.preventDefault();
+        if (!canSoloTracks) {
+          window.alert('Solo requires permission to edit every track in the project.');
+          return;
+        }
         const track = project.tracks.find(t => t.id === selectedTrackId);
         if (!track) return;
         onSelectTrack(selectedTrackId);
@@ -1918,6 +1923,7 @@ function Timeline({
     shortcutsEnabled,
     deleteClipShortcutEnabled,
     advancedMixLocked,
+    canSoloTracks,
     selectedClipId,
     selectedClipIds,
     selectedTrackId,
