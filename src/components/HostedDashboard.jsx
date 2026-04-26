@@ -565,9 +565,9 @@ function HostedDashboard({
                             className="font-semibold text-xl bg-transparent border-b border-blue-500 px-0 py-0 leading-none focus:outline-none w-full"
                           />
                         ) : (
-                          <h3 className="font-semibold text-xl truncate">
-                            {project.name}
-                            {!project?.canOpenProject ? <span className="ml-2 text-xs font-medium text-gray-500">Read only in dashboard</span> : null}
+                          <h3 className="flex min-w-0 items-baseline gap-2 text-xl font-semibold">
+                            <span className="truncate">{project.name}</span>
+                            {!project?.canOpenProject ? <span className="shrink-0 text-xs font-medium text-gray-500">Read only in dashboard</span> : null}
                           </h3>
                         )}
                       </div>

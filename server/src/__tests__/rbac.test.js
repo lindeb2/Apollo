@@ -163,6 +163,13 @@ describe('resolveProjectAccessFromGrantRows', () => {
       canWrite: false,
     });
   });
+
+  it('treats published projects as readable without granting write access', () => {
+    expect(resolveProjectAccessFromGrantRows([], { id: 'project-public', published: true })).toEqual({
+      canRead: true,
+      canWrite: false,
+    });
+  });
 });
 
 describe('validateAndTransformProjectWrite', () => {
@@ -318,5 +325,71 @@ describe('validateAndTransformProjectWrite', () => {
       currentSnapshot,
       nextSnapshot,
     })).rejects.toThrow('remove your only project manager access');
+  });
+
+  it('rejects publish changes from track-level writers', async () => {
+    const currentSnapshot = {
+      projectId: 'project-1',
+      projectName: 'Test',
+      musicalNumber: '1.1',
+      published: false,
+      sampleRate: 44100,
+      masterVolume: 100,
+      showId: 'show-1',
+      tracks: [],
+      trackTree: [],
+      loop: { enabled: false, startMs: 0, endMs: 0 },
+    };
+
+    await expect(validateAndTransformProjectWrite({
+      userId: 'user-4',
+      project: { id: 'project-1', createdByUserId: 'owner-1', showId: 'show-1' },
+      access: {
+        canCreateTracks: true,
+        creatableTrackScopes: [{ type: 'group_name', value: 'choir', label: 'Choir' }],
+      },
+      currentSnapshot,
+      nextSnapshot: {
+        ...currentSnapshot,
+        published: true,
+      },
+    })).rejects.toThrow('Project-level settings require project manager access');
+  });
+
+  it('allows track-level writers to submit local-only loop and fold state without project manager access', async () => {
+    const currentSnapshot = {
+      projectId: 'project-1',
+      projectName: 'Test',
+      musicalNumber: '1.1',
+      published: false,
+      sampleRate: 44100,
+      masterVolume: 100,
+      showId: 'show-1',
+      tracks: [],
+      trackTree: [
+        { id: 'group-1', kind: 'group', name: 'Choir', order: 0, collapsed: false },
+      ],
+      loop: { enabled: false, startMs: 0, endMs: 0 },
+    };
+
+    const transformed = await validateAndTransformProjectWrite({
+      userId: 'user-4',
+      project: { id: 'project-1', createdByUserId: 'owner-1', showId: 'show-1' },
+      access: {
+        canCreateTracks: true,
+        creatableTrackScopes: [{ type: 'group_name', value: 'choir', label: 'Choir' }],
+      },
+      currentSnapshot,
+      nextSnapshot: {
+        ...currentSnapshot,
+        loop: { enabled: true, startMs: 1000, endMs: 4000 },
+        trackTree: [
+          { id: 'group-1', kind: 'group', name: 'Choir', order: 0, collapsed: true },
+        ],
+      },
+    });
+
+    expect(transformed.loop).toEqual({ enabled: true, startMs: 1000, endMs: 4000 });
+    expect(transformed.trackTree[0].collapsed).toBe(true);
   });
 });

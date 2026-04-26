@@ -607,6 +607,13 @@ export async function forceCheckpoint(projectId, session) {
   }, session);
 }
 
+export async function commitLocalProjectSession(projectId, snapshot, session) {
+  return await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/local-session`, {
+    method: 'POST',
+    body: { snapshot },
+  }, session);
+}
+
 export async function fetchPlayerMyDevice(session) {
   return await apiFetch('/api/player/my-device', {}, session);
 }

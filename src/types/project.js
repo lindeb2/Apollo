@@ -37,6 +37,10 @@ export const DEFAULT_EXPORT_SETTINGS = {
   forceMonoOutput: false,
 };
 
+export function normalizeProjectPublished(value = false) {
+  return value === true || String(value).trim().toLowerCase() === 'true';
+}
+
 export function normalizeExportSettings(settings = {}) {
   const next = {
     ...DEFAULT_EXPORT_SETTINGS,
@@ -95,6 +99,7 @@ export function normalizeExportSettings(settings = {}) {
  * @property {string} projectId - UUID
  * @property {string} projectName - Project name
  * @property {string} musicalNumber - Musical number (must start with "<number>.")
+ * @property {boolean} published - Whether everyone can see and listen to the tutti mix
  * @property {number} sampleRate - Sample rate (always 44100)
  * @property {number} masterVolume - Master volume (0-100)
  * @property {Object} autoPan - Auto-pan configuration
@@ -127,6 +132,7 @@ export function createEmptyProject(
     projectId: createId(),
     projectName: name,
     musicalNumber: String(musicalNumber || '0.0').trim() || '0.0',
+    published: false,
     sampleRate: SAMPLE_RATE,
     masterVolume: dbToVolume(0),
     autoPan: autoPan ?? { ...DEFAULT_AUTO_PAN_SETTINGS },

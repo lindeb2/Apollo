@@ -28,6 +28,7 @@ import {
   isGroupParentRole,
   mapGroupParentRoleToTrackRole,
 } from '../utils/trackRoles';
+import { ADVANCED_MIX_FOCUS_MODES, getAdvancedMixFocusMode as defaultGetAdvancedMixFocusMode } from '../utils/advancedMix';
 
 const TRACK_HEIGHT = 100;
 const REMOTE_VALUE_ANIMATION_MS = 800;
@@ -69,6 +70,13 @@ function TrackList({
   onRenameGroup,
   onDeleteGroup,
   onToggleGroupCollapse,
+  advancedMixFocus = null,
+  getAdvancedMixFocusMode = defaultGetAdvancedMixFocusMode,
+  onToggleAdvancedTrackFocus = null,
+  getAdvancedMixGroupFocusState = null,
+  onToggleAdvancedGroupFocus = null,
+  advancedMixLocked = false,
+  localSessionMode = false,
   emptyContextMenu,
   onClearEmptyContextMenu,
 }) {
@@ -119,6 +127,18 @@ function TrackList({
     () => new Map((visibleRows || []).map((row) => [row.nodeId, row])),
     [visibleRows]
   );
+  const advancedMixEnabled = typeof onToggleAdvancedTrackFocus === 'function';
+  const advancedMixGroupEnabled = typeof onToggleAdvancedGroupFocus === 'function';
+  const metadataLocked = advancedMixLocked || localSessionMode;
+  const structureMenuLocked = advancedMixLocked || localSessionMode;
+  const getTrackFocusMode = useCallback((trackId) => (
+    advancedMixEnabled ? getAdvancedMixFocusMode(advancedMixFocus, trackId) : null
+  ), [advancedMixEnabled, advancedMixFocus, getAdvancedMixFocusMode]);
+  const getGroupFocusState = useCallback((groupNodeId) => (
+    advancedMixGroupEnabled && typeof getAdvancedMixGroupFocusState === 'function'
+      ? getAdvancedMixGroupFocusState(groupNodeId)
+      : 'none'
+  ), [advancedMixGroupEnabled, getAdvancedMixGroupFocusState]);
 
   const rowArtistRefs = (row) => {
     if (!row) return [];
@@ -551,6 +571,7 @@ function TrackList({
   };
 
   const cycleIcon = (track, row) => {
+    if (metadataLocked) return;
     const limitedToPartIcons = hasPartTrackAncestor(row);
     const options = limitedToPartIcons
       ? iconOptions.filter((opt) => opt.key === 'mic' || opt.key === 'file-music')
@@ -602,6 +623,7 @@ function TrackList({
   );
 
   const applyTrackType = (row, track, nextType) => {
+    if (metadataLocked) return;
     if (!track?.id) return;
     onUpdateTrack?.(track.id, {
       role: nextType,
@@ -610,6 +632,7 @@ function TrackList({
   };
 
   const applyGroupType = (groupRow, nextType) => {
+    if (metadataLocked) return;
     if (!groupRow?.nodeId) return;
     if (nextType === TRACK_ROLES.METRONOME) return;
     const option = trackTypeOptions.find((candidate) => candidate.value === nextType);
@@ -619,12 +642,14 @@ function TrackList({
   };
 
   const toggleTrackPart = (row, track) => {
+    if (metadataLocked) return;
     if (!track?.id) return;
     if (hasPartTrackAncestor(row)) return;
     onUpdateTrack?.(track.id, { part: !Boolean(row?.part || track.part) });
   };
 
   const toggleGroupPart = (groupRow) => {
+    if (metadataLocked) return;
     if (!groupRow?.nodeId) return;
     if (hasPartTrackAncestor(groupRow)) return;
     const nextPart = !Boolean(groupRow.part);
@@ -652,6 +677,7 @@ function TrackList({
   };
 
   const cycleGroupRole = (groupRow) => {
+    if (metadataLocked) return;
     if (hasDirectParentTypeLock(groupRow)) return;
     const isGroupMode = isGroupTrackModeGroup(groupRow);
     const groupRoles = [
@@ -728,6 +754,7 @@ function TrackList({
   };
 
   const beginRowReorder = (e, row) => {
+    if (advancedMixLocked) return;
     if (e.button !== 0) return;
     if (e.target.closest('[data-track-interactive="true"]')) return;
     e.preventDefault();
@@ -1015,6 +1042,10 @@ function TrackList({
   };
 
   const handleNameChange = (trackId, newName) => {
+    if (metadataLocked) {
+      setEditingName(null);
+      return;
+    }
     const normalizedName = normalizeTrackName(newName);
     if (normalizedName) {
       onUpdateTrack(trackId, { name: normalizedName });
@@ -1023,6 +1054,7 @@ function TrackList({
   };
 
   const handleRenameGroup = (groupRow) => {
+    if (metadataLocked) return;
     const nextNameRaw = window.prompt('Rename group', groupRow.name);
     if (nextNameRaw === null) return;
     const normalizedName = normalizeTrackName(nextNameRaw);
@@ -1031,6 +1063,10 @@ function TrackList({
   };
 
   const handleGroupNameChange = (groupNodeId, newName) => {
+    if (metadataLocked) {
+      setEditingName(null);
+      return;
+    }
     const normalizedName = normalizeTrackName(newName);
     if (normalizedName) {
       onRenameGroup?.(groupNodeId, normalizedName);
@@ -1116,6 +1152,15 @@ function TrackList({
           const groupIconKey = getDefaultIconKey(displayGroupRole);
           const GroupIcon = iconOptions.find((opt) => opt.key === groupIconKey)?.Icon || Waves;
           const isSelectedRow = selectedNodeId === row.nodeId;
+          const groupFocusState = getGroupFocusState(row.nodeId);
+          const isGroupHighlightedInAdvancedMix = groupFocusState === 'all' || groupFocusState === 'partial';
+          const groupRowClass = isGroupHighlightedInAdvancedMix
+            ? (
+              isSelectedRow
+                ? 'bg-cyan-800/70 ring-1 ring-inset ring-cyan-300/50'
+                : 'bg-cyan-950/45 hover:bg-cyan-900/55 ring-1 ring-inset ring-cyan-700/45'
+            )
+            : (isSelectedRow ? 'bg-gray-700' : 'bg-gray-800 hover:bg-gray-750');
           const groupVolumeValue = getDraggedValue(
             row.nodeId,
             'volume',
@@ -1146,11 +1191,7 @@ function TrackList({
                 if (suppressClickRef.current) return;
                 selectRow(row);
               }}
-              className={`border-b border-gray-700 cursor-pointer ${
-                isSelectedRow
-                  ? 'bg-gray-700'
-                  : 'bg-gray-800 hover:bg-gray-750'
-              } ${isActivelyDragging ? 'cursor-grabbing' : ''}`}
+              className={`border-b border-gray-700 cursor-pointer ${groupRowClass} ${isActivelyDragging ? 'cursor-grabbing' : ''}`}
               style={{
                 height: `${row.height}px`,
                 minHeight: `${row.height}px`,
@@ -1170,11 +1211,12 @@ function TrackList({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
+                      if (metadataLocked) return;
                       if (hasDirectParentTypeLock(row)) return;
                       cycleGroupRole(row);
                     }}
-                    className={`w-14 h-14 rounded-lg ${getRoleColor(displayGroupRole)} text-white flex items-center justify-center ${hasDirectParentTypeLock(row) ? 'opacity-80 cursor-not-allowed' : ''}`}
-                    title="Click to cycle group category"
+                    className={`w-14 h-14 rounded-lg ${getRoleColor(displayGroupRole)} text-white flex items-center justify-center ${hasDirectParentTypeLock(row) || metadataLocked ? 'opacity-80 cursor-not-allowed' : ''}`}
+                    title={metadataLocked ? 'Group category locked in this session' : 'Click to cycle group category'}
                   >
                     <GroupIcon size={32} />
                   </button>
@@ -1206,9 +1248,10 @@ function TrackList({
                         onClick={(e) => e.stopPropagation()}
                         className="flex-1 bg-transparent border-b border-blue-500 px-0 py-0 text-lg font-semibold leading-none focus:outline-none min-w-0 h-[28px]"
                       />
-                    ) : (
-                      <span
-                        onDoubleClick={(e) => {
+	                    ) : (
+	                      <span
+	                        onDoubleClick={(e) => {
+                          if (metadataLocked) return;
                           e.stopPropagation();
                           setEditingName(`group:${row.nodeId}`);
                         }}
@@ -1228,10 +1271,16 @@ function TrackList({
                             e.stopPropagation();
                             handleToggleGroupMute(row.nodeId, row.muted);
                           }}
+                          onContextMenu={(e) => {
+                            if (!advancedMixGroupEnabled) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onToggleAdvancedGroupFocus(row.nodeId);
+                          }}
                           className={`w-7 h-7 flex items-center justify-center rounded-l-md rounded-r-none border border-gray-600 transition-colors ${
                             row.muted ? 'bg-red-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
                           }`}
-                          title={row.muted ? 'Unmute group' : 'Mute group'}
+                          title={advancedMixGroupEnabled ? 'Left click mute group, right click toggle mix slider target' : (row.muted ? 'Unmute group' : 'Mute group')}
                         >
                           {row.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
                         </button>
@@ -1240,10 +1289,16 @@ function TrackList({
                             e.stopPropagation();
                             handleToggleGroupSolo(row.nodeId, row.soloed);
                           }}
+                          onContextMenu={(e) => {
+                            if (!advancedMixGroupEnabled) return;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onToggleAdvancedGroupFocus(row.nodeId);
+                          }}
                           className={`w-7 h-7 flex items-center justify-center rounded-r-md rounded-l-none border border-l-0 border-gray-600 transition-colors ${
                             row.soloed ? 'bg-yellow-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
                           }`}
-                          title={row.soloed ? 'Unsolo group' : 'Solo group'}
+                          title={advancedMixGroupEnabled ? 'Left click solo group, right click toggle mix slider target' : (row.soloed ? 'Unsolo group' : 'Solo group')}
                         >
                           <Headphones size={16} />
                         </button>
@@ -1425,11 +1480,20 @@ function TrackList({
 
         const trackHeight = row.height || TRACK_HEIGHT;
         const { Icon: TrackIcon } = getIconForTrack(track, row);
-        const isSelectedRow = selectedNodeId
-          ? selectedNodeId === row.nodeId
-          : selectedTrackId === track.id;
+	        const isSelectedRow = selectedNodeId
+	          ? selectedNodeId === row.nodeId
+	          : selectedTrackId === track.id;
+	        const trackFocusMode = getTrackFocusMode(track.id);
+	        const isHighlightedInAdvancedMix = trackFocusMode === ADVANCED_MIX_FOCUS_MODES.HIGHLIGHTED;
+	        const rowClass = isHighlightedInAdvancedMix
+	          ? (
+	            isSelectedRow
+	              ? 'bg-cyan-800/70 ring-1 ring-inset ring-cyan-300/50'
+	              : 'bg-cyan-950/45 hover:bg-cyan-900/55 ring-1 ring-inset ring-cyan-700/45'
+	          )
+	          : (isSelectedRow ? 'bg-gray-700' : 'bg-gray-800 hover:bg-gray-750');
 
-        return (
+	        return (
           <div
             key={row.nodeId}
             data-tree-row-id={row.nodeId}
@@ -1449,9 +1513,7 @@ function TrackList({
               if (suppressClickRef.current) return;
               selectRow(row);
             }}
-            className={`border-b border-gray-700 cursor-pointer ${
-              isSelectedRow ? 'bg-gray-700' : 'bg-gray-800 hover:bg-gray-750'
-            } ${isActivelyDragging ? 'cursor-grabbing' : ''}`}
+	            className={`border-b border-gray-700 cursor-pointer ${rowClass} ${isActivelyDragging ? 'cursor-grabbing' : ''}`}
             style={{
               height: `${trackHeight}px`,
               minHeight: `${trackHeight}px`,
@@ -1471,11 +1533,12 @@ function TrackList({
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (metadataLocked) return;
                     if (!canEditTrackIcon) return;
                     cycleIcon(track, row);
                   }}
-                  className={`w-14 h-14 rounded-lg ${getRoleColor(displayTrackRole)} text-white flex items-center justify-center ${canEditTrackIcon ? '' : 'opacity-80 cursor-not-allowed'}`}
-                  title="Click to change icon"
+                  className={`w-14 h-14 rounded-lg ${getRoleColor(displayTrackRole)} text-white flex items-center justify-center ${canEditTrackIcon && !metadataLocked ? '' : 'opacity-80 cursor-not-allowed'}`}
+                  title={metadataLocked ? 'Track icon locked in this session' : 'Click to change icon'}
                 >
                   <TrackIcon size={32} />
                 </button>
@@ -1507,42 +1570,55 @@ function TrackList({
                   ) : (
                     <span
                       onDoubleClick={(e) => {
+                        if (metadataLocked) return;
                         e.stopPropagation();
                         setEditingName(track.id);
                       }}
                       className="flex-1 text-lg font-semibold truncate min-w-0 h-[28px] flex items-center select-none"
                       title="Double-click to edit"
-                    >
-                      {track.name}
-                    </span>
-                  )}
-                </div>
+	                      >
+	                        {track.name}
+	                      </span>
+	                    )}
+	                  </div>
 
                 <div data-track-interactive="true" className="flex w-full items-center gap-2">
                   <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center gap-0">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleToggleMute(track.id, track.muted);
-                        }}
-                        className={`w-7 h-7 flex items-center justify-center rounded-l-md rounded-r-none border border-gray-600 transition-colors ${
-                          track.muted ? 'bg-red-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
-                        }`}
-                        title={track.muted ? 'Unmute' : 'Mute'}
-                      >
-                        {track.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleToggleSolo(track.id, track.soloed);
-                        }}
-                        className={`w-7 h-7 flex items-center justify-center rounded-r-md rounded-l-none border border-l-0 border-gray-600 transition-colors ${
-                          track.soloed ? 'bg-yellow-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
-                        }`}
-                        title={track.soloed ? 'Unsolo' : 'Solo'}
-                      >
+	                      <button
+	                        onClick={(e) => {
+	                          e.stopPropagation();
+	                          handleToggleMute(track.id, track.muted);
+	                        }}
+	                        onContextMenu={(e) => {
+	                          if (!advancedMixEnabled) return;
+	                          e.preventDefault();
+	                          e.stopPropagation();
+	                          onToggleAdvancedTrackFocus(track.id, ADVANCED_MIX_FOCUS_MODES.HIGHLIGHTED);
+	                        }}
+	                        className={`w-7 h-7 flex items-center justify-center rounded-l-md rounded-r-none border border-gray-600 transition-colors ${
+	                          track.muted ? 'bg-red-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
+	                        }`}
+	                        title={advancedMixEnabled ? 'Left click mute, right click toggle mix slider target' : (track.muted ? 'Unmute' : 'Mute')}
+	                      >
+	                        {track.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+	                      </button>
+	                      <button
+	                        onClick={(e) => {
+	                          e.stopPropagation();
+	                          handleToggleSolo(track.id, track.soloed);
+	                        }}
+	                        onContextMenu={(e) => {
+	                          if (!advancedMixEnabled) return;
+	                          e.preventDefault();
+	                          e.stopPropagation();
+	                          onToggleAdvancedTrackFocus(track.id, ADVANCED_MIX_FOCUS_MODES.HIGHLIGHTED);
+	                        }}
+	                        className={`w-7 h-7 flex items-center justify-center rounded-r-md rounded-l-none border border-l-0 border-gray-600 transition-colors ${
+	                          track.soloed ? 'bg-yellow-600 text-white' : 'bg-gray-800 hover:bg-gray-600 text-gray-300'
+	                        }`}
+	                        title={advancedMixEnabled ? 'Left click solo, right click toggle mix slider target' : (track.soloed ? 'Unsolo' : 'Solo')}
+	                      >
                         <Headphones size={16} />
                       </button>
                     </div>
@@ -1703,63 +1779,82 @@ function TrackList({
         >
           {contextMenu.type === 'track' && contextMenu.track ? (
             <>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  setEditingName(contextMenu.track.id);
-                  setContextMenu(null);
-                }}
-              >
-                Rename track
-              </button>
-              {onEditTrackArtists && !hasSoloArtistAncestor(contextMenu.row) ? (
-                <button
-                  className={menuItemClass}
-                  onClick={() => {
-                    onEditTrackArtists(contextMenu.track);
-                    setContextMenu(null);
-                  }}
-                >
-                  Edit track artist
-                </button>
-              ) : null}
-
-              {hasDirectParentTypeLock(contextMenu.row) ? (
-                <div className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-500 whitespace-nowrap select-none">
-                  Change type (inherited)
-                </div>
-              ) : (
-                <div className="relative">
-                  <div
-                    className={`${menuItemClass} select-none cursor-pointer`}
-                    onMouseEnter={openTypeMenu}
-                    onMouseLeave={() => setIsTypeTriggerHover(false)}
-                    style={{
-                      backgroundColor: (isTypeTriggerHover || isTypeMenuHover)
-                        ? '#374151'
-                        : undefined,
+              {!metadataLocked ? (
+                <>
+                  <button
+                    className={menuItemClass}
+                    onClick={() => {
+                      setEditingName(contextMenu.track.id);
+                      setContextMenu(null);
                     }}
                   >
-                    <div className="flex items-center justify-between w-full">
-                      <span>Change type</span>
-                      <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+                    Rename track
+                  </button>
+                  {onEditTrackArtists && !hasSoloArtistAncestor(contextMenu.row) ? (
+                    <button
+                      className={menuItemClass}
+                      onClick={() => {
+                        onEditTrackArtists(contextMenu.track);
+                        setContextMenu(null);
+                      }}
+                    >
+                      Edit track artist
+                    </button>
+                  ) : null}
+
+                  {hasDirectParentTypeLock(contextMenu.row) ? (
+                    <div className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-500 whitespace-nowrap select-none">
+                      Change type (inherited)
                     </div>
-                  </div>
-                </div>
-              )}
-              {!hasPartTrackAncestor(contextMenu.row) ? (
-                <button
-                  className={menuItemClass}
-                  onClick={() => {
-                    toggleTrackPart(contextMenu.row, contextMenu.track);
-                    setContextMenu(null);
-                  }}
-                >
-                  {Boolean(contextMenu.row?.part || contextMenu.track.part) ? '✓ ' : ''}Is part
-                </button>
+                  ) : (
+                    <div className="relative">
+                      <div
+                        className={`${menuItemClass} select-none cursor-pointer`}
+                        onMouseEnter={openTypeMenu}
+                        onMouseLeave={() => setIsTypeTriggerHover(false)}
+                        style={{
+                          backgroundColor: (isTypeTriggerHover || isTypeMenuHover)
+                            ? '#374151'
+                            : undefined,
+                        }}
+                      >
+                        <div className="flex items-center justify-between w-full">
+                          <span>Change type</span>
+                          <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {!hasPartTrackAncestor(contextMenu.row) ? (
+                    <button
+                      className={menuItemClass}
+                      onClick={() => {
+                        toggleTrackPart(contextMenu.row, contextMenu.track);
+                        setContextMenu(null);
+                      }}
+                    >
+                      {Boolean(contextMenu.row?.part || contextMenu.track.part) ? '✓ ' : ''}Is part
+                    </button>
+                  ) : null}
+                </>
               ) : null}
 
-              {isChoirRole(contextMenu.track.role) && (
+	              {advancedMixEnabled ? (
+	                <>
+	                  <div className="my-0.5 border-t border-gray-700" />
+	                  <button
+	                    className={menuItemClass}
+	                    onClick={() => {
+	                      onToggleAdvancedTrackFocus(contextMenu.track.id, ADVANCED_MIX_FOCUS_MODES.HIGHLIGHTED);
+	                      setContextMenu(null);
+	                    }}
+	                  >
+	                    {getTrackFocusMode(contextMenu.track.id) === ADVANCED_MIX_FOCUS_MODES.HIGHLIGHTED ? '✓ ' : ''}Highlighted in mix
+	                  </button>
+	                </>
+              ) : null}
+
+	              {!metadataLocked && isChoirRole(contextMenu.track.role) && (
                 <div className="relative">
                   <div
                     className={`${menuItemClass} select-none cursor-pointer`}
@@ -1777,103 +1872,128 @@ function TrackList({
                 </div>
               )}
 
-              <button
-                className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-red-300 hover:bg-gray-700 whitespace-nowrap"
-                onClick={() => {
-                  onDeleteTrack?.(contextMenu.track.id);
-                  setContextMenu(null);
-                }}
-              >
-                Delete track
-              </button>
+              {!structureMenuLocked ? (
+                <>
+                  <button
+                    className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-red-300 hover:bg-gray-700 whitespace-nowrap"
+                    onClick={() => {
+                      onDeleteTrack?.(contextMenu.track.id);
+                      setContextMenu(null);
+                    }}
+                  >
+                    Delete track
+                  </button>
 
-              <div className="my-0.5 border-t border-gray-700" />
+                  <div className="my-0.5 border-t border-gray-700" />
 
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onAddTrack?.({
-                    parentId: contextMenu.row?.parentId || null,
-                    afterNodeId: contextMenu.row?.nodeId || null,
-                  });
-                  setContextMenu(null);
-                }}
-              >
-                Create track
-              </button>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  if (contextMenu.track.role === TRACK_ROLES.METRONOME) return;
-                  onCreateSubtrack?.(contextMenu.track.id);
-                  setContextMenu(null);
-                }}
-                disabled={contextMenu.track.role === TRACK_ROLES.METRONOME}
-                title={contextMenu.track.role === TRACK_ROLES.METRONOME ? 'Metronome tracks cannot have children' : undefined}
-              >
-                Create subtrack
-              </button>
+                  <button
+                    className={menuItemClass}
+                    onClick={() => {
+                      onAddTrack?.({
+                        parentId: contextMenu.row?.parentId || null,
+                        afterNodeId: contextMenu.row?.nodeId || null,
+                      });
+                      setContextMenu(null);
+                    }}
+                  >
+                    Create track
+                  </button>
+                  <button
+                    className={menuItemClass}
+                    onClick={() => {
+                      if (contextMenu.track.role === TRACK_ROLES.METRONOME) return;
+                      onCreateSubtrack?.(contextMenu.track.id);
+                      setContextMenu(null);
+                    }}
+                    disabled={contextMenu.track.role === TRACK_ROLES.METRONOME}
+                    title={contextMenu.track.role === TRACK_ROLES.METRONOME ? 'Metronome tracks cannot have children' : undefined}
+                  >
+                    Create subtrack
+                  </button>
+                </>
+              ) : null}
             </>
           ) : null}
 
           {contextMenu.type === 'group' && contextMenu.group ? (
             <>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  handleRenameGroup(contextMenu.group);
-                  setContextMenu(null);
-                }}
-              >
-                Rename group
-              </button>
-              {onEditGroupArtists && !hasSoloArtistAncestor(contextMenu.group) ? (
-                <button
-                  className={menuItemClass}
-                  onClick={() => {
-                    onEditGroupArtists(contextMenu.group);
-                    setContextMenu(null);
-                  }}
-                >
-                  Edit track artist
-                </button>
-              ) : null}
-              {hasDirectParentTypeLock(contextMenu.group) ? (
-                <div className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-500 whitespace-nowrap select-none">
-                  Change type (inherited)
-                </div>
-              ) : (
-                <div className="relative">
-                  <div
-                    className={`${menuItemClass} select-none cursor-pointer`}
-                    onMouseEnter={openGroupTypeMenu}
-                    onMouseLeave={() => setIsGroupTypeTriggerHover(false)}
-                    style={{
-                      backgroundColor: (
-                        isGroupTypeTriggerHover
-                        || isGroupTypeMenuHover
-                      )
-                        ? '#374151'
-                        : undefined,
+              {!metadataLocked ? (
+                <>
+                  <button
+                    className={menuItemClass}
+                    onClick={() => {
+                      handleRenameGroup(contextMenu.group);
+                      setContextMenu(null);
                     }}
                   >
-                    <div className="flex items-center justify-between w-full">
-                      <span>Change type</span>
-                      <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+                    Rename group
+                  </button>
+                  {onEditGroupArtists && !hasSoloArtistAncestor(contextMenu.group) ? (
+                    <button
+                      className={menuItemClass}
+                      onClick={() => {
+                        onEditGroupArtists(contextMenu.group);
+                        setContextMenu(null);
+                      }}
+                    >
+                      Edit track artist
+                    </button>
+                  ) : null}
+                  {hasDirectParentTypeLock(contextMenu.group) ? (
+                    <div className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-gray-500 whitespace-nowrap select-none">
+                      Change type (inherited)
                     </div>
-                  </div>
-                </div>
-              )}
-              {!hasPartTrackAncestor(contextMenu.group) ? (
-                <button
-                  className={menuItemClass}
-                  onClick={() => {
-                    toggleGroupPart(contextMenu.group);
-                    setContextMenu(null);
-                  }}
-                >
-                  {Boolean(contextMenu.group.part) ? '✓ ' : ''}Is part
-                </button>
+                  ) : (
+                    <div className="relative">
+                      <div
+                        className={`${menuItemClass} select-none cursor-pointer`}
+                        onMouseEnter={openGroupTypeMenu}
+                        onMouseLeave={() => setIsGroupTypeTriggerHover(false)}
+                        style={{
+                          backgroundColor: (
+                            isGroupTypeTriggerHover
+                            || isGroupTypeMenuHover
+                          )
+                            ? '#374151'
+                            : undefined,
+                        }}
+                      >
+                        <div className="flex items-center justify-between w-full">
+                          <span>Change type</span>
+                          <ChevronRight size={14} className="text-gray-400 ml-0.5" />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {!hasPartTrackAncestor(contextMenu.group) ? (
+                    <button
+                      className={menuItemClass}
+                      onClick={() => {
+                        toggleGroupPart(contextMenu.group);
+                        setContextMenu(null);
+                      }}
+                    >
+                      {Boolean(contextMenu.group.part) ? '✓ ' : ''}Is part
+                    </button>
+                  ) : null}
+                </>
+              ) : null}
+              {advancedMixGroupEnabled ? (
+                <>
+                  <div className="my-0.5 border-t border-gray-700" />
+                  <button
+                    className={menuItemClass}
+                    onClick={() => {
+                      onToggleAdvancedGroupFocus(contextMenu.group.nodeId);
+                      setContextMenu(null);
+                    }}
+                  >
+                    {getGroupFocusState(contextMenu.group.nodeId) === 'all'
+                      ? '✓ '
+                      : (getGroupFocusState(contextMenu.group.nodeId) === 'partial' ? '- ' : '')}
+                    Highlighted in mix
+                  </button>
+                </>
               ) : null}
               <button
                 className={menuItemClass}
@@ -1884,43 +2004,47 @@ function TrackList({
               >
                 {contextMenu.group.collapsed ? 'Expand group' : 'Collapse group'}
               </button>
-              <button
-                className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-red-300 hover:bg-gray-700 whitespace-nowrap"
-                onClick={() => {
-                  onDeleteGroup?.(contextMenu.group.nodeId);
-                  setContextMenu(null);
-                }}
-              >
-                Delete group
-              </button>
+              {!structureMenuLocked ? (
+                <>
+                  <button
+                    className="w-full text-left pl-1 pr-0.5 py-0 text-[16px] text-red-300 hover:bg-gray-700 whitespace-nowrap"
+                    onClick={() => {
+                      onDeleteGroup?.(contextMenu.group.nodeId);
+                      setContextMenu(null);
+                    }}
+                  >
+                    Delete group
+                  </button>
 
-              <div className="my-0.5 border-t border-gray-700" />
+                  <div className="my-0.5 border-t border-gray-700" />
 
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onAddTrack?.({
-                    parentId: contextMenu.group.parentId || null,
-                    afterNodeId: contextMenu.group.nodeId,
-                  });
-                  setContextMenu(null);
-                }}
-              >
-                Create track
-              </button>
-              <button
-                className={menuItemClass}
-                onClick={() => {
-                  onAddTrack?.(contextMenu.group.nodeId);
-                  setContextMenu(null);
-                }}
-              >
-                Create subtrack
-              </button>
+                  <button
+                    className={menuItemClass}
+                    onClick={() => {
+                      onAddTrack?.({
+                        parentId: contextMenu.group.parentId || null,
+                        afterNodeId: contextMenu.group.nodeId,
+                      });
+                      setContextMenu(null);
+                    }}
+                  >
+                    Create track
+                  </button>
+                  <button
+                    className={menuItemClass}
+                    onClick={() => {
+                      onAddTrack?.(contextMenu.group.nodeId);
+                      setContextMenu(null);
+                    }}
+                  >
+                    Create subtrack
+                  </button>
+                </>
+              ) : null}
             </>
           ) : null}
 
-          {contextMenu.type === 'empty' ? (
+          {contextMenu.type === 'empty' && !structureMenuLocked ? (
             <>
               <button
                 className={menuItemClass}
@@ -1936,7 +2060,7 @@ function TrackList({
         </div>
       )}
 
-      {contextMenu && contextMenu.type === 'track' && contextMenu.track && typeMenuOpen && !hasDirectParentTypeLock(contextMenu.row) && (
+      {contextMenu && contextMenu.type === 'track' && contextMenu.track && typeMenuOpen && !metadataLocked && !hasDirectParentTypeLock(contextMenu.row) && (
         <div
           className="fixed z-[120] bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[120px]"
           style={{ left: typeMenuPos.x, top: typeMenuPos.y }}
@@ -1966,7 +2090,7 @@ function TrackList({
         </div>
       )}
 
-      {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupTypeMenuOpen && !hasDirectParentTypeLock(contextMenu.group) && (
+      {contextMenu && contextMenu.type === 'group' && contextMenu.group && groupTypeMenuOpen && !metadataLocked && !hasDirectParentTypeLock(contextMenu.group) && (
         <div
           className="fixed z-[120] bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[140px]"
           style={{ left: groupTypeMenuPos.x, top: groupTypeMenuPos.y }}
@@ -1996,7 +2120,7 @@ function TrackList({
         </div>
       )}
 
-      {contextMenu && contextMenu.type === 'track' && contextMenu.track && autoPanMenuOpen && (
+      {contextMenu && contextMenu.type === 'track' && contextMenu.track && autoPanMenuOpen && !metadataLocked && (
         <div
           className="fixed z-[120] bg-gray-800 border border-gray-700 rounded-md shadow-lg py-0 inline-flex flex-col items-stretch overflow-hidden min-w-[140px]"
           style={{ left: autoPanMenuPos.x, top: autoPanMenuPos.y }}

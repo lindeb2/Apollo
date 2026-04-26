@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { saveProject, saveUndoAction, loadUndoHistory } from '../lib/db';
-import { createEmptyProject, normalizeExportSettings } from '../types/project';
+import { createEmptyProject, normalizeExportSettings, normalizeProjectPublished } from '../types/project';
 import { normalizeAutoPanSettings, normalizeProjectAutoPan } from '../utils/choirAutoPan';
 import { normalizeTrackTree, reorderTracksByTree } from '../utils/trackTree';
 import { reportUserError } from '../utils/errorReporter';
@@ -90,6 +90,7 @@ const useStore = create((set, get) => ({
     const { panLawDb: legacyPanLawDb, ...restProjectData } = projectData || {};
     const normalizedProject = reorderTracksByTree(normalizeTrackTree(normalizeProjectAutoPan({
       ...restProjectData,
+      published: normalizeProjectPublished(restProjectData.published ?? restProjectData.publish),
       exportSettings: normalizeExportSettings({
         ...(restProjectData.exportSettings || {}),
         legacyPanLawDb,

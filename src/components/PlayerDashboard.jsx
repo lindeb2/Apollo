@@ -48,12 +48,15 @@ import {
   updateVirtualMix,
 } from '../lib/serverApi';
 import {
+  createEditableMixSource,
   EXPORT_PRESETS,
   PRACTICE_REALTIME_MODES,
+  isGroupMixPresetId,
   isPracticeOmittedPresetId,
   isPracticePresetId,
   listPresetVariants,
   renderPresetVariant,
+  resolveAdvancedMixRealtimeTrackMix,
   resolvePracticeRealtimeTrackMix,
 } from '../lib/exportEngine';
 import { audioManager } from '../lib/audioManager';
@@ -69,6 +72,11 @@ import { usePlaybackDeviceSettings } from '../hooks/usePlaybackDeviceSettings';
 import { applySinkIdToMediaElement } from '../utils/playbackOutput';
 import { cacheRemoteBlobAsLocalWav } from '../lib/mediaEncoding';
 import { reportUserError } from '../utils/errorReporter';
+import {
+  ADVANCED_MIX_PRESET_ID,
+  isAdvancedMixPreset,
+  normalizeAdvancedMixState,
+} from '../utils/advancedMix';
 
 const PRACTICE_FOCUS_STEPS = [
   'omitted',
@@ -257,7 +265,28 @@ function buildMixCategoryOptions(snapshot) {
       id: 'part',
       label: 'Part-mix',
     } : null,
+    {
+      id: 'advanced',
+      label: 'Advanced mix',
+    },
   ].filter(Boolean);
+}
+
+function buildAdvancedPlaybackSnapshot(baseSnapshot, item) {
+  if (!isAdvancedMixPreset(item?.presetId)) return baseSnapshot;
+  const advancedState = normalizeAdvancedMixState(item?.advancedMix || {});
+  const source = advancedState.snapshot && typeof advancedState.snapshot === 'object'
+    ? advancedState.snapshot
+    : baseSnapshot;
+  return {
+    ...source,
+    projectId: baseSnapshot?.projectId || item?.projectId || source?.projectId,
+    sourceProjectId: baseSnapshot?.projectId || item?.projectId || source?.sourceProjectId || null,
+    projectName: item?.name || source?.projectName || baseSnapshot?.projectName || 'Advanced Mix',
+    musicalNumber: baseSnapshot?.musicalNumber ?? source?.musicalNumber ?? '0.0',
+    showId: baseSnapshot?.showId ?? source?.showId ?? null,
+    showName: baseSnapshot?.showName ?? source?.showName ?? '',
+  };
 }
 
 function CreditsDialog({ state, onClose }) {
@@ -485,6 +514,7 @@ function PlayerDashboard({
   session,
   onLogout,
   onSwitchToDawDashboard,
+  onOpenAdvancedMix = null,
   onOpenAdmin = null,
   onOpenProfile = null,
 }) {
@@ -704,6 +734,49 @@ function PlayerDashboard({
     });
     return true;
   }, [practiceFocusControl, practicePanRange, resolvePracticeFocusDb, resolvePracticePlaybackMode]);
+
+  const applyRealtimeAdvancedMixSettings = useCallback((snapshot, item) => {
+    if (!snapshot || !item || !isAdvancedMixPreset(item.presetId)) return false;
+    const advancedState = normalizeAdvancedMixState(item.advancedMix || {});
+    const mixState = resolveAdvancedMixRealtimeTrackMix(
+      snapshot,
+      advancedState.focus,
+      {
+        practicePanRange,
+        practiceFocusControl,
+      }
+    );
+    if (!mixState?.trackMixByTrackId) return false;
+    Object.entries(mixState.trackMixByTrackId).forEach(([trackId, trackMix]) => {
+      audioManager.updateTrackMix(trackId, trackMix.gain, trackMix.pan);
+    });
+    return true;
+  }, [practiceFocusControl, practicePanRange]);
+
+  const applyRealtimeGroupMixSettings = useCallback((snapshot, item, controlOverrides = null) => {
+    if (!snapshot || !item || !isGroupMixPresetId(item.presetId)) return false;
+    const editableSource = createEditableMixSource(snapshot, item);
+    const mixState = resolveAdvancedMixRealtimeTrackMix(
+      editableSource.snapshot || snapshot,
+      editableSource.focus,
+      {
+        practicePanRange,
+        practiceFocusControl,
+        ...(controlOverrides || {}),
+      }
+    );
+    if (!mixState?.trackMixByTrackId) return false;
+    Object.entries(mixState.trackMixByTrackId).forEach(([trackId, trackMix]) => {
+      audioManager.updateTrackMix(trackId, trackMix.gain, trackMix.pan);
+    });
+    return true;
+  }, [practiceFocusControl, practicePanRange]);
+
+  const applyRealtimeMixSettings = useCallback((snapshot, item, controlOverrides = null) => (
+    applyRealtimePracticeSettings(snapshot, item)
+      || applyRealtimeAdvancedMixSettings(snapshot, item)
+      || applyRealtimeGroupMixSettings(snapshot, item, controlOverrides)
+  ), [applyRealtimeAdvancedMixSettings, applyRealtimeGroupMixSettings, applyRealtimePracticeSettings]);
 
   const handlePlaybackEnded = useCallback(async () => {
     const queue = activeQueueRef.current || [];
@@ -1162,7 +1235,6 @@ function PlayerDashboard({
       if (!snapshot || typeof snapshot !== 'object') {
         throw new Error('Project snapshot missing');
       }
-      const audioBuffers = await ensureSnapshotAudioBuffers(snapshot);
       const audio = audioRef.current;
       audio.pause();
       audioManager.stop();
@@ -1180,18 +1252,30 @@ function PlayerDashboard({
       }
       setNowPlayingLabel(item.name || item.projectName || 'Mix');
 
-      const snapshotHasMetronome = hasSnapshotMetronome(snapshot);
+      const mixSnapshot = buildAdvancedPlaybackSnapshot(snapshot, item);
+      const snapshotHasMetronome = hasSnapshotMetronome(mixSnapshot);
       const metronomeMuted = snapshotHasMetronome ? preferredMetronomeMutedRef.current : false;
-      const playbackSnapshot = withSnapshotMetronomeMuted(snapshot, metronomeMuted);
+      const playbackSnapshot = withSnapshotMetronomeMuted(mixSnapshot, metronomeMuted);
+      const audioBuffers = await ensureSnapshotAudioBuffers(playbackSnapshot);
       setHasRealtimeMetronome(snapshotHasMetronome);
       setIsRealtimeMetronomeMuted(snapshotHasMetronome ? metronomeMuted : false);
 
-      if (isPracticePresetId(item.presetId)) {
-        const durationMs = computeSnapshotDurationMs(snapshot);
+      const isRealtimeMix = isPracticePresetId(item.presetId)
+        || isAdvancedMixPreset(item.presetId)
+        || isGroupMixPresetId(item.presetId);
+      const realtimeControlOverrides = isGroupMixPresetId(item.presetId)
+        ? createEditableMixSource(playbackSnapshot, item).controls
+        : null;
+      if (Number.isFinite(realtimeControlOverrides?.practiceFocusControl)) {
+        setPracticeFocusControl(realtimeControlOverrides.practiceFocusControl);
+      }
+
+      if (isRealtimeMix) {
+        const durationMs = computeSnapshotDurationMs(playbackSnapshot);
         await applyPlaybackOutputConfig();
         audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
         await audioManager.play(playbackSnapshot, 0, { useProjectMasterVolume: false });
-        applyRealtimePracticeSettings(playbackSnapshot, item);
+        applyRealtimeMixSettings(playbackSnapshot, item, realtimeControlOverrides);
         realtimePlaybackRef.current = {
           project: playbackSnapshot,
           item,
@@ -1240,7 +1324,7 @@ function PlayerDashboard({
     } finally {
       setIsRendering(false);
     }
-  }, [applyPlaybackOutputConfig, applyRealtimePracticeSettings, buildPlaybackExportSettings, ensureSnapshotAudioBuffers, session, volume]);
+  }, [applyPlaybackOutputConfig, applyRealtimeMixSettings, buildPlaybackExportSettings, ensureSnapshotAudioBuffers, session, volume]);
 
   const playQueueItem = useCallback(async (index) => {
     if (index < 0 || index >= activeQueueItems.length) return;
@@ -1281,11 +1365,11 @@ function PlayerDashboard({
     const current = realtimePlaybackRef.current;
     if (!current?.project || !current?.item) return;
     try {
-      applyRealtimePracticeSettings(current.project, current.item);
+      applyRealtimeMixSettings(current.project, current.item);
     } catch (applyError) {
       setError(applyError.message || 'Failed to apply practice mix settings');
     }
-  }, [applyRealtimePracticeSettings, playbackEngine]);
+  }, [applyRealtimeMixSettings, playbackEngine]);
 
   const handleSelectCollection = useCallback((type, id = null) => {
     setMainPanelView('library');
@@ -1326,14 +1410,14 @@ function PlayerDashboard({
       await applyPlaybackOutputConfig();
       audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
       await audioManager.play(current.project, resumeMs, { useProjectMasterVolume: false });
-      applyRealtimePracticeSettings(current.project, current.item);
+      applyRealtimeMixSettings(current.project, current.item);
       setIsPlaying(true);
       return;
     }
 
     const startIndex = activeIndex >= 0 ? activeIndex : 0;
     await playQueueItem(startIndex);
-  }, [activeIndex, activeQueueItems.length, applyPlaybackOutputConfig, applyRealtimePracticeSettings, currentTimeSec, durationSec, isPlaying, playQueueItem, volume]);
+  }, [activeIndex, activeQueueItems.length, applyPlaybackOutputConfig, applyRealtimeMixSettings, currentTimeSec, durationSec, isPlaying, playQueueItem, volume]);
 
   const handleNext = useCallback(async () => {
     if (!activeQueueItems.length) return;
@@ -1363,7 +1447,7 @@ function PlayerDashboard({
           await applyPlaybackOutputConfig();
           audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
           await audioManager.play(current.project, 0, { useProjectMasterVolume: false });
-          applyRealtimePracticeSettings(current.project, current.item);
+          applyRealtimeMixSettings(current.project, current.item);
           setIsPlaying(true);
         } else {
           await audioManager.pause(0);
@@ -1383,7 +1467,7 @@ function PlayerDashboard({
         : 0;
     }
     await playQueueItem(previousIndex);
-  }, [activeIndex, activeQueueItems.length, applyPlaybackOutputConfig, applyRealtimePracticeSettings, currentTimeSec, isPlaying, loopMode, playQueueItem, volume]);
+  }, [activeIndex, activeQueueItems.length, applyPlaybackOutputConfig, applyRealtimeMixSettings, currentTimeSec, isPlaying, loopMode, playQueueItem, volume]);
 
   const handleSeek = useCallback(async (nextTimeSec) => {
     const safe = Math.max(0, Math.min(Number(nextTimeSec || 0), Number(durationSec || 0)));
@@ -1396,7 +1480,7 @@ function PlayerDashboard({
           await applyPlaybackOutputConfig();
           audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
           await audioManager.play(current.project, seekMs, { useProjectMasterVolume: false });
-          applyRealtimePracticeSettings(current.project, current.item);
+          applyRealtimeMixSettings(current.project, current.item);
           setIsPlaying(true);
         } else {
           await audioManager.pause(seekMs);
@@ -1410,7 +1494,7 @@ function PlayerDashboard({
     if (!audioRef.current) return;
     audioRef.current.currentTime = safe;
     setCurrentTimeSec(safe);
-  }, [applyPlaybackOutputConfig, applyRealtimePracticeSettings, durationSec, isPlaying, volume]);
+  }, [applyPlaybackOutputConfig, applyRealtimeMixSettings, durationSec, isPlaying, volume]);
 
   const handleToggleMute = useCallback(() => {
     setVolume((previous) => {
@@ -1444,7 +1528,7 @@ function PlayerDashboard({
         await applyPlaybackOutputConfig();
         audioManager.setMasterVolume(Math.max(0, Math.min(100, volume)));
         await audioManager.play(nextProject, currentMs, { useProjectMasterVolume: false });
-        applyRealtimePracticeSettings(nextProject, current.item);
+        applyRealtimeMixSettings(nextProject, current.item);
         setIsPlaying(true);
         return;
       }
@@ -1511,7 +1595,7 @@ function PlayerDashboard({
     }
   }, [
     applyPlaybackOutputConfig,
-    applyRealtimePracticeSettings,
+    applyRealtimeMixSettings,
     buildPlaybackExportSettings,
     currentTimeSec,
     ensureSnapshotAudioBuffers,
@@ -1789,6 +1873,31 @@ function PlayerDashboard({
     });
   }, []);
 
+  const handleCreateAdvancedMixFromDialog = useCallback(async () => {
+    if (!mixDialog || mixDialog.status !== 'ready') return;
+    const name = buildDefaultMixName(mixDialog.projectLike, 'Advanced Mix');
+    setError('');
+    setMixDialog((previous) => (previous ? { ...previous, status: 'saving' } : previous));
+    try {
+      const createdMix = await createVirtualMix({
+        projectId: mixDialog.projectId,
+        name,
+        presetId: ADVANCED_MIX_PRESET_ID,
+        presetVariantKey: null,
+        advancedMix: {},
+        folderId: null,
+      }, session);
+      setMixDialog(null);
+      await refreshPlayerData();
+      if (typeof onOpenAdvancedMix === 'function') {
+        await onOpenAdvancedMix(createdMix);
+      }
+    } catch (createError) {
+      setError(createError.message || 'Failed to create advanced mix');
+      setMixDialog((previous) => (previous ? { ...previous, status: 'ready' } : previous));
+    }
+  }, [mixDialog, onOpenAdvancedMix, refreshPlayerData, session]);
+
   const handleToggleMixGroup = useCallback((groupId) => {
     setMixDialog((previous) => {
       if (!previous || previous.status !== 'ready') return previous;
@@ -1999,7 +2108,9 @@ function PlayerDashboard({
   const practiceControlItem = playbackEngine === 'realtime'
     ? realtimePlaybackRef.current?.item
     : null;
-  const practiceControlsEnabled = isPracticePresetId(practiceControlItem?.presetId);
+  const practiceControlsEnabled = isPracticePresetId(practiceControlItem?.presetId)
+    || isAdvancedMixPreset(practiceControlItem?.presetId)
+    || isGroupMixPresetId(practiceControlItem?.presetId);
   const metronomeControlsEnabled = hasRealtimeMetronome;
   const focusControlDisabled = !practiceControlsEnabled || isRendering;
   const focusStep = getPracticeFocusStep(practiceFocusControl);
@@ -2213,12 +2324,19 @@ function PlayerDashboard({
             name: `${entry.mix.name || 'Mix'} (Copy)`,
             presetId: entry.mix.presetId,
             presetVariantKey: entry.mix.presetVariantKey ?? null,
+            advancedMix: entry.mix.advancedMix || {},
             folderId: null,
           }, session);
           if (entry.sourcePlaylistId) {
             await addPlayerPlaylistItem(entry.sourcePlaylistId, duplicated.id, session);
           }
           await refreshPlayerData();
+          return;
+        }
+        if (action === 'edit_mix') {
+          if (typeof onOpenAdvancedMix === 'function') {
+            await onOpenAdvancedMix(entry.mix);
+          }
           return;
         }
         if (action === 'new_from_project') {
@@ -2238,6 +2356,7 @@ function PlayerDashboard({
     handleRenamePlaylist,
     libraryContextMenu,
     openCreditsForMix,
+    onOpenAdvancedMix,
     playlistItemsByPlaylistId,
     playlists,
     promptCreateMixFromProject,
@@ -2993,15 +3112,21 @@ function PlayerDashboard({
               >
                 Move
               </button>
-              <button
-                onClick={async () => handleLibraryContextAction('duplicate')}
-                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
-              >
-                Create duplicate
-              </button>
-              <button
-                onClick={async () => handleLibraryContextAction('delete')}
-                className="w-full px-3 py-2 text-left text-sm text-red-300 hover:bg-gray-700"
+	              <button
+	                onClick={async () => handleLibraryContextAction('duplicate')}
+	                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+	              >
+	                Create duplicate
+	              </button>
+	              <button
+	                onClick={async () => handleLibraryContextAction('edit_mix')}
+	                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700"
+	              >
+	                Edit mix
+	              </button>
+	              <button
+	                onClick={async () => handleLibraryContextAction('delete')}
+	                className="w-full px-3 py-2 text-left text-sm text-red-300 hover:bg-gray-700"
               >
                 Delete
               </button>
@@ -3124,14 +3249,20 @@ function PlayerDashboard({
               {mixDialogStep === 'type' ? (
                 <div className="space-y-3 text-center">
                   <div className="text-sm font-medium text-gray-300">Choose mix type</div>
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    {mixTypeOptions.map((option) => (
-                      <button
-                        key={option.id}
-                        type="button"
-                        onClick={() => handleSelectMixType(option.id)}
-                        className="rounded-xl border border-gray-700 bg-gray-800 px-4 py-5 text-center text-base font-medium text-gray-100 transition-colors hover:border-gray-500 hover:bg-gray-750"
-                      >
+	                  <div className="grid gap-3 sm:grid-cols-4">
+	                    {mixTypeOptions.map((option) => (
+	                      <button
+	                        key={option.id}
+	                        type="button"
+	                        onClick={() => {
+	                          if (option.id === 'advanced') {
+	                            handleCreateAdvancedMixFromDialog();
+	                            return;
+	                          }
+	                          handleSelectMixType(option.id);
+	                        }}
+	                        className="rounded-xl border border-gray-700 bg-gray-800 px-4 py-5 text-center text-base font-medium text-gray-100 transition-colors hover:border-gray-500 hover:bg-gray-750"
+	                      >
                         {option.label}
                       </button>
                     ))}
@@ -3347,7 +3478,7 @@ function PlayerDashboard({
                 ) : null}
 
                 {practiceControlsEnabled ? (
-                  <div className="flex flex-col gap-2.5">
+                  <div className="flex items-center gap-3">
                     <div className="flex items-center gap-2">
                       <span className="text-gray-400" title="Practice focus">
                         <FocusIcon size={20} />

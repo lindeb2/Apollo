@@ -75,9 +75,11 @@ function Timeline({
   onVerticalScroll,
   scrollContainerRef,
   updateProject,
+  onUpdateLoop,
   shortcutsEnabled = false,
   deleteClipShortcutEnabled = false,
   onDeleteTrackShortcut = null,
+  advancedMixLocked = false,
   sharedVerticalScroll = false,
   children,
 }) {
@@ -114,6 +116,17 @@ function Timeline({
   const animatedClipLayoutByIdRef = useRef({});
   const clipAnimationFrameRef = useRef(null);
   const selectedClipIdSet = useMemo(() => new Set(selectedClipIds), [selectedClipIds]);
+
+  const updateLoop = useCallback((updater, description) => {
+    if (typeof onUpdateLoop === 'function') {
+      onUpdateLoop(updater);
+      return;
+    }
+    updateProject((proj) => ({
+      ...proj,
+      loop: typeof updater === 'function' ? updater(proj.loop || {}) : updater,
+    }), description);
+  }, [onUpdateLoop, updateProject]);
 
   const playErrorBeep = () => {
     try {
@@ -889,6 +902,25 @@ function Timeline({
       return;
     }
 
+    const selectClickedClip = () => {
+      if (!selectedClipIdSet.has(clip.id)) {
+        setSelectedClipIds([clip.id]);
+        setSelectedClipHistory([clip.id]);
+        setSelectedClipId(clip.id);
+      }
+      const row = trackRowByTrackId.get(track.id);
+      if (row) {
+        selectRow(row);
+      } else {
+        onSelectTrack(track.id);
+      }
+    };
+
+    if (advancedMixLocked && e.button !== 2) {
+      selectClickedClip();
+      return;
+    }
+
     const rect = e.currentTarget.getBoundingClientRect();
     const offsetX = e.clientX - rect.left;
     const clipWidthPx = (clip.cropEndMs - clip.cropStartMs) * pixelsPerMs;
@@ -900,12 +932,13 @@ function Timeline({
     const isOnRightEdge = offsetX > clipWidthPx - edgeThreshold;
     const isOnEdge = isOnLeftEdge || isOnRightEdge;
 
-    // Cropping requires left-click on edges. Right-click on edges does nothing.
-    if (isOnEdge && e.button !== 0) {
+    if (advancedMixLocked && e.button === 2) {
+      dragType = 'gain';
+      rightClickDragRef.current = false;
+    } else if (isOnEdge && e.button !== 0) {
+      // Cropping requires left-click on edges. Right-click on edges does nothing.
       return;
-    }
-
-    if (isOnLeftEdge) {
+    } else if (isOnLeftEdge) {
       dragType = 'crop-start';
     } else if (isOnRightEdge) {
       dragType = 'crop-end';
@@ -952,17 +985,7 @@ function Timeline({
     setDragPreview(null);
     dragPreviewRef.current = null;
 
-    if (!selectedClipIdSet.has(clip.id)) {
-      setSelectedClipIds([clip.id]);
-      setSelectedClipHistory([clip.id]);
-      setSelectedClipId(clip.id);
-    }
-    const row = trackRowByTrackId.get(track.id);
-    if (row) {
-      selectRow(row);
-    } else {
-      onSelectTrack(track.id);
-    }
+    selectClickedClip();
   };
 
   const getTrackRowAtClientY = (clientY) => {
@@ -996,6 +1019,8 @@ function Timeline({
   };
 
   const buildDragPreviewAtPointer = (state, clientX, clientY) => {
+    if (advancedMixLocked && state?.type !== 'gain') return null;
+
     const deltaX = clientX - state.startX;
     const deltaY = clientY - state.startY;
     const deltaMs = deltaX / pixelsPerMs;
@@ -1264,6 +1289,7 @@ function Timeline({
 
   const commitDragPreview = (state, preview) => {
     if (!state || !preview || !preview.clipPatchesById) return;
+    if (advancedMixLocked && state.type !== 'gain') return;
     const clipPatchesById = preview.clipPatchesById;
     const targetTrackIdByClipId = preview.targetTrackIdByClipId || {};
     const hasChanges = Object.keys(clipPatchesById).length > 0;
@@ -1554,7 +1580,12 @@ function Timeline({
       const selectedClip = focusedSelectedEntry?.clip
         || (selectedTrack ? selectedTrack.clips.find(c => c.id === selectedClipId) : null);
 
-      if (deleteClipShortcutEnabled && (e.code === 'Delete' || e.code === 'Backspace') && hasSelectedClips) {
+      if (advancedMixLocked && (e.code === 'Delete' || e.code === 'Backspace') && (hasSelectedClips || hasTrackSelection)) {
+        e.preventDefault();
+        return;
+      }
+
+      if (!advancedMixLocked && deleteClipShortcutEnabled && (e.code === 'Delete' || e.code === 'Backspace') && hasSelectedClips) {
         e.preventDefault();
         const selectedIdSet = new Set(selectedClipIds);
         updateProject((proj) => ({
@@ -1568,13 +1599,13 @@ function Timeline({
         return;
       }
 
-      if (deleteClipShortcutEnabled && (e.code === 'Delete' || e.code === 'Backspace') && !hasSelectedClips && hasTrackSelection) {
+      if (!advancedMixLocked && deleteClipShortcutEnabled && (e.code === 'Delete' || e.code === 'Backspace') && !hasSelectedClips && hasTrackSelection) {
         e.preventDefault();
         onDeleteTrackShortcut?.(selectedTrackId);
         return;
       }
 
-      if (e.code === 'KeyC' && !e.ctrlKey && !e.metaKey && hasSelectedClips) {
+      if (!advancedMixLocked && e.code === 'KeyC' && !e.ctrlKey && !e.metaKey && hasSelectedClips) {
         e.preventDefault();
         const selectedIdSet = new Set(selectedClipIds);
         const rightClipIds = [];
@@ -1669,6 +1700,16 @@ function Timeline({
       }
 
       if (!shortcutsEnabled) return;
+
+      if (advancedMixLocked) {
+        if (
+          (e.code === 'KeyX' || e.code === 'KeyV' || e.code === 'KeyD')
+          && isPrimaryModifierPressed(e)
+        ) {
+          e.preventDefault();
+        }
+        return;
+      }
 
       if (e.code === 'KeyX' && isPrimaryModifierPressed(e) && (hasSelectedClips || selectedClip)) {
         e.preventDefault();
@@ -1876,6 +1917,7 @@ function Timeline({
   }, [
     shortcutsEnabled,
     deleteClipShortcutEnabled,
+    advancedMixLocked,
     selectedClipId,
     selectedClipIds,
     selectedTrackId,
@@ -1990,13 +2032,10 @@ function Timeline({
           const finalEndMs = rulerDragState.currentEndMs ?? rulerDragState.initialLoopEndMs;
           if (finalStartMs !== rulerDragState.initialLoopStartMs || 
               finalEndMs !== rulerDragState.initialLoopEndMs) {
-            updateProject((proj) => ({
-              ...proj,
-              loop: {
-                ...proj.loop,
-                startMs: finalStartMs,
-                endMs: finalEndMs,
-              },
+            updateLoop((loop) => ({
+              ...loop,
+              startMs: finalStartMs,
+              endMs: finalEndMs,
             }), 'Move loop region');
           }
         } else {
@@ -2010,23 +2049,17 @@ function Timeline({
           
           // Only create loop if there's a meaningful range (at least 100ms)
           if (endMs - startMs >= 100) {
-            updateProject((proj) => ({
-              ...proj,
-              loop: {
-                enabled: true,
-                startMs,
-                endMs,
-              },
+            updateLoop(() => ({
+              enabled: true,
+              startMs,
+              endMs,
             }), 'Set loop region');
           }
         }
       } else if (rulerDragState.clickedLoop) {
-        updateProject((proj) => ({
-          ...proj,
-          loop: {
-            ...proj.loop,
-            enabled: !proj.loop.enabled,
-          },
+        updateLoop((loop) => ({
+          ...loop,
+          enabled: !loop.enabled,
         }), 'Toggle loop');
       } else {
         onSeek(rulerDragState.startTimeMs);
@@ -2042,7 +2075,7 @@ function Timeline({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [rulerDragState, pixelsPerMs, scrollLeft, projectDurationMs, minZoomDurationMs, updateProject]);
+  }, [rulerDragState, pixelsPerMs, scrollLeft, projectDurationMs, minZoomDurationMs, updateLoop]);
 
   // Handle loop marker dragging
   useEffect(() => {
@@ -2082,13 +2115,10 @@ function Timeline({
       // Only create undo entry if values actually changed
       if (finalStartMs !== loopMarkerDragState.initialStartMs || 
           finalEndMs !== loopMarkerDragState.initialEndMs) {
-        updateProject((proj) => ({
-          ...proj,
-          loop: {
-            ...proj.loop,
-            startMs: finalStartMs,
-            endMs: finalEndMs,
-          },
+        updateLoop((loop) => ({
+          ...loop,
+          startMs: finalStartMs,
+          endMs: finalEndMs,
         }), 'Adjust loop region');
       }
       setLoopMarkerDragState(null);
@@ -2101,7 +2131,7 @@ function Timeline({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [loopMarkerDragState, pixelsPerMs, scrollLeft, projectDurationMs, minZoomDurationMs, updateProject]);
+  }, [loopMarkerDragState, pixelsPerMs, scrollLeft, projectDurationMs, minZoomDurationMs, updateLoop]);
 
   // Handle wheel events for zoom and horizontal scroll
   useEffect(() => {
@@ -2584,7 +2614,7 @@ function Timeline({
                           onContextMenu={handleClipRightClick}
                         >
                           <div
-                            className="absolute inset-0 cursor-move"
+                            className={`absolute inset-0 ${advancedMixLocked ? 'cursor-default' : 'cursor-move'}`}
                             style={{
                               pointerEvents: 'none',
                               zIndex: 1,
@@ -2617,6 +2647,7 @@ function Timeline({
                             </div>
                           )}
 
+                          {!advancedMixLocked && (
                           <>
                             <div
                               className="absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize group"
@@ -2635,6 +2666,7 @@ function Timeline({
                               <div className="absolute right-0 top-0 bottom-0 w-1 bg-blue-400 opacity-0 group-hover:opacity-70 transition-opacity"></div>
                             </div>
                           </>
+                          )}
                         </div>
                       );
                     })}

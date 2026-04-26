@@ -1,5 +1,23 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react';
-import { ArrowLeft, Download, Play, Pause, Square, Volume2, Circle, Upload, SkipBack, SkipForward, Settings, Lock, WifiOff } from 'lucide-react';
+import {
+  ArrowLeft,
+  ChevronsLeftRightEllipsis,
+  Circle,
+  Download,
+  HeadphoneOff,
+  Headphones,
+  Lock,
+  Pause,
+  Play,
+  Scale,
+  Settings,
+  SkipBack,
+  SkipForward,
+  Square,
+  Upload,
+  Volume2,
+  WifiOff,
+} from 'lucide-react';
 import useStore from '../store/useStore';
 import { audioManager } from '../lib/audioManager';
 import { recordingManager } from '../lib/recordingManager';
@@ -18,9 +36,9 @@ import { processRecordingOverwrites } from '../utils/clipCollision';
 import { isPrimaryModifierPressed } from '../utils/keyboard';
 import { reportUserError } from '../utils/errorReporter';
 import { buildBlobReferenceErrorMessage } from '../utils/mediaErrors';
-import { measureTuttiPeak } from '../lib/exportEngine';
+import { measureTuttiPeak, resolveAdvancedMixRealtimeTrackMix } from '../lib/exportEngine';
 import useRealtimeProjectSync from '../hooks/useRealtimeProjectSync';
-import { downloadMediaBlob, forceCheckpoint } from '../lib/serverApi';
+import { commitLocalProjectSession, downloadMediaBlob, forceCheckpoint } from '../lib/serverApi';
 import { createId } from '../utils/id';
 import {
   cacheRemoteBlobAsLocalWav,
@@ -41,6 +59,7 @@ import {
   attachTrackNode,
   createGroupNode,
   getEffectiveTrackMix,
+  getGroupDescendantTrackIdsByGroup,
   getTrackNodeByTrackId,
   updateGroupNode,
   getVisibleTimelineRows,
@@ -53,12 +72,38 @@ import {
   syncDirectChildRolesFromGroupCategories,
   TRACK_NODE_TYPE_AUDIO,
   TRACK_NODE_TYPE_GROUP,
-  toggleGroupCollapsed,
 } from '../utils/trackTree';
 import { usePlaybackDeviceSettings } from '../hooks/usePlaybackDeviceSettings';
+import useLocalProjectViewState from '../hooks/useLocalProjectViewState';
+import {
+  ADVANCED_MIX_PRACTICE_FOCUS_NUMERIC_STEPS,
+  ADVANCED_MIX_PRACTICE_FOCUS_MAX_INDEX,
+  ADVANCED_MIX_PRACTICE_FOCUS_MIN_INDEX,
+  ADVANCED_MIX_PRACTICE_FOCUS_STEPS,
+  buildAdvancedMixDeviationItems,
+  expandAdvancedMixFocusTrackIds,
+  getAdvancedMixFocusMode,
+  getAdvancedMixPracticeFocusSliderPosition,
+  getAdvancedMixPracticeFocusStep,
+  loadAdvancedMixPlayerControls,
+  normalizeAdvancedMixControls,
+  normalizeAdvancedMixFocus,
+  removeAdvancedMixDeviation,
+  resolveAdvancedMixPracticeFocusIndexFromSlider,
+  saveAdvancedMixPlayerControls,
+  toggleAdvancedMixFocus,
+} from '../utils/advancedMix';
 
 const TRACK_CONFIG_COLUMN_WIDTH_PX = 384;
 const VALUE_ANIMATION_DURATION_MS = 800;
+const ADVANCED_PAN_TRACK_WIDTH_PX = 160;
+const ADVANCED_PAN_INNER_TRACK_WIDTH_PX = 134;
+const ADVANCED_PAN_HIGHLIGHT_LEFT_OFFSET_PERCENT = 8.125;
+const ADVANCED_PAN_HIGHLIGHT_INNER_SPAN_PERCENT = 100 - (2 * ADVANCED_PAN_HIGHLIGHT_LEFT_OFFSET_PERCENT);
+const ADVANCED_MIX_ALLOWED_TRACK_UPDATE_KEYS = ['volume', 'pan', 'muted', 'soloed'];
+const ADVANCED_MIX_ALLOWED_CLIP_UPDATE_KEYS = ['gainDb', 'muted'];
+const LOCAL_RECORDING_START_TOOLTIP = 'Start local recording session';
+const LOCAL_RECORDING_BADGE_TOOLTIP = 'This is a temporary local session, only saving track hierarchy and audio blobs.';
 
 function easeInOutQuint(t) {
   if (t < 0.5) {
@@ -70,6 +115,87 @@ function easeInOutQuint(t) {
 function toFiniteNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function pickAllowedUpdates(updates, allowedKeys) {
+  if (!updates || typeof updates !== 'object') return {};
+  const picked = {};
+  allowedKeys.forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(updates, key)) {
+      picked[key] = updates[key];
+    }
+  });
+  return picked;
+}
+
+function cloneSnapshot(value) {
+  if (!value || typeof value !== 'object') return value;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function projectLocalRecordingClips(baseTrack, currentTrack) {
+  const baseClipsById = new Map((baseTrack?.clips || [])
+    .filter((clip) => clip?.id)
+    .map((clip) => [String(clip.id), clip]));
+
+  return (currentTrack?.clips || []).map((clip) => {
+    const baseClip = clip?.id ? baseClipsById.get(String(clip.id)) : null;
+    return cloneSnapshot(baseClip || clip);
+  });
+}
+
+function projectLocalRecordingTrack(baseTrack, currentTrack) {
+  if (!baseTrack) return cloneSnapshot(currentTrack);
+  return {
+    ...cloneSnapshot(baseTrack),
+    clips: projectLocalRecordingClips(baseTrack, currentTrack),
+  };
+}
+
+function projectLocalRecordingTreeNode(baseNode, currentNode) {
+  if (!baseNode) return cloneSnapshot(currentNode);
+  const projected = {
+    ...cloneSnapshot(baseNode),
+    parentId: currentNode?.parentId ?? null,
+    order: Number.isFinite(Number(currentNode?.order)) ? Number(currentNode.order) : 0,
+  };
+  if (currentNode?.kind) projected.kind = currentNode.kind;
+  if (currentNode?.type) projected.type = currentNode.type;
+  if (currentNode?.kind === 'track' && currentNode?.trackId) {
+    projected.trackId = currentNode.trackId;
+  }
+  return projected;
+}
+
+function buildLocalRecordingSaveSnapshot(baseSnapshot, currentProject) {
+  if (!baseSnapshot || !currentProject) return null;
+  const normalizedBase = normalizeTrackTree(cloneSnapshot(baseSnapshot));
+  const normalizedCurrent = normalizeTrackTree(cloneSnapshot(currentProject));
+  const baseTrackById = new Map((normalizedBase.tracks || []).map((track) => [track.id, track]));
+  const projectedTracks = (normalizedCurrent.tracks || []).map((track) => (
+    projectLocalRecordingTrack(baseTrackById.get(track.id), track)
+  ));
+  const baseNodeById = new Map((normalizedBase.trackTree || []).map((node) => [node.id, node]));
+  const projectedTree = (normalizedCurrent.trackTree || []).map((node) => (
+    projectLocalRecordingTreeNode(baseNodeById.get(node.id), node)
+  ));
+
+  return reorderTracksByTree(normalizeTrackTree({
+    ...normalizedBase,
+    tracks: projectedTracks,
+    trackTree: projectedTree,
+  }));
+}
+
+function getLocalRecordingSaveSignature(snapshot) {
+  if (!snapshot) return '';
+  return JSON.stringify({
+    trackTree: snapshot.trackTree || [],
+    tracks: (snapshot.tracks || []).map((track) => ({
+      id: track.id,
+      clips: track.clips || [],
+    })),
+  });
 }
 
 const isFileDragEvent = (event) => {
@@ -85,10 +211,72 @@ const getSupportedAudioFiles = (dataTransfer) => {
   });
 };
 
-function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession = null }) {
+function formatAdvancedMixSliderValue(kind, value) {
+  if (kind === 'focus') {
+    const step = getAdvancedMixPracticeFocusStep(value);
+    if (step === 'omitted') return 'Omitted';
+    if (step === 'solo') return 'Solo';
+    return `${step > 0 ? '+' : ''}${step}`;
+  }
+  return `${Math.round(value)}`;
+}
+
+function parseAdvancedMixSliderInput(kind, rawText) {
+  const text = String(rawText || '').trim();
+  if (!text) return null;
+  if (kind === 'focus') {
+    const normalized = text.toLowerCase();
+    if (normalized === 'omitted') return ADVANCED_MIX_PRACTICE_FOCUS_MIN_INDEX;
+    if (normalized === 'solo') return ADVANCED_MIX_PRACTICE_FOCUS_MAX_INDEX;
+    const parsed = Number.parseFloat(text);
+    if (!Number.isFinite(parsed)) return null;
+    let nearest = ADVANCED_MIX_PRACTICE_FOCUS_NUMERIC_STEPS[0];
+    let nearestDistance = Math.abs(parsed - nearest);
+    ADVANCED_MIX_PRACTICE_FOCUS_NUMERIC_STEPS.forEach((candidate) => {
+      const distance = Math.abs(parsed - candidate);
+      if (distance < nearestDistance) {
+        nearest = candidate;
+        nearestDistance = distance;
+      }
+    });
+    const nextIndex = ADVANCED_MIX_PRACTICE_FOCUS_STEPS.findIndex((step) => step === nearest);
+    return nextIndex >= 0 ? nextIndex : null;
+  }
+  const parsed = Number.parseFloat(text);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(0, Math.min(200, Math.round(parsed)));
+}
+
+function loadAdvancedMixControlsForSession(session) {
+  return normalizeAdvancedMixControls({
+    ...loadAdvancedMixPlayerControls(),
+    ...(session?.initialControls || {}),
+  });
+}
+
+function isNodeInsideGroup(project, groupNodeId, nodeId) {
+  if (!project || !groupNodeId || !nodeId) return false;
+  if (nodeId === groupNodeId) return true;
+
+  const nodeById = new Map((project.trackTree || []).map((node) => [node.id, node]));
+  let current = nodeById.get(nodeId);
+  while (current && current.parentId) {
+    if (current.parentId === groupNodeId) return true;
+    current = nodeById.get(current.parentId);
+  }
+  return false;
+}
+
+function Editor({
+  onBackToDashboard,
+  onSwitchToPlayerMode = null,
+  remoteSession = null,
+  advancedMixSession = null,
+  onSaveAdvancedMix = null,
+}) {
   const {
     project,
-    updateProject,
+    updateProject: storeUpdateProject,
     isPlaying,
     isRecording,
     currentTimeMs,
@@ -98,7 +286,6 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     stop,
     setCurrentTime,
     selectTrack,
-    updateClip,
     startRecording,
     stopRecording,
     undo,
@@ -139,8 +326,31 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   const timelineRowsScrollAreaRef = useRef(null);
   const recordingLockTrackIdRef = useRef(null);
   const lockByTrackIdRef = useRef({});
-  const isHostedSession = Boolean(remoteSession?.session && remoteSession?.serverProjectId);
+  const onSaveAdvancedMixRef = useRef(onSaveAdvancedMix);
+  const [localRecordingSession, setLocalRecordingSession] = useState(null);
+  const localRecordingCommitRef = useRef({ signature: '', requestId: 0 });
+  const isLocalRecordingSession = Boolean(localRecordingSession?.id);
+  const isAdvancedMixEditorSession = Boolean(advancedMixSession?.mix?.id);
+  const isAdvancedMixSession = isAdvancedMixEditorSession && !isLocalRecordingSession;
+  const canUseRemoteMedia = Boolean(remoteSession?.session && remoteSession?.serverProjectId);
+  const isHostedSession = canUseRemoteMedia && !isAdvancedMixEditorSession && !isLocalRecordingSession;
+  const remoteMediaProjectId = localRecordingSession?.sourceProjectId || remoteSession?.serverProjectId || null;
+  const canPersistRemoteMedia = Boolean(
+    remoteSession?.session
+    && remoteMediaProjectId
+    && (isHostedSession || isLocalRecordingSession)
+  );
   const remoteUserId = remoteSession?.session?.user?.id || null;
+  const [advancedMixFocus, setAdvancedMixFocus] = useState(() => (
+    normalizeAdvancedMixFocus(advancedMixSession?.mix?.advancedMix?.focus)
+  ));
+  const [advancedMixControls, setAdvancedMixControls] = useState(() => (
+    loadAdvancedMixControlsForSession(advancedMixSession)
+  ));
+  const [advancedDeviationsOpen, setAdvancedDeviationsOpen] = useState(false);
+  const [advancedSliderDragTooltip, setAdvancedSliderDragTooltip] = useState(null);
+  const [advancedSliderEditTooltip, setAdvancedSliderEditTooltip] = useState(null);
+  const advancedSliderDragRef = useRef(null);
   const {
     audioInputs,
     audioOutputs,
@@ -167,6 +377,137 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     playbackPanLawDb,
   ]);
 
+  useEffect(() => {
+    onSaveAdvancedMixRef.current = onSaveAdvancedMix;
+  }, [onSaveAdvancedMix]);
+
+  useEffect(() => {
+    setAdvancedMixFocus(normalizeAdvancedMixFocus(advancedMixSession?.mix?.advancedMix?.focus));
+    setAdvancedMixControls(loadAdvancedMixControlsForSession(advancedMixSession));
+    setAdvancedDeviationsOpen(false);
+  }, [advancedMixSession?.initialControls, advancedMixSession?.mix?.id]);
+
+  useEffect(() => {
+    if (!isAdvancedMixSession) return;
+    saveAdvancedMixPlayerControls(advancedMixControls);
+  }, [advancedMixControls, isAdvancedMixSession]);
+
+  useEffect(() => {
+    if (!isAdvancedMixSession) return;
+    setShowFileImport(false);
+    setShowExportDialog(false);
+    setSettingsOpen(false);
+  }, [isAdvancedMixSession]);
+
+  const updateProject = useCallback((updater, actionDescription = 'Update', options = {}) => {
+    if (!isAdvancedMixSession && !isLocalRecordingSession) {
+      storeUpdateProject(updater, actionDescription, options);
+      return;
+    }
+    storeUpdateProject(updater, actionDescription, {
+      ...options,
+      skipAutosave: true,
+      skipDirty: true,
+    });
+  }, [isAdvancedMixSession, isLocalRecordingSession, storeUpdateProject]);
+
+  const startLocalRecordingSession = useCallback(() => {
+    if (!project) return;
+    if (isLocalRecordingSession) return;
+
+    const sourceProjectId = String(
+      advancedMixSession?.sourceProjectId
+      || advancedMixSession?.mix?.projectId
+      || remoteSession?.serverProjectId
+      || project.projectId
+      || ''
+    ).trim();
+    const baseSnapshot = cloneSnapshot(
+      isAdvancedMixEditorSession && advancedMixSession?.baseSnapshot
+        ? advancedMixSession.baseSnapshot
+        : project
+    );
+    const sessionId = createId();
+    const initialProjectedSnapshot = buildLocalRecordingSaveSnapshot(baseSnapshot, baseSnapshot);
+    localRecordingCommitRef.current = {
+      signature: getLocalRecordingSaveSignature(initialProjectedSnapshot),
+      requestId: localRecordingCommitRef.current.requestId,
+    };
+
+    setAdvancedDeviationsOpen(false);
+    setShowExportDialog(false);
+    setSettingsOpen(false);
+    setShowFileImport(false);
+    setLocalRecordingSession({
+      id: sessionId,
+      sourceProjectId,
+      baseSnapshot,
+    });
+
+    if (isAdvancedMixEditorSession) {
+      storeUpdateProject(baseSnapshot, 'Start local recording session', {
+        skipUndo: true,
+        skipAutosave: true,
+        skipDirty: true,
+      });
+    }
+  }, [
+    advancedMixSession?.baseSnapshot,
+    advancedMixSession?.mix?.projectId,
+    advancedMixSession?.sourceProjectId,
+    isAdvancedMixEditorSession,
+    isLocalRecordingSession,
+    project,
+    remoteSession?.serverProjectId,
+    storeUpdateProject,
+  ]);
+
+  const updateClip = useCallback((trackId, clipId, updates, action = 'update') => {
+    if (isAdvancedMixSession) {
+      if (action !== 'update') return;
+      const allowedUpdates = pickAllowedUpdates(updates, ADVANCED_MIX_ALLOWED_CLIP_UPDATE_KEYS);
+      if (!Object.keys(allowedUpdates).length) return;
+      updates = allowedUpdates;
+    }
+
+    updateProject((proj) => ({
+      ...proj,
+      tracks: proj.tracks.map((track) => {
+        if (track.id !== trackId) return track;
+
+        if (action === 'add') {
+          return {
+            ...track,
+            clips: [...track.clips, updates],
+          };
+        }
+        if (action === 'split') {
+          const leftClip = updates?.left;
+          const rightClip = updates?.right;
+          if (!leftClip || !rightClip) return track;
+          return {
+            ...track,
+            clips: track.clips
+              .filter((clip) => clip.id !== clipId)
+              .concat([leftClip, rightClip]),
+          };
+        }
+        if (action === 'delete') {
+          return {
+            ...track,
+            clips: track.clips.filter((clip) => clip.id !== clipId),
+          };
+        }
+        return {
+          ...track,
+          clips: track.clips.map((clip) => (
+            clip.id === clipId ? { ...clip, ...updates } : clip
+          )),
+        };
+      }),
+    }), action === 'add' ? 'Add clip' : action === 'delete' ? 'Delete clip' : action === 'split' ? 'Split clip' : 'Update clip');
+  }, [isAdvancedMixSession, updateProject]);
+
   const createEphemeralMediaEntry = useCallback((blobId, fileName, audioBuffer, blob) => ({
     blobId,
     fileName,
@@ -186,14 +527,14 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     });
 
     let blobId = createId();
-    if (isHostedSession) {
+    if (canPersistRemoteMedia) {
       const uploaded = await registerAndUploadMediaBlob({
         mediaId: blobId,
         blob: prepared.serverUploadBlob,
         fileName: prepared.serverUploadFileName,
         mimeType: prepared.serverUploadMimeType,
         session: remoteSession.session,
-        projectId: remoteSession.serverProjectId,
+        projectId: remoteMediaProjectId,
       });
       blobId = uploaded.mediaId;
     }
@@ -205,20 +546,20 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       blobId,
       durationMs: audioBuffer.duration * 1000,
     };
-  }, [isHostedSession, remoteSession?.session]);
+  }, [canPersistRemoteMedia, remoteMediaProjectId, remoteSession?.session]);
 
   const persistRecordedMedia = useCallback(async (audioBuffer, fileNameBase) => {
     const prepared = await prepareRecordedMedia({ audioBuffer, fileNameBase });
 
     let blobId = createId();
-    if (isHostedSession) {
+    if (canPersistRemoteMedia) {
       const uploaded = await registerAndUploadMediaBlob({
         mediaId: blobId,
         blob: prepared.serverUploadBlob,
         fileName: prepared.serverUploadFileName,
         mimeType: prepared.serverUploadMimeType,
         session: remoteSession.session,
-        projectId: remoteSession.serverProjectId,
+        projectId: remoteMediaProjectId,
       });
       blobId = uploaded.mediaId;
     }
@@ -230,7 +571,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       blobId,
       durationMs: audioBuffer.duration * 1000,
     };
-  }, [isHostedSession, remoteSession?.session]);
+  }, [canPersistRemoteMedia, remoteMediaProjectId, remoteSession?.session]);
 
   const {
     connected: syncConnected,
@@ -244,6 +585,78 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     remoteSession,
     updateProject,
   });
+  const advancedMixDefaultCollapsedGroupIds = useMemo(() => (
+    isAdvancedMixSession
+      ? (project?.trackTree || [])
+        .filter((node) => node?.kind === 'group' && node.id)
+        .map((node) => node.id)
+      : []
+  ), [isAdvancedMixSession, project?.trackTree]);
+  const {
+    localProject,
+    setLocalLoop,
+    setGroupCollapsed,
+    setGroupsCollapsed,
+  } = useLocalProjectViewState(project, {
+    persist: !isAdvancedMixSession,
+    resetKey: isAdvancedMixSession ? advancedMixSession?.mix?.id : null,
+    defaultCollapsedGroupIds: isAdvancedMixSession ? advancedMixDefaultCollapsedGroupIds : null,
+  });
+  const viewProject = localProject || project;
+
+  useEffect(() => {
+    if (!isLocalRecordingSession) return undefined;
+    if (!project || !localRecordingSession?.baseSnapshot) return undefined;
+    if (!localRecordingSession?.sourceProjectId || !remoteSession?.session) return undefined;
+    if (isRecording) return undefined;
+
+    const projectedSnapshot = buildLocalRecordingSaveSnapshot(localRecordingSession.baseSnapshot, project);
+    const signature = getLocalRecordingSaveSignature(projectedSnapshot);
+    if (!projectedSnapshot || signature === localRecordingCommitRef.current.signature) {
+      return undefined;
+    }
+
+    const requestId = localRecordingCommitRef.current.requestId + 1;
+    localRecordingCommitRef.current.requestId = requestId;
+    let cancelled = false;
+    const timeoutId = setTimeout(async () => {
+      try {
+        const result = await commitLocalProjectSession(
+          localRecordingSession.sourceProjectId,
+          projectedSnapshot,
+          remoteSession.session
+        );
+        if (cancelled || localRecordingCommitRef.current.requestId !== requestId) return;
+        localRecordingCommitRef.current.signature = signature;
+        if (result?.snapshot) {
+          setLocalRecordingSession((previous) => (
+            previous?.id === localRecordingSession.id
+              ? { ...previous, baseSnapshot: result.snapshot }
+              : previous
+          ));
+        }
+      } catch (error) {
+        reportUserError(
+          'Failed to save local recording session changes.',
+          error,
+          { onceKey: `local-recording-session-save:${localRecordingSession.sourceProjectId}` }
+        );
+      }
+    }, 700);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [
+    isLocalRecordingSession,
+    isRecording,
+    localRecordingSession?.baseSnapshot,
+    localRecordingSession?.id,
+    localRecordingSession?.sourceProjectId,
+    project,
+    remoteSession?.session,
+  ]);
 
   useEffect(() => {
     lockByTrackIdRef.current = lockByTrackId || {};
@@ -266,8 +679,8 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
 
   // Keep project ref updated
   useEffect(() => {
-    projectRef.current = project;
-  }, [project]);
+    projectRef.current = viewProject;
+  }, [viewProject]);
 
   useEffect(() => {
     masterVolumeRef.current = masterVolume;
@@ -352,6 +765,9 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   );
 
   const headerProjectTitle = useMemo(() => {
+    if (isAdvancedMixSession) {
+      return String(advancedMixSession?.mix?.name || project?.projectName || 'Advanced Mix').trim() || 'Advanced Mix';
+    }
     const projectName = String(
       remoteSession?.projectName
       || project?.projectName
@@ -363,12 +779,19 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       || '0.0'
     ).trim();
     return `${musicalNumber || '0.0'} - ${projectName || 'Untitled Project'}`;
-  }, [remoteSession?.musicalNumber, remoteSession?.projectName, project?.musicalNumber, project?.projectName]);
+  }, [
+    advancedMixSession?.mix?.name,
+    isAdvancedMixSession,
+    remoteSession?.musicalNumber,
+    remoteSession?.projectName,
+    project?.musicalNumber,
+    project?.projectName,
+  ]);
 
   useEffect(() => {
-    if (!project) return;
-    const visibleTrackIds = getVisibleTrackIds(project);
-    if (!project.tracks || project.tracks.length === 0 || visibleTrackIds.length === 0) {
+    if (!viewProject) return;
+    const visibleTrackIds = getVisibleTrackIds(viewProject);
+    if (!viewProject.tracks || viewProject.tracks.length === 0 || visibleTrackIds.length === 0) {
       if (selectedTrackId !== null) {
         selectTrack(null);
       }
@@ -376,7 +799,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     }
 
     if (selectedRowKind === 'group' && selectedNodeId) {
-      const visibleRows = getVisibleTimelineRows(project);
+      const visibleRows = getVisibleTimelineRows(viewProject);
       const groupStillVisible = visibleRows.some((row) => row.kind === 'group' && row.nodeId === selectedNodeId);
       if (groupStillVisible) {
         return;
@@ -387,7 +810,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     if (!hasSelected) {
       selectTrack(visibleTrackIds[0]);
     }
-  }, [project, selectedTrackId, selectedRowKind, selectedNodeId, selectTrack]);
+  }, [viewProject, selectedTrackId, selectedRowKind, selectedNodeId, selectTrack]);
 
   const loadProjectAudio = useCallback(async () => {
     const currentProject = projectRef.current;
@@ -408,7 +831,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
           try {
             media = await getMediaBlob(blobId);
           } catch (localError) {
-            if (!isHostedSession) {
+            if (!canUseRemoteMedia) {
               throw localError;
             }
 
@@ -467,7 +890,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       }
     }
     setMediaMap(newMediaMap);
-  }, [createEphemeralMediaEntry, isHostedSession, remoteSession?.session]);
+  }, [canUseRemoteMedia, createEphemeralMediaEntry, remoteSession?.session]);
 
   // Initialize audio context on mount
   useEffect(() => {
@@ -549,6 +972,80 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   }, []);
 
   useEffect(() => {
+    const handleMove = (event) => {
+      if (!advancedSliderDragRef.current) return;
+      const {
+        startX,
+        startValue,
+        width,
+        moved,
+        min,
+        max,
+        step,
+        kind,
+      } = advancedSliderDragRef.current;
+      const deltaX = event.clientX - startX;
+      if (!moved) {
+        if (Math.abs(deltaX) < 2) return;
+        advancedSliderDragRef.current.moved = true;
+        setAdvancedSliderEditTooltip(null);
+      }
+      let next = startValue + (deltaX / Math.max(1, width)) * (max - min);
+      next = Math.max(min, Math.min(max, next));
+      if (step >= 1) next = Math.round(next);
+      if (Math.abs(next - advancedSliderDragRef.current.lastValue) < 1e-6) {
+        setAdvancedSliderDragTooltip({
+          kind,
+          value: kind === 'focus' ? resolveAdvancedMixPracticeFocusIndexFromSlider(next) : next,
+        });
+        return;
+      }
+      advancedSliderDragRef.current.lastValue = next;
+      if (kind === 'focus') {
+        const nextFocusIndex = resolveAdvancedMixPracticeFocusIndexFromSlider(next);
+        setAdvancedMixControls((previous) => ({
+          ...normalizeAdvancedMixControls(previous),
+          practiceFocusControl: nextFocusIndex,
+        }));
+        setAdvancedSliderDragTooltip({ kind, value: nextFocusIndex });
+        return;
+      }
+      if (kind === 'pan') {
+        setAdvancedMixControls((previous) => ({
+          ...normalizeAdvancedMixControls(previous),
+          practicePanRange: next,
+        }));
+      }
+      setAdvancedSliderDragTooltip({ kind, value: next });
+    };
+    const handleUp = () => {
+      advancedSliderDragRef.current = null;
+      setAdvancedSliderDragTooltip(null);
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+  }, []);
+
+  const applyAdvancedMixRealtimeSettings = useCallback((snapshot = projectRef.current, focus = advancedMixFocus, controls = advancedMixControls) => {
+    if (!isAdvancedMixSession || !snapshot) return false;
+    const mixState = resolveAdvancedMixRealtimeTrackMix(snapshot, focus, controls);
+    if (!mixState?.trackMixByTrackId) return false;
+    Object.entries(mixState.trackMixByTrackId).forEach(([trackId, trackMix]) => {
+      audioManager.updateTrackMix(trackId, trackMix.gain, trackMix.pan);
+    });
+    return true;
+  }, [advancedMixControls, advancedMixFocus, isAdvancedMixSession]);
+
+  useEffect(() => {
+    if (!isPlaying) return;
+    applyAdvancedMixRealtimeSettings();
+  }, [advancedMixControls, advancedMixFocus, applyAdvancedMixRealtimeSettings, isPlaying]);
+
+  useEffect(() => {
     let interval = null;
     let isCancelled = false;
     let loopRestartTimeout = null;
@@ -584,7 +1081,8 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         audioManager.stop();
         if (!isCancelled) {
           await applyEditorPlaybackOutputConfig();
-          await audioManager.play(project, currentTimeMs);
+          await audioManager.play(projectRef.current || project, currentTimeMs);
+          applyAdvancedMixRealtimeSettings(projectRef.current || project);
         }
       };
       
@@ -635,6 +1133,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
             loopRestartTimeout = setTimeout(() => {
               applyEditorPlaybackOutputConfig()
                 .then(() => audioManager.play(currentProject, currentProject.loop.startMs))
+                .then(() => applyAdvancedMixRealtimeSettings(currentProject))
                 .then(() => {
                 // Set previousTime above loop end to prevent edge re-detection
                 previousTimeRef.current = currentProject.loop.endMs + 1000;
@@ -668,7 +1167,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         clearInterval(interval);
       }
     };
-  }, [applyEditorPlaybackOutputConfig, isPlaying, project.projectId, isRecording, recordingSegments.length]);
+  }, [applyAdvancedMixRealtimeSettings, applyEditorPlaybackOutputConfig, isPlaying, project.projectId, isRecording, recordingSegments.length]);
 
   // Separate effect for handling recording overwrite
   useEffect(() => {
@@ -791,8 +1290,8 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   }, [isHostedSession, lockHelpers]);
 
   const treeProject = useMemo(
-    () => (project ? normalizeTrackTree(project) : null),
-    [project]
+    () => (viewProject ? normalizeTrackTree(viewProject) : null),
+    [viewProject]
   );
   const timelineRows = useMemo(
     () => (treeProject ? getVisibleTimelineRows(treeProject) : []),
@@ -807,6 +1306,309 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     });
     return map;
   }, [treeProject]);
+  const advancedMixExpandedTrackIds = useMemo(() => (
+    isAdvancedMixSession
+      ? new Set(expandAdvancedMixFocusTrackIds(treeProject, advancedMixFocus))
+      : new Set()
+  ), [advancedMixFocus, isAdvancedMixSession, treeProject]);
+  const advancedMixGroupDescendantTrackIdsByGroup = useMemo(() => (
+    treeProject ? getGroupDescendantTrackIdsByGroup(treeProject) : new Map()
+  ), [treeProject]);
+  const advancedMixChildrenByParentId = useMemo(() => {
+    const result = new Map();
+    (treeProject?.trackTree || []).forEach((node) => {
+      const parentId = node?.parentId || null;
+      if (!result.has(parentId)) result.set(parentId, []);
+      result.get(parentId).push(node);
+    });
+    return result;
+  }, [treeProject]);
+  const advancedMixNodeById = useMemo(() => (
+    new Map((treeProject?.trackTree || []).map((node) => [node.id, node]))
+  ), [treeProject]);
+  const advancedMixTrackNodeIdByTrackId = useMemo(() => {
+    const result = new Map();
+    (treeProject?.trackTree || []).forEach((node) => {
+      if (node.kind === 'track' && node.trackId) {
+        result.set(node.trackId, node.id);
+      }
+    });
+    return result;
+  }, [treeProject]);
+  const advancedMixDescendantGroupIdsByGroup = useMemo(() => {
+    const result = new Map();
+    if (!treeProject?.trackTree?.length) return result;
+    const childrenByParentId = new Map();
+    (treeProject.trackTree || []).forEach((node) => {
+      const parentId = node?.parentId || null;
+      if (!childrenByParentId.has(parentId)) childrenByParentId.set(parentId, []);
+      childrenByParentId.get(parentId).push(node);
+    });
+    const walk = (groupId) => {
+      const groupIds = [];
+      (childrenByParentId.get(groupId) || []).forEach((node) => {
+        if (node.kind !== 'group') return;
+        groupIds.push(node.id);
+        groupIds.push(...walk(node.id));
+      });
+      return groupIds;
+    };
+    (treeProject.trackTree || [])
+      .filter((node) => node.kind === 'group')
+      .forEach((node) => {
+        result.set(node.id, walk(node.id));
+      });
+    return result;
+  }, [treeProject]);
+
+  const advancedDeviationItems = useMemo(() => (
+    isAdvancedMixSession
+      ? buildAdvancedMixDeviationItems(advancedMixSession?.baseSnapshot, project, advancedMixFocus)
+      : []
+  ), [advancedMixFocus, advancedMixSession?.baseSnapshot, isAdvancedMixSession, project]);
+
+  useEffect(() => {
+    if (!isAdvancedMixSession || !project) return undefined;
+    const timeoutId = setTimeout(() => {
+      const save = onSaveAdvancedMixRef.current;
+      if (typeof save !== 'function') return;
+      save({ snapshot: project, focus: advancedMixFocus }).catch((error) => {
+        reportUserError(
+          'Failed to save mix.',
+          error,
+          { onceKey: `advanced-mix-save:${advancedMixSession?.mix?.id || 'unknown'}` }
+        );
+      });
+    }, 700);
+    return () => clearTimeout(timeoutId);
+  }, [advancedMixFocus, advancedMixSession?.mix?.id, isAdvancedMixSession, project]);
+
+  const getGroupDescendantTrackIds = useCallback((groupNodeId) => {
+    if (!groupNodeId) return [];
+    return advancedMixGroupDescendantTrackIdsByGroup.get(groupNodeId) || [];
+  }, [advancedMixGroupDescendantTrackIdsByGroup]);
+
+  const getClosestHighlightedParentGroupId = useCallback((nodeId, highlightedGroups) => {
+    let node = advancedMixNodeById.get(nodeId);
+    while (node?.parentId) {
+      if (highlightedGroups.has(node.parentId)) return node.parentId;
+      node = advancedMixNodeById.get(node.parentId);
+    }
+    return null;
+  }, [advancedMixNodeById]);
+
+  const splitHighlightedGroupExcludingNode = useCallback((highlightedGroups, highlightedTracks, groupNodeId, excludedNodeId) => {
+    highlightedGroups.delete(groupNodeId);
+    (advancedMixDescendantGroupIdsByGroup.get(groupNodeId) || [])
+      .forEach((descendantGroupId) => highlightedGroups.delete(descendantGroupId));
+    getGroupDescendantTrackIds(groupNodeId)
+      .forEach((trackId) => highlightedTracks.delete(trackId));
+
+    const addBranch = (node) => {
+      if (!node) return;
+      if (node.kind === 'group') {
+        highlightedGroups.add(node.id);
+      } else if (node.trackId) {
+        highlightedTracks.add(node.trackId);
+      }
+    };
+
+    const splitGroup = (parentGroupId) => {
+      (advancedMixChildrenByParentId.get(parentGroupId) || []).forEach((child) => {
+        if (child.id === excludedNodeId) return;
+        if (child.kind === 'group' && isNodeInsideGroup(treeProject, child.id, excludedNodeId)) {
+          splitGroup(child.id);
+          return;
+        }
+        addBranch(child);
+      });
+    };
+
+    splitGroup(groupNodeId);
+  }, [
+    advancedMixChildrenByParentId,
+    advancedMixDescendantGroupIdsByGroup,
+    getGroupDescendantTrackIds,
+    treeProject,
+  ]);
+
+  const handleToggleAdvancedTrackFocus = useCallback((trackId, mode) => {
+    if (!isAdvancedMixSession) return;
+    const trackNodeId = advancedMixTrackNodeIdByTrackId.get(trackId);
+    setAdvancedMixFocus((previous) => {
+      const normalized = normalizeAdvancedMixFocus(previous);
+      const highlightedGroups = new Set(normalized.highlightedGroupIds);
+      const highlightedTracks = new Set(normalized.highlightedTrackIds);
+      const highlightedParentGroupId = trackNodeId
+        ? getClosestHighlightedParentGroupId(trackNodeId, highlightedGroups)
+        : null;
+
+      if (highlightedParentGroupId) {
+        splitHighlightedGroupExcludingNode(
+          highlightedGroups,
+          highlightedTracks,
+          highlightedParentGroupId,
+          trackNodeId
+        );
+        highlightedTracks.delete(trackId);
+        return {
+          omittedTrackIds: [],
+          highlightedTrackIds: Array.from(highlightedTracks),
+          highlightedGroupIds: Array.from(highlightedGroups),
+          soloedTrackIds: [],
+        };
+      }
+
+      return toggleAdvancedMixFocus(previous, trackId, mode);
+    });
+  }, [
+    advancedMixTrackNodeIdByTrackId,
+    getClosestHighlightedParentGroupId,
+    isAdvancedMixSession,
+    splitHighlightedGroupExcludingNode,
+  ]);
+
+  const getAdvancedMixFocusModeForTrack = useCallback((focus, trackId) => {
+    if (advancedMixExpandedTrackIds.has(String(trackId || ''))) {
+      return getAdvancedMixFocusMode({ highlightedTrackIds: [trackId] }, trackId);
+    }
+    return getAdvancedMixFocusMode(focus, trackId);
+  }, [advancedMixExpandedTrackIds]);
+
+  const getAdvancedMixGroupFocusState = useCallback((groupNodeId) => {
+    if (!isAdvancedMixSession) return 'none';
+    const trackIds = getGroupDescendantTrackIds(groupNodeId);
+    if (!trackIds.length) return 'none';
+    const normalized = normalizeAdvancedMixFocus(advancedMixFocus);
+    if (normalized.highlightedGroupIds.includes(groupNodeId)) return 'all';
+    const highlightedCount = trackIds.filter((trackId) => advancedMixExpandedTrackIds.has(trackId)).length;
+    if (highlightedCount === trackIds.length) return 'all';
+    if (highlightedCount > 0) return 'partial';
+    return 'none';
+  }, [advancedMixExpandedTrackIds, advancedMixFocus, getGroupDescendantTrackIds, isAdvancedMixSession]);
+
+  const handleToggleAdvancedGroupFocus = useCallback((groupNodeId) => {
+    if (!isAdvancedMixSession) return;
+    const trackIds = getGroupDescendantTrackIds(groupNodeId);
+    if (!trackIds.length) return;
+    setAdvancedMixFocus((previous) => {
+      const normalized = normalizeAdvancedMixFocus(previous);
+      const highlightedGroups = new Set(normalized.highlightedGroupIds);
+      const highlightedTracks = new Set(normalized.highlightedTrackIds);
+      const highlightedParentGroupId = getClosestHighlightedParentGroupId(groupNodeId, highlightedGroups);
+      if (highlightedParentGroupId) {
+        splitHighlightedGroupExcludingNode(
+          highlightedGroups,
+          highlightedTracks,
+          highlightedParentGroupId,
+          groupNodeId
+        );
+        return {
+          omittedTrackIds: [],
+          highlightedTrackIds: Array.from(highlightedTracks),
+          highlightedGroupIds: Array.from(highlightedGroups),
+          soloedTrackIds: [],
+        };
+      }
+
+      const expandedTrackIds = new Set(expandAdvancedMixFocusTrackIds(treeProject, normalized));
+      const allHighlighted = highlightedGroups.has(groupNodeId)
+        || trackIds.every((trackId) => expandedTrackIds.has(trackId));
+      if (allHighlighted) {
+        highlightedGroups.delete(groupNodeId);
+        (advancedMixDescendantGroupIdsByGroup.get(groupNodeId) || [])
+          .forEach((descendantGroupId) => highlightedGroups.delete(descendantGroupId));
+        trackIds.forEach((trackId) => highlightedTracks.delete(trackId));
+      } else {
+        highlightedGroups.add(groupNodeId);
+        trackIds.forEach((trackId) => highlightedTracks.delete(trackId));
+        (advancedMixDescendantGroupIdsByGroup.get(groupNodeId) || [])
+          .forEach((descendantGroupId) => highlightedGroups.delete(descendantGroupId));
+      }
+      return {
+        omittedTrackIds: [],
+        highlightedTrackIds: Array.from(highlightedTracks),
+        highlightedGroupIds: Array.from(highlightedGroups),
+        soloedTrackIds: [],
+      };
+    });
+  }, [
+    advancedMixDescendantGroupIdsByGroup,
+    getClosestHighlightedParentGroupId,
+    getGroupDescendantTrackIds,
+    isAdvancedMixSession,
+    splitHighlightedGroupExcludingNode,
+    treeProject,
+  ]);
+
+  const handleRemoveAdvancedDeviation = useCallback((item) => {
+    if (!isAdvancedMixSession || !item) return;
+    const result = removeAdvancedMixDeviation(
+      project,
+      advancedMixFocus,
+      advancedMixSession?.baseSnapshot,
+      item
+    );
+    setAdvancedMixFocus(result.focus);
+    updateProject(result.project, 'Remove mix deviation');
+  }, [advancedMixFocus, advancedMixSession?.baseSnapshot, isAdvancedMixSession, project, updateProject]);
+
+  const beginAdvancedMixSliderDrag = useCallback((event, config) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const {
+      kind,
+      value,
+      min,
+      max,
+      step,
+      disabled,
+    } = config;
+    if (disabled) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    advancedSliderDragRef.current = {
+      startX: event.clientX,
+      startValue: Number(value),
+      lastValue: Number(value),
+      width: rect.width,
+      moved: false,
+      min: Number(min),
+      max: Number(max),
+      step: Number(step || 1),
+      kind,
+    };
+    setAdvancedSliderDragTooltip({
+      kind,
+      value: kind === 'focus' ? resolveAdvancedMixPracticeFocusIndexFromSlider(Number(value)) : Number(value),
+    });
+    setAdvancedSliderEditTooltip(null);
+  }, []);
+
+  const openAdvancedMixSliderEdit = useCallback((kind, value, disabled) => {
+    if (disabled) return;
+    setAdvancedSliderEditTooltip({
+      kind,
+      text: formatAdvancedMixSliderValue(kind, value),
+    });
+  }, []);
+
+  const commitAdvancedMixSliderEdit = useCallback(() => {
+    if (!advancedSliderEditTooltip) return;
+    const nextValue = parseAdvancedMixSliderInput(advancedSliderEditTooltip.kind, advancedSliderEditTooltip.text);
+    if (nextValue !== null) {
+      setAdvancedMixControls((previous) => {
+        const normalized = normalizeAdvancedMixControls(previous);
+        if (advancedSliderEditTooltip.kind === 'focus') {
+          return { ...normalized, practiceFocusControl: nextValue };
+        }
+        if (advancedSliderEditTooltip.kind === 'pan') {
+          return { ...normalized, practicePanRange: nextValue };
+        }
+        return normalized;
+      });
+    }
+    setAdvancedSliderEditTooltip(null);
+  }, [advancedSliderEditTooltip]);
 
   if (!project || !treeProject) {
     return (
@@ -816,16 +1618,48 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     );
   }
   const hasNoTracks = !project.tracks || project.tracks.length === 0;
+  const recordButtonStartsLocalSession = isAdvancedMixEditorSession && !isLocalRecordingSession;
   const selectedTrackLock = selectedTrackId ? lockByTrackId?.[selectedTrackId] : null;
   const selectedTrackLockedByOther = Boolean(
     selectedTrackLock?.ownerUserId
     && selectedTrackLock.ownerUserId !== remoteUserId
   );
   const selectedTrackLockOwnerName = selectedTrackLock?.ownerName || 'another user';
-  const recordButtonDisabled = hasNoTracks
-    || !selectedTrackId
-    || selectedRowKind !== 'track'
-    || (isHostedSession && !isRecording && (!syncConnected || selectedTrackLockedByOther));
+  const recordButtonDisabled = hasNoTracks;
+  const advancedFocusStep = getAdvancedMixPracticeFocusStep(advancedMixControls.practiceFocusControl);
+  const advancedFocusSliderPosition = getAdvancedMixPracticeFocusSliderPosition(advancedMixControls.practiceFocusControl);
+  const advancedPanControlDisabled = !isAdvancedMixSession
+    || advancedFocusStep === 'omitted'
+    || advancedFocusStep === 'solo';
+  const visualAdvancedPanRangeValue = advancedSliderDragTooltip?.kind === 'pan'
+    ? Math.max(0, Math.min(200, Number(advancedSliderDragTooltip.value) || 0))
+    : Math.max(0, Math.min(200, Number(advancedMixControls.practicePanRange) || 0));
+  const advancedPanRangePercent = (visualAdvancedPanRangeValue / 200) * 100;
+  const advancedPanFocusAxisValue = 200 - (visualAdvancedPanRangeValue / 2);
+  const advancedPanFocusAxisPercent = (advancedPanFocusAxisValue / 200) * 100;
+  const advancedPanKnobPixel = Math.max(
+    0,
+    Math.min(ADVANCED_PAN_INNER_TRACK_WIDTH_PX, Math.round((advancedPanRangePercent / 100) * ADVANCED_PAN_INNER_TRACK_WIDTH_PX))
+  );
+  const advancedPanFocusAxisPixel = Math.max(
+    0,
+    Math.min(ADVANCED_PAN_INNER_TRACK_WIDTH_PX, Math.round((advancedPanFocusAxisPercent / 100) * ADVANCED_PAN_INNER_TRACK_WIDTH_PX))
+  );
+  const advancedPanHighlightPercent = Math.max(
+    0,
+    Math.min(
+      100,
+      ADVANCED_PAN_HIGHLIGHT_LEFT_OFFSET_PERCENT
+        + (advancedPanRangePercent * (ADVANCED_PAN_HIGHLIGHT_INNER_SPAN_PERCENT / 100))
+    )
+  );
+  const advancedPanHighlightPixel = Math.max(
+    0,
+    Math.min(ADVANCED_PAN_TRACK_WIDTH_PX, Math.round((advancedPanHighlightPercent / 100) * ADVANCED_PAN_TRACK_WIDTH_PX))
+  );
+  const AdvancedFocusIcon = advancedFocusStep === 'omitted'
+    ? HeadphoneOff
+    : (advancedFocusStep === 'solo' ? Headphones : Scale);
 
   const handleSelectRow = (row) => {
     if (!row) return;
@@ -855,10 +1689,11 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   useEffect(() => {
+    if (isAdvancedMixSession) return;
     if (hasNoTracks && !showFileImport) {
       setShowFileImport(true);
     }
-  }, [hasNoTracks]);
+  }, [hasNoTracks, isAdvancedMixSession, showFileImport]);
 
   useEffect(() => {
     if (!timelineRows.length) {
@@ -917,7 +1752,8 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     stop();
     audioManager.stop();
     // Set to start of loop if loop is enabled, otherwise to project start
-    const startTime = project.loop.enabled ? project.loop.startMs : 0;
+    const loop = projectRef.current?.loop || {};
+    const startTime = loop.enabled ? loop.startMs : 0;
     setCurrentTime(startTime);
   };
 
@@ -985,10 +1821,11 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       }), 'Recording segment finalized');
       
       // Start a new segment at loop start
-      await recordingManager.startRecording(selectedTrackId, project.loop.startMs);
+      const loopStartMs = projectRef.current?.loop?.startMs || 0;
+      await recordingManager.startRecording(selectedTrackId, loopStartMs);
       setRecordingSegments([
         ...updatedSegments,
-        { startTimeMs: project.loop.startMs, offsetMs: segmentOffsetMs },
+        { startTimeMs: loopStartMs, offsetMs: segmentOffsetMs },
       ]);
       
       console.log('New recording segment started at loop start');
@@ -1121,6 +1958,15 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleRecord = async () => {
+    if (recordButtonStartsLocalSession) {
+      startLocalRecordingSession();
+      return;
+    }
+
+    if (isAdvancedMixSession) {
+      return;
+    }
+
     if (selectedRowKind === 'group') {
       alert('Cannot record to a group. Select a track first.');
       return;
@@ -1225,7 +2071,8 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       handleSeek(targetTime);
     } else {
       // If no previous boundary, go to start
-      const startTime = project.loop.enabled ? project.loop.startMs : 0;
+      const loop = projectRef.current?.loop || {};
+      const startTime = loop.enabled ? loop.startMs : 0;
       handleSeek(startTime);
     }
   };
@@ -1501,6 +2348,11 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleUpdateTrack = (trackId, updates) => {
+    const safeUpdates = isAdvancedMixSession
+      ? pickAllowedUpdates(updates, ADVANCED_MIX_ALLOWED_TRACK_UPDATE_KEYS)
+      : updates;
+    if (!safeUpdates || !Object.keys(safeUpdates).length) return;
+
     let nextProjectAfter = null;
     updateProject((proj) => {
       const previousTrack = proj.tracks.find((track) => track.id === trackId);
@@ -1515,15 +2367,15 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         && previousChoirUnitId === `track:${trackId}`
       );
       const nextTracks = proj.tracks.map((track) =>
-        track.id === trackId ? { ...track, ...updates } : track
+        track.id === trackId ? { ...track, ...safeUpdates } : track
       );
       let nextProject = {
         ...proj,
         tracks: nextTracks,
       };
 
-      if (updates.part !== undefined) {
-        const nextPart = Boolean(updates.part);
+      if (safeUpdates.part !== undefined) {
+        const nextPart = Boolean(safeUpdates.part);
         nextProject = normalizeTrackTree({
           ...nextProject,
           trackTree: (nextProject.trackTree || []).map((node) => (
@@ -1534,7 +2386,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         });
       }
 
-      if (updates.role !== undefined) {
+      if (safeUpdates.role !== undefined) {
         nextProject = normalizeTrackTree(nextProject);
         if (isMetronomeRole(nextTracks.find((track) => track.id === trackId)?.role)) {
           nextProject = collapseEmptyGroupsToTracks(nextProject);
@@ -1542,7 +2394,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         }
       }
 
-      if (updates.pan !== undefined && wasChoirTrack && proj.autoPan?.enabled && isDirectChoirPartTrack) {
+      if (!isAdvancedMixSession && safeUpdates.pan !== undefined && wasChoirTrack && proj.autoPan?.enabled && isDirectChoirPartTrack) {
         nextProject = {
           ...nextProject,
           autoPan: {
@@ -1550,7 +2402,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
             enabled: false,
           },
         };
-      } else if (updates.role !== undefined && proj.autoPan?.enabled) {
+      } else if (!isAdvancedMixSession && safeUpdates.role !== undefined && proj.autoPan?.enabled) {
         const result = applyChoirAutoPanToProject(nextProject);
         nextProject = result.project;
       }
@@ -1560,7 +2412,11 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     }, `Update track`);
 
     if (isPlaying && nextProjectAfter) {
-      const shouldRestart = updates.muted !== undefined || updates.soloed !== undefined;
+      if (isAdvancedMixSession) {
+        applyAdvancedMixRealtimeSettings(nextProjectAfter);
+        return;
+      }
+      const shouldRestart = safeUpdates.muted !== undefined || safeUpdates.soloed !== undefined;
       if (shouldRestart) {
         audioManager.stop();
         void applyEditorPlaybackOutputConfig().then(() => audioManager.play(nextProjectAfter, currentTimeMs));
@@ -1710,13 +2566,18 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleUpdateGroup = (groupNodeId, updates) => {
+    const safeUpdates = isAdvancedMixSession
+      ? pickAllowedUpdates(updates, ADVANCED_MIX_ALLOWED_TRACK_UPDATE_KEYS)
+      : updates;
+    if (!safeUpdates || !Object.keys(safeUpdates).length) return;
+
     let nextProjectAfter = null;
-    const beforeChildren = updates.role !== undefined
+    const beforeChildren = safeUpdates.role !== undefined
       ? getDirectChildRoleSnapshot(project, groupNodeId)
       : null;
     updateProject((proj) => {
-      let nextProject = updateGroupNode(proj, groupNodeId, updates);
-      if (updates.role !== undefined) {
+      let nextProject = updateGroupNode(proj, groupNodeId, safeUpdates);
+      if (safeUpdates.role !== undefined) {
         nextProject = syncDirectChildRolesFromGroupCategories(nextProject);
       }
       const wasChoirGroup = (proj.trackTree || []).some(
@@ -1729,7 +2590,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
           isChoirRole(node.role) || (isGroupParentRole(node.role) && node.role === GROUP_ROLE_CHOIRS)
         )
       );
-      if (updates.pan !== undefined && wasChoirGroup && proj.autoPan?.enabled) {
+      if (!isAdvancedMixSession && safeUpdates.pan !== undefined && wasChoirGroup && proj.autoPan?.enabled) {
         nextProject = {
           ...nextProject,
           autoPan: {
@@ -1737,7 +2598,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
             enabled: false,
           },
         };
-      } else if (updates.role !== undefined && (wasChoirGroup || nextChoirGroup) && proj.autoPan?.enabled) {
+      } else if (!isAdvancedMixSession && safeUpdates.role !== undefined && (wasChoirGroup || nextChoirGroup) && proj.autoPan?.enabled) {
         const result = applyChoirAutoPanToProject(nextProject);
         nextProject = result.project;
       }
@@ -1745,7 +2606,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       return nextProject;
     }, 'Update group');
 
-    if (updates.role !== undefined && nextProjectAfter) {
+    if (safeUpdates.role !== undefined && nextProjectAfter) {
       const afterChildren = getDirectChildRoleSnapshot(nextProjectAfter, groupNodeId);
       const updatedGroup = (nextProjectAfter.trackTree || []).find(
         (node) => node.id === groupNodeId && node.kind === 'group'
@@ -1753,7 +2614,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
       console.debug('[GroupRoleApply]', {
         groupNodeId,
         groupName: updatedGroup?.name,
-        requestedRole: updates.role,
+        requestedRole: safeUpdates.role,
         appliedGroupRole: updatedGroup?.role,
         beforeChildren,
         afterChildren,
@@ -1761,7 +2622,11 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     }
 
     if (isPlaying && nextProjectAfter) {
-      const shouldRestart = updates.muted !== undefined || updates.soloed !== undefined;
+      if (isAdvancedMixSession) {
+        applyAdvancedMixRealtimeSettings(nextProjectAfter);
+        return;
+      }
+      const shouldRestart = safeUpdates.muted !== undefined || safeUpdates.soloed !== undefined;
       if (shouldRestart) {
         audioManager.stop();
         void applyEditorPlaybackOutputConfig().then(() => audioManager.play(nextProjectAfter, currentTimeMs));
@@ -1779,6 +2644,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleSetAutoPanStrategy = (strategyId) => {
+    if (isAdvancedMixSession || isLocalRecordingSession) return;
     applyProjectAutoPanSettings(
       strategyId === 'off'
         ? { enabled: false }
@@ -1787,7 +2653,16 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     );
   };
 
+  const handleSetProjectPublished = (published) => {
+    if (isAdvancedMixSession || isLocalRecordingSession) return;
+    updateProject((proj) => ({
+      ...proj,
+      published: Boolean(published),
+    }), 'Update publish setting');
+  };
+
   const applyProjectAutoPanSettings = (settingsUpdate, description) => {
+    if (isAdvancedMixSession || isLocalRecordingSession) return;
     let panUpdates = null;
     updateProject((proj) => {
       const result = applyChoirAutoPanToProject(proj, settingsUpdate);
@@ -1803,6 +2678,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleToggleAutoPanInverted = () => {
+    if (isAdvancedMixSession || isLocalRecordingSession) return;
     applyProjectAutoPanSettings(
       {
         inverted: !project?.autoPan?.inverted,
@@ -1812,6 +2688,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleSetAutoPanManualChoirParts = (enabled) => {
+    if (isAdvancedMixSession || isLocalRecordingSession) return;
     applyProjectAutoPanSettings(
       { manualChoirParts: enabled },
       'Update choir part selection mode'
@@ -1819,6 +2696,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleUpdateExportSettings = (updates) => {
+    if (isAdvancedMixSession || isLocalRecordingSession) return;
     updateProject((proj) => ({
       ...proj,
       exportSettings: normalizeExportSettings({
@@ -1829,6 +2707,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleReorderTrack = (trackId, insertIndex) => {
+    if (isAdvancedMixSession) return;
     let panUpdates = null;
     updateProject((proj) => {
       const rowTracks = getVisibleTimelineRows(proj)
@@ -1868,6 +2747,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleMoveNode = (nodeId, targetNodeId, placement) => {
+    if (isAdvancedMixSession) return;
     let panUpdates = null;
     updateProject((proj) => {
       let nextProject = moveTrackTreeNode(proj, nodeId, targetNodeId, placement);
@@ -1891,6 +2771,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleConvertEmptyTrackAboveToGroup = (sourceTrackId, movingNodeId) => {
+    if (isAdvancedMixSession) return;
     let panUpdates = null;
     updateProject((proj) => {
       const normalized = normalizeTrackTree(proj);
@@ -1992,6 +2873,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleIndentSelectedRight = () => {
+    if (isAdvancedMixSession) return;
     const currentIndex = selectedNodeId
       ? timelineRows.findIndex((row) => row.nodeId === selectedNodeId)
       : -1;
@@ -2017,6 +2899,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleIndentSelectedLeft = () => {
+    if (isAdvancedMixSession) return;
     const selectedRow = selectedNodeId
       ? timelineRows.find((row) => row.nodeId === selectedNodeId)
       : null;
@@ -2085,14 +2968,17 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleCreateGroup = (name = 'Group', parentId = null) => {
+    if (isAdvancedMixSession || isLocalRecordingSession) return;
     updateProject((proj) => createGroupNode(proj, name, parentId, null), 'Create group');
   };
 
   const handleRenameGroup = (groupNodeId, name) => {
+    if (isAdvancedMixSession || isLocalRecordingSession) return;
     updateProject((proj) => renameGroupNode(proj, groupNodeId, name), 'Rename group');
   };
 
   const handleDeleteGroup = (groupNodeId) => {
+    if (isAdvancedMixSession || isLocalRecordingSession) return;
     const normalizedBeforeDelete = normalizeTrackTree(project);
     const rowsBeforeDelete = getVisibleTimelineRows(normalizedBeforeDelete);
     const groupNode = (normalizedBeforeDelete.trackTree || []).find(
@@ -2203,33 +3089,18 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleToggleGroupCollapse = (groupNodeId) => {
-    let shouldSelectCollapsedGroup = false;
-    updateProject((proj) => {
-      const normalized = normalizeTrackTree(proj);
-      const targetGroup = (normalized.trackTree || []).find(
-        (node) => node.kind === 'group' && node.id === groupNodeId
-      );
-      if (!targetGroup) return normalized;
+    if (!treeProject) return;
 
-      const willCollapse = !Boolean(targetGroup.collapsed);
-      if (willCollapse && selectedNodeId) {
-        if (selectedNodeId === groupNodeId) {
-          shouldSelectCollapsedGroup = true;
-        } else {
-          const nodeById = new Map((normalized.trackTree || []).map((node) => [node.id, node]));
-          let current = nodeById.get(selectedNodeId);
-          while (current && current.parentId) {
-            if (current.parentId === groupNodeId) {
-              shouldSelectCollapsedGroup = true;
-              break;
-            }
-            current = nodeById.get(current.parentId);
-          }
-        }
-      }
+    const targetGroup = (treeProject.trackTree || []).find(
+      (node) => node.kind === 'group' && node.id === groupNodeId
+    );
+    if (!targetGroup) return;
 
-      return toggleGroupCollapsed(normalized, groupNodeId);
-    }, 'Toggle group collapse');
+    const willCollapse = !Boolean(targetGroup.collapsed);
+    const shouldSelectCollapsedGroup = willCollapse
+      && isNodeInsideGroup(treeProject, groupNodeId, selectedNodeId);
+
+    setGroupCollapsed(groupNodeId, willCollapse);
 
     if (shouldSelectCollapsedGroup) {
       setSelectedNodeId(groupNodeId);
@@ -2365,6 +3236,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   }, [applyMasterVolume, masterEditTooltip, parseMasterVolumeInput]);
 
   const handleAddEmptyTrack = (options = null) => {
+    if (isAdvancedMixSession || isLocalRecordingSession) return;
     const trackNumber = project.tracks.length + 1;
     const trackName = `Track ${trackNumber}`;
     const newTrack = createTrack(trackName, 'other');
@@ -2431,6 +3303,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleDeleteTrackById = (trackId) => {
+    if (isAdvancedMixSession || isLocalRecordingSession) return;
     if (!trackId) {
       return; // No track selected
     }
@@ -2555,6 +3428,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleCreateSubtrackFromTrack = (trackId) => {
+    if (isAdvancedMixSession || isLocalRecordingSession) return;
     if (!trackId) return;
     const sourceTrack = project.tracks.find((t) => t.id === trackId);
     if (!sourceTrack) return;
@@ -2656,6 +3530,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleCreateSubtrackFromSelected = () => {
+    if (isAdvancedMixSession || isLocalRecordingSession) return;
     const selectedRow = selectedNodeId
       ? timelineRows.find((row) => row.nodeId === selectedNodeId)
       : null;
@@ -2671,14 +3546,10 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   };
 
   const handleToggleLoop = () => {
-    const description = project.loop.enabled ? 'Disable loop' : 'Enable loop';
-    updateProject((proj) => ({
-      ...proj,
-      loop: {
-        ...proj.loop,
-        enabled: !proj.loop.enabled,
-      },
-    }), description);
+    setLocalLoop((loop) => ({
+      ...loop,
+      enabled: !loop.enabled,
+    }));
   };
 
   const getSelectedTargetGroupNodeId = () => {
@@ -2700,36 +3571,34 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
   const handleToggleSelectedGroupFoldRecursive = () => {
     const groupNodeId = getSelectedTargetGroupNodeId();
     if (!groupNodeId) return;
-    updateProject((proj) => {
-      const normalized = normalizeTrackTree(proj);
-      const rootGroup = (normalized.trackTree || []).find(
-        (node) => node.kind === 'group' && node.id === groupNodeId
+    if (!treeProject) return;
+
+    const rootGroup = (treeProject.trackTree || []).find(
+      (node) => node.kind === 'group' && node.id === groupNodeId
+    );
+    if (!rootGroup) return;
+
+    const targetCollapsed = !Boolean(rootGroup.collapsed);
+    const descendantGroupIds = new Set([groupNodeId]);
+    const stack = [groupNodeId];
+    while (stack.length > 0) {
+      const currentGroupId = stack.pop();
+      const children = (treeProject.trackTree || []).filter(
+        (node) => node.kind === 'group' && (node.parentId ?? null) === currentGroupId
       );
-      if (!rootGroup) return normalized;
-
-      const targetCollapsed = !Boolean(rootGroup.collapsed);
-      const descendantGroupIds = new Set([groupNodeId]);
-      const stack = [groupNodeId];
-      while (stack.length > 0) {
-        const currentGroupId = stack.pop();
-        const children = (normalized.trackTree || []).filter(
-          (node) => node.kind === 'group' && (node.parentId ?? null) === currentGroupId
-        );
-        for (const child of children) {
-          descendantGroupIds.add(child.id);
-          stack.push(child.id);
-        }
+      for (const child of children) {
+        descendantGroupIds.add(child.id);
+        stack.push(child.id);
       }
+    }
 
-      return {
-        ...normalized,
-        trackTree: (normalized.trackTree || []).map((node) => (
-          node.kind === 'group' && descendantGroupIds.has(node.id)
-            ? { ...node, collapsed: targetCollapsed }
-            : node
-        )),
-      };
-    }, 'Toggle group collapse recursively');
+    setGroupsCollapsed(Array.from(descendantGroupIds), targetCollapsed);
+
+    if (targetCollapsed && isNodeInsideGroup(treeProject, groupNodeId, selectedNodeId)) {
+      setSelectedNodeId(groupNodeId);
+      setSelectedRowKind('group');
+      selectTrack(null);
+    }
   };
 
   useKeyboardShortcuts({
@@ -2739,11 +3608,11 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     onToggleLoop: handleToggleLoop,
     onUndo: undo,
     onRedo: redo,
-    onDeleteTrack: handleDeleteTrack,
-    onAddTrack: handleAddTrackFromSelected,
-    onAddSubtrack: handleCreateSubtrackFromSelected,
-    onIndentRight: handleIndentSelectedRight,
-    onIndentLeft: handleIndentSelectedLeft,
+    onDeleteTrack: isAdvancedMixSession || isLocalRecordingSession ? null : handleDeleteTrack,
+    onAddTrack: isAdvancedMixSession || isLocalRecordingSession ? null : handleAddTrackFromSelected,
+    onAddSubtrack: isAdvancedMixSession || isLocalRecordingSession ? null : handleCreateSubtrackFromSelected,
+    onIndentRight: isAdvancedMixSession ? null : handleIndentSelectedRight,
+    onIndentLeft: isAdvancedMixSession ? null : handleIndentSelectedLeft,
     onToggleFold: handleToggleSelectedGroupFold,
     onToggleFoldRecursive: handleToggleSelectedGroupFoldRecursive,
   });
@@ -2770,6 +3639,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
     <div
       className="h-full flex flex-col"
       onDragOver={(e) => {
+        if (isAdvancedMixSession) return;
         if (!isFileDragEvent(e)) return;
         e.preventDefault();
         if (e.dataTransfer) {
@@ -2777,6 +3647,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         }
       }}
       onDrop={async (e) => {
+        if (isAdvancedMixSession) return;
         if (!isFileDragEvent(e)) return;
         e.preventDefault();
 
@@ -2813,20 +3684,69 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
             >
               <ArrowLeft size={20} />
             </button>
-            <button
-              onClick={() => {
-                setSettingsTab('playback');
-                setSettingsOpen(true);
-                refreshAudioDevices();
-              }}
-              className="text-gray-400 hover:text-white transition-colors flex-shrink-0"
-              title="Settings"
-            >
-              <Settings size={18} />
-            </button>
+            {!isAdvancedMixSession && !isLocalRecordingSession ? (
+              <button
+                onClick={() => {
+                  setSettingsTab('playback');
+                  setSettingsOpen(true);
+                  refreshAudioDevices();
+                }}
+                className="text-gray-400 hover:text-white transition-colors flex-shrink-0"
+                title="Settings"
+              >
+                <Settings size={18} />
+              </button>
+            ) : null}
             <h1 className="text-lg font-semibold truncate" title={headerProjectTitle}>
               {headerProjectTitle}
             </h1>
+            {isLocalRecordingSession ? (
+              <span
+                className="rounded border border-emerald-400/50 bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold uppercase text-emerald-100"
+                title={LOCAL_RECORDING_BADGE_TOOLTIP}
+              >
+                local
+              </span>
+            ) : null}
+            {isAdvancedMixSession ? (
+              <div className="relative flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setAdvancedDeviationsOpen((open) => !open)}
+                  className="rounded border border-blue-500/50 bg-blue-500/15 px-2 py-0.5 text-xs font-semibold uppercase text-blue-100 hover:bg-blue-500/25"
+                  title="Show mix deviations"
+                >
+                  mix
+                </button>
+                {advancedDeviationsOpen ? (
+                  <div className="absolute left-0 top-full z-[130] mt-2 w-80 overflow-hidden rounded-lg border border-gray-700 bg-gray-900 shadow-2xl">
+                    <div className="border-b border-gray-800 px-3 py-2">
+                      <div className="text-sm font-semibold text-gray-100">Mix deviations</div>
+                      <div className="text-xs text-gray-500">{advancedDeviationItems.length} change{advancedDeviationItems.length === 1 ? '' : 's'}</div>
+                    </div>
+                    <div className="max-h-80 overflow-auto py-1">
+                      {advancedDeviationItems.length ? advancedDeviationItems.map((item) => (
+                        <div key={item.id} className="flex items-start gap-2 px-3 py-2 hover:bg-gray-800">
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm text-gray-100" title={item.title}>{item.title}</div>
+                            <div className="truncate text-xs text-gray-500" title={item.detail}>{item.detail}</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveAdvancedDeviation(item)}
+                            className="rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-700"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      )) : (
+                        <div className="px-3 py-6 text-center text-sm text-gray-500">No deviations.</div>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
 
           <div className="relative min-w-0">
@@ -2870,6 +3790,12 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
 
                 <button
                   onClick={handleRecord}
+                  onContextMenu={(event) => {
+                    if (isLocalRecordingSession || isRecording) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    startLocalRecordingSession();
+                  }}
                   disabled={recordButtonDisabled}
                   className={`p-2 ${
                     isRecording
@@ -2877,13 +3803,17 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
                       : 'bg-red-600 hover:bg-red-700'
                   } disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded transition-colors`}
                   title={
-                    isRecording
+                    recordButtonStartsLocalSession
+                      ? LOCAL_RECORDING_START_TOOLTIP
+                      : isRecording
                       ? 'Stop Recording'
+                      : isLocalRecordingSession
+                        ? 'Record'
                       : selectedTrackLockedByOther
-                        ? `Locked by ${selectedTrackLockOwnerName}`
+                        ? `Locked by ${selectedTrackLockOwnerName}. Right-click: ${LOCAL_RECORDING_START_TOOLTIP}`
                         : (isHostedSession && !syncConnected)
-                          ? 'Disconnected from server'
-                          : 'Record'
+                          ? `Disconnected from server. Right-click: ${LOCAL_RECORDING_START_TOOLTIP}`
+                          : `Record (right-click: ${LOCAL_RECORDING_START_TOOLTIP})`
                   }
                 >
                   {!isRecording && selectedTrackLockedByOther ? (
@@ -2913,6 +3843,163 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
               </div>
 
               <div className="flex items-center gap-4 flex-shrink-0">
+                {isAdvancedMixSession ? (
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-gray-400" title="Practice focus">
+                        <AdvancedFocusIcon size={18} />
+                      </span>
+                      <div
+                        className="relative w-40 h-7 cursor-pointer"
+                        onMouseDown={(event) => {
+                          if (event.detail > 1) return;
+                          const rect = event.currentTarget.getBoundingClientRect();
+                          const relative = ((event.clientX - rect.left) / Math.max(1, rect.width)) * 100;
+                          const clamped = Math.max(0, Math.min(100, relative));
+                          const nextFocusIndex = resolveAdvancedMixPracticeFocusIndexFromSlider(clamped);
+                          setAdvancedMixControls((previous) => ({
+                            ...normalizeAdvancedMixControls(previous),
+                            practiceFocusControl: nextFocusIndex,
+                          }));
+                          beginAdvancedMixSliderDrag(event, {
+                            kind: 'focus',
+                            value: getAdvancedMixPracticeFocusSliderPosition(nextFocusIndex),
+                            min: 0,
+                            max: 100,
+                            step: 1,
+                            disabled: false,
+                          });
+                        }}
+                        onDoubleClick={() => openAdvancedMixSliderEdit('focus', advancedMixControls.practiceFocusControl, false)}
+                        title="Practice focus"
+                      >
+                        <div className="absolute left-[13px] right-[13px] top-1/2 -translate-y-1/2 h-[26px] rounded-full bg-gray-800 border border-gray-600 pointer-events-none z-0" />
+                        <div className={`absolute left-0 top-1/2 -translate-y-1/2 h-[26px] w-[26px] rounded-full bg-gray-800 border pointer-events-none z-10 ${
+                          advancedFocusStep === 'omitted' ? 'border-blue-400' : 'border-gray-600'
+                        }`} />
+                        <div className={`absolute right-0 top-1/2 -translate-y-1/2 h-[26px] w-[26px] rounded-full bg-gray-800 border pointer-events-none z-10 ${
+                          advancedFocusStep === 'solo' ? 'border-blue-400' : 'border-gray-600'
+                        }`} />
+                        <div className="absolute top-0 bottom-0 left-[13px] right-[13px] pointer-events-none z-20">
+                          <div
+                            className="absolute top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full bg-gray-600"
+                            style={{ left: `${advancedFocusSliderPosition}%` }}
+                          />
+                        </div>
+                        {advancedSliderDragTooltip?.kind === 'focus' ? (
+                          <div
+                            className="absolute top-full left-1/2 -translate-x-1/2 w-14 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
+                            style={{ marginTop: '1px' }}
+                          >
+                            {formatAdvancedMixSliderValue('focus', Number(advancedSliderDragTooltip.value))}
+                          </div>
+                        ) : null}
+                        {advancedSliderEditTooltip?.kind === 'focus' ? (
+                          <input
+                            type="text"
+                            value={advancedSliderEditTooltip.text}
+                            onChange={(event) => setAdvancedSliderEditTooltip((previous) => (
+                              previous ? { ...previous, text: event.target.value } : previous
+                            ))}
+                            onFocus={(event) => event.target.select()}
+                            onBlur={commitAdvancedMixSliderEdit}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                event.currentTarget.blur();
+                              } else if (event.key === 'Escape') {
+                                event.preventDefault();
+                                setAdvancedSliderEditTooltip(null);
+                              }
+                            }}
+                            className="absolute top-full left-1/2 -translate-x-1/2 w-14 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
+                            style={{ marginTop: '1px' }}
+                            autoFocus
+                          />
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className={`flex items-center gap-2 ${advancedPanControlDisabled ? 'opacity-40' : ''}`}>
+                      <span className="text-gray-400" title="Transformed pan range">
+                        <ChevronsLeftRightEllipsis size={18} />
+                      </span>
+                      <div
+                        className={`relative w-40 h-7 ${advancedPanControlDisabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+                        onMouseDown={(event) => {
+                          if (event.detail > 1) return;
+                          beginAdvancedMixSliderDrag(event, {
+                            kind: 'pan',
+                            value: advancedMixControls.practicePanRange,
+                            min: 0,
+                            max: 200,
+                            step: 1,
+                            disabled: advancedPanControlDisabled,
+                          });
+                        }}
+                        onDoubleClick={() => openAdvancedMixSliderEdit('pan', advancedMixControls.practicePanRange, advancedPanControlDisabled)}
+                        title={advancedPanControlDisabled ? 'Transformed pan range disabled for Omitted/Solo focus' : 'Transformed pan range'}
+                      >
+                        <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[26px] rounded-full bg-gray-800 border border-gray-600 overflow-hidden pointer-events-none" />
+                        <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[26px] rounded-full overflow-hidden pointer-events-none">
+                          <div
+                            className={`absolute left-0 top-0 bottom-0 bg-gray-600 ${advancedSliderDragTooltip?.kind === 'pan' && !advancedPanControlDisabled ? 'opacity-70' : 'opacity-0'}`}
+                            style={{ width: `${advancedPanHighlightPixel}px` }}
+                          />
+                        </div>
+                        <div className="absolute top-0 bottom-0 left-[13px] right-[13px] pointer-events-none">
+                          <div
+                            className="absolute top-1/2 h-6 w-6 -translate-y-1/2 rounded-full bg-gray-600 z-20"
+                            style={{ left: `${advancedPanKnobPixel - 12}px` }}
+                          />
+                          {advancedSliderDragTooltip?.kind === 'pan' && !advancedPanControlDisabled ? (
+                            <div
+                              className="absolute h-[10px] w-[10px] rounded-full bg-gray-200 z-30 pointer-events-none"
+                              style={{
+                                left: `${advancedPanFocusAxisPixel}px`,
+                                top: '50%',
+                                transform: 'translate3d(-50%, -50%, 0)',
+                                backfaceVisibility: 'hidden',
+                                willChange: 'left',
+                              }}
+                            />
+                          ) : null}
+                        </div>
+                        {advancedSliderDragTooltip?.kind === 'pan' ? (
+                          <div
+                            className="absolute top-full left-1/2 -translate-x-1/2 w-10 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center z-50"
+                            style={{ marginTop: '1px' }}
+                          >
+                            {formatAdvancedMixSliderValue('pan', Number(advancedSliderDragTooltip.value))}
+                          </div>
+                        ) : null}
+                        {advancedSliderEditTooltip?.kind === 'pan' ? (
+                          <input
+                            type="text"
+                            value={advancedSliderEditTooltip.text}
+                            onChange={(event) => setAdvancedSliderEditTooltip((previous) => (
+                              previous ? { ...previous, text: event.target.value } : previous
+                            ))}
+                            onFocus={(event) => event.target.select()}
+                            onBlur={commitAdvancedMixSliderEdit}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                event.currentTarget.blur();
+                              } else if (event.key === 'Escape') {
+                                event.preventDefault();
+                                setAdvancedSliderEditTooltip(null);
+                              }
+                            }}
+                            className="absolute top-full left-1/2 -translate-x-1/2 w-10 px-1 py-0.5 text-xs rounded bg-gray-900 text-gray-200 border border-gray-600 text-center focus:outline-none z-50"
+                            style={{ marginTop: '1px' }}
+                            autoFocus
+                          />
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
                 <div className="flex items-center gap-2">
                   <Volume2 size={18} className="text-gray-400" />
                   <div className="relative">
@@ -2961,35 +4048,41 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
                   </div>
                 </div>
 
-                <button
-                  onClick={() => setShowFileImport(true)}
-                  className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded transition-colors"
-                >
-                  <Download size={16} />
-                  <span className="text-sm">Import</span>
-                </button>
+                {!isAdvancedMixSession ? (
+                  <>
+                    <button
+                      onClick={() => setShowFileImport(true)}
+                      className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded transition-colors"
+                    >
+                      <Download size={16} />
+                      <span className="text-sm">Import</span>
+                    </button>
 
-                <button
-                  onClick={async () => {
-                    if (isHostedSession) {
-                      try {
-                        await forceCheckpoint(remoteSession.serverProjectId, remoteSession.session);
-                      } catch (error) {
-                        reportUserError(
-                          'Failed to create server checkpoint before export.',
-                          error,
-                          { onceKey: 'editor:force-checkpoint-before-export' }
-                        );
-                      }
-                    }
-                    setShowExportDialog(true);
-                  }}
-                  disabled={hasNoTracks}
-                  className="flex items-center gap-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-3 py-2 rounded transition-colors"
-                >
-                  <Upload size={16} />
-                  <span className="text-sm">Export</span>
-                </button>
+                    {!isLocalRecordingSession ? (
+                      <button
+                        onClick={async () => {
+                          if (isHostedSession) {
+                            try {
+                              await forceCheckpoint(remoteSession.serverProjectId, remoteSession.session);
+                            } catch (error) {
+                              reportUserError(
+                                'Failed to create server checkpoint before export.',
+                                error,
+                                { onceKey: 'editor:force-checkpoint-before-export' }
+                              );
+                            }
+                          }
+                          setShowExportDialog(true);
+                        }}
+                        disabled={hasNoTracks}
+                        className="flex items-center gap-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white px-3 py-2 rounded transition-colors"
+                      >
+                        <Upload size={16} />
+                        <span className="text-sm">Export</span>
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
               </div>
             </div>
           </div>
@@ -3014,9 +4107,11 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
           onSelectTrack={selectTrack}
           onSeek={handleSeek}
           updateProject={updateProject}
+          onUpdateLoop={setLocalLoop}
           shortcutsEnabled={true}
-          deleteClipShortcutEnabled
-          onDeleteTrackShortcut={handleDeleteTrackById}
+          deleteClipShortcutEnabled={!isAdvancedMixSession}
+          onDeleteTrackShortcut={isAdvancedMixSession || isLocalRecordingSession ? null : handleDeleteTrackById}
+          advancedMixLocked={isAdvancedMixSession}
           sharedVerticalScroll
           scrollContainerRef={timelineScrollRef}
         >
@@ -3059,32 +4154,39 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
                       trackEffectiveRoleById={trackEffectiveRoleById}
                       onUpdateTrack={handleUpdateTrack}
                       onUpdateGroup={handleUpdateGroup}
-                      onCreateSubtrack={handleCreateSubtrackFromTrack}
+                      onCreateSubtrack={isAdvancedMixSession || isLocalRecordingSession ? null : handleCreateSubtrackFromTrack}
                       onSelectRow={handleSelectRow}
                       onSelectTrack={selectTrack}
                       selectedNodeId={selectedNodeId}
                       selectedTrackId={selectedTrackId}
-                      onAddTrack={handleAddEmptyTrack}
-                      onDeleteTrack={handleDeleteTrackById}
-                      onEditTrackArtists={remoteSession?.session ? handleEditTrackArtists : null}
-                      onEditGroupArtists={remoteSession?.session ? handleEditGroupArtists : null}
-                      onSetAutoPanStrategy={handleSetAutoPanStrategy}
-                      onToggleAutoPanInverted={handleToggleAutoPanInverted}
+                      onAddTrack={isAdvancedMixSession || isLocalRecordingSession ? null : handleAddEmptyTrack}
+                      onDeleteTrack={isAdvancedMixSession || isLocalRecordingSession ? null : handleDeleteTrackById}
+                      onEditTrackArtists={!isAdvancedMixSession && !isLocalRecordingSession && remoteSession?.session ? handleEditTrackArtists : null}
+                      onEditGroupArtists={!isAdvancedMixSession && !isLocalRecordingSession && remoteSession?.session ? handleEditGroupArtists : null}
+                      onSetAutoPanStrategy={isAdvancedMixSession || isLocalRecordingSession ? null : handleSetAutoPanStrategy}
+                      onToggleAutoPanInverted={isAdvancedMixSession || isLocalRecordingSession ? null : handleToggleAutoPanInverted}
                       autoPanInverted={Boolean(treeProject.autoPan?.inverted)}
                       autoPanManualChoirParts={Boolean(treeProject.autoPan?.manualChoirParts)}
-                      onReorderTrack={handleReorderTrack}
-                      onMoveNode={handleMoveNode}
-                      onCreateGroup={handleCreateGroup}
-                      onRenameGroup={handleRenameGroup}
-                      onDeleteGroup={handleDeleteGroup}
+                      onReorderTrack={isAdvancedMixSession ? null : handleReorderTrack}
+                      onMoveNode={isAdvancedMixSession ? null : handleMoveNode}
+                      onCreateGroup={isAdvancedMixSession || isLocalRecordingSession ? null : handleCreateGroup}
+                      onRenameGroup={isAdvancedMixSession || isLocalRecordingSession ? null : handleRenameGroup}
+                      onDeleteGroup={isAdvancedMixSession || isLocalRecordingSession ? null : handleDeleteGroup}
                       onToggleGroupCollapse={handleToggleGroupCollapse}
+                      advancedMixLocked={isAdvancedMixSession}
+                      localSessionMode={isLocalRecordingSession}
+                      advancedMixFocus={isAdvancedMixSession ? advancedMixFocus : null}
+                      getAdvancedMixFocusMode={getAdvancedMixFocusModeForTrack}
+                      onToggleAdvancedTrackFocus={isAdvancedMixSession ? handleToggleAdvancedTrackFocus : null}
+                      getAdvancedMixGroupFocusState={isAdvancedMixSession ? getAdvancedMixGroupFocusState : null}
+                      onToggleAdvancedGroupFocus={isAdvancedMixSession ? handleToggleAdvancedGroupFocus : null}
                       emptyContextMenu={trackListContextMenu}
                       onClearEmptyContextMenu={() => setTrackListContextMenu(null)}
                     />
                   </div>
                   <div className="min-w-0 bg-gray-900 relative overflow-hidden min-h-full">
                     {tracks}
-                    {hasNoTracks && (
+                    {hasNoTracks && !isAdvancedMixSession && (
                       <div className="absolute inset-0 flex items-center justify-center">
                         <div className="text-center text-gray-500">
                           <Download size={48} className="mx-auto mb-4 opacity-50" />
@@ -3101,7 +4203,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         </Timeline>
       </div>
 
-      {showFileImport && (
+      {showFileImport && !isAdvancedMixSession && (
         <FileImport
           onImport={handleFileImport}
           manualChoirPartsEnabled={Boolean(project?.autoPan?.manualChoirParts)}
@@ -3109,7 +4211,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         />
       )}
 
-      {showExportDialog && (
+      {showExportDialog && !isAdvancedMixSession && !isLocalRecordingSession && (
         <ExportDialog
           project={project}
           audioBuffers={audioManager.mediaCache}
@@ -3142,7 +4244,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
         }}
       />
 
-      {settingsOpen && (
+      {settingsOpen && !isAdvancedMixSession && !isLocalRecordingSession && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="w-full max-w-lg rounded-lg border border-gray-700 bg-gray-800 shadow-xl">
             <div className="flex items-center justify-between border-b border-gray-700 px-4 py-3">
@@ -3194,6 +4296,7 @@ function Editor({ onBackToDashboard, onSwitchToPlayerMode = null, remoteSession 
               ) : (
                 <ProjectSettingsPanel
                   project={project}
+                  onSetPublished={handleSetProjectPublished}
                   onSetAutoPanStrategy={handleSetAutoPanStrategy}
                   onToggleAutoPanInverted={(enabled) => applyProjectAutoPanSettings(
                     { inverted: enabled },

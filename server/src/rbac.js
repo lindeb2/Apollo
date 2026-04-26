@@ -218,6 +218,14 @@ function normalizeLowerText(value) {
   return normalizeText(value).toLowerCase();
 }
 
+function normalizeBoolean(value) {
+  return value === true || normalizeLowerText(value) === 'true';
+}
+
+function isProjectPublished(project = null, snapshot = null) {
+  return normalizeBoolean(project?.published ?? project?.publish ?? snapshot?.published ?? snapshot?.publish);
+}
+
 function toNumber(value, fallback = 0) {
   return Number.isFinite(Number(value)) ? Number(value) : fallback;
 }
@@ -1704,6 +1712,7 @@ async function loadProjectRows(projectIds = [], db = pool) {
     `SELECT p.id,
             p.name,
             p.created_by AS "createdByUserId",
+            p.published,
             p.musical_number AS "musicalNumber",
             p.scene_order AS "sceneOrder",
             p.show_id AS "showId",
@@ -1979,6 +1988,7 @@ function buildProjectAccessSummary(userId, project, grants = [], projectTags = n
   const ownsShow = Boolean(showCreatedByUserId && showCreatedByUserId === normalizedUserId);
   const ownsProject = Boolean(createdByUserId && createdByUserId === normalizedUserId);
   const ownsAnyTrack = projectHasOwnedTrack(trackInfoById, userId);
+  const published = isProjectPublished(project, snapshot);
 
   if (isAdmin) {
     return {
@@ -2031,6 +2041,11 @@ function buildProjectAccessSummary(userId, project, grants = [], projectTags = n
     summary.canCreateTracks = true;
     summary.canManageTracks = true;
     summary.canCreateMixes = true;
+    summary.canListenTutti = true;
+  }
+  if (published) {
+    summary.canSeeShow = true;
+    summary.canSeeProject = true;
     summary.canListenTutti = true;
   }
 
@@ -2151,7 +2166,7 @@ export function resolveProjectAccessFromGrantRows(grants = [], projectId, projec
     return { canRead: true, canWrite: true };
   }
   const project = typeof projectId === 'object' ? projectId : { id: projectId };
-  let canRead = false;
+  let canRead = isProjectPublished(project, null);
   let canWrite = false;
   for (const grant of grants) {
     const permissionKey = grant.permissionKey || grant.permission_key || mapLegacyCapabilityToPermissionKey(
@@ -2218,6 +2233,7 @@ export async function getProjectAccessMap(userId, projectRowsOrIds = [], db = po
     const project = {
       ...(projectById.get(projectId) || { id: projectId }),
       createdByUserId: incomingRow?.createdByUserId ?? incomingRow?.created_by ?? projectById.get(projectId)?.createdByUserId ?? null,
+      published: incomingRow?.published ?? incomingRow?.publish ?? projectById.get(projectId)?.published ?? false,
       musicalNumber: incomingRow?.musicalNumber ?? projectById.get(projectId)?.musicalNumber ?? null,
       sceneOrder: incomingRow?.sceneOrder ?? projectById.get(projectId)?.sceneOrder ?? null,
       showId: incomingRow?.showId ?? incomingRow?.show_id ?? projectById.get(projectId)?.showId ?? null,
@@ -2309,6 +2325,7 @@ export async function getShowAccessMap(userId, showRowsOrIds = [], db = pool) {
       `SELECT p.id,
               p.name,
               p.created_by AS "createdByUserId",
+              p.published,
               p.musical_number AS "musicalNumber",
               p.scene_order AS "sceneOrder",
               p.show_id AS "showId",
@@ -3109,7 +3126,6 @@ function normalizeGroupForComparison(node = {}) {
     order: toNumber(node.order, 0),
     name: node.name,
     part: Boolean(node.part),
-    collapsed: Boolean(node.collapsed),
     muted: Boolean(node.muted),
     soloed: Boolean(node.soloed),
     volume: toNumber(node.volume, 100),
@@ -3123,12 +3139,12 @@ function normalizeTopLevelForRestrictedWrite(snapshot = {}) {
     projectId: snapshot.projectId,
     projectName: snapshot.projectName,
     musicalNumber: snapshot.musicalNumber,
+    published: isProjectPublished(snapshot, null),
     sampleRate: snapshot.sampleRate,
     masterVolume: snapshot.masterVolume,
     autoPan: snapshot.autoPan || null,
     exportSettings: snapshot.exportSettings || null,
     credits: snapshot.credits || null,
-    loop: snapshot.loop || null,
   };
 }
 

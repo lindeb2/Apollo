@@ -14,7 +14,17 @@ import {
   normalizeExportSettings,
 } from '../types/project';
 import { applyChoirAutoPanToProject, normalizeAutoPanSettings } from '../utils/choirAutoPan';
-import { getEffectiveTrackMix } from '../utils/trackTree';
+import { getEffectiveTrackMix, getGroupDescendantTrackIdsByGroup } from '../utils/trackTree';
+import {
+  ADVANCED_MIX_PRESET_ID,
+  ADVANCED_MIX_PRACTICE_FOCUS_MAX_INDEX,
+  ADVANCED_MIX_PRACTICE_FOCUS_MIN_INDEX,
+  expandAdvancedMixFocusTrackIds,
+  getAdvancedMixPracticeFocusStep,
+  normalizeAdvancedMixControls,
+  normalizeAdvancedMixFocus,
+  normalizeAdvancedMixState,
+} from '../utils/advancedMix';
 import {
   TRACK_ROLE_CHOIR,
   TRACK_ROLE_INSTRUMENT,
@@ -25,6 +35,7 @@ import {
 
 export const EXPORT_PRESETS = {
   TUTTI: 'tutti',
+  ADVANCED_MIX: ADVANCED_MIX_PRESET_ID,
   ACAPELLA: 'acapella',
   NO_LEAD: 'no_lead',
   NO_CHOIR: 'no_choir',
@@ -41,6 +52,7 @@ export const EXPORT_PRESETS = {
 
 export const EXPORT_PRESET_DEFINITIONS = [
   { id: EXPORT_PRESETS.TUTTI, label: 'Tutti', description: 'All tracks, no adjustments' },
+  { id: EXPORT_PRESETS.ADVANCED_MIX, label: 'Advanced Mix', description: 'Saved DAW mix snapshot' },
   { id: EXPORT_PRESETS.ACAPELLA, label: 'No Instruments', description: 'Lead + choir' },
   { id: EXPORT_PRESETS.NO_LEAD, label: 'No Leads', description: 'Instrument + choir' },
   { id: EXPORT_PRESETS.NO_CHOIR, label: 'No Choir', description: 'Instrument + lead' },
@@ -59,6 +71,16 @@ const VALID_PRESETS = new Set(EXPORT_PRESET_DEFINITIONS.map((preset) => preset.i
 const PRACTICE_FOCUS_PEAK_DB = -1;
 const SINGLE_OUTPUT_PRESETS = new Set([
   EXPORT_PRESETS.TUTTI,
+  EXPORT_PRESETS.ADVANCED_MIX,
+  EXPORT_PRESETS.ACAPELLA,
+  EXPORT_PRESETS.NO_LEAD,
+  EXPORT_PRESETS.NO_CHOIR,
+  EXPORT_PRESETS.INSTRUMENTAL,
+  EXPORT_PRESETS.LEAD_ONLY,
+  EXPORT_PRESETS.CHOIR_ONLY,
+]);
+
+export const GROUP_MIX_PRESETS = new Set([
   EXPORT_PRESETS.ACAPELLA,
   EXPORT_PRESETS.NO_LEAD,
   EXPORT_PRESETS.NO_CHOIR,
@@ -92,6 +114,10 @@ export const PRACTICE_REALTIME_MODES = {
 
 export function isPracticePresetId(presetId) {
   return PRACTICE_PRESETS.has(presetId);
+}
+
+export function isGroupMixPresetId(presetId) {
+  return GROUP_MIX_PRESETS.has(presetId);
 }
 
 export function isPracticeOmittedPresetId(presetId) {
@@ -330,6 +356,7 @@ function getExportContext(project) {
   const trackStateById = mix.statesByTrackId;
   const activeTracks = allTracks.filter((track) => trackStateById.get(track.id)?.audible);
   const effectiveRole = (track) => trackStateById.get(track.id)?.effectiveRole || toCategoryRole(track.role);
+  const allPracticeTracks = allTracks.filter((track) => !isMetronomeTrack(track, effectiveRole));
   const practiceTracks = activeTracks.filter((track) => !isMetronomeTrack(track, effectiveRole));
   const metronomeTracks = activeTracks.filter((track) => isMetronomeTrack(track, effectiveRole));
   const instrumentTracks = activeTracks.filter((track) => effectiveRole(track) === TRACK_ROLE_INSTRUMENT);
@@ -343,6 +370,7 @@ function getExportContext(project) {
     allTracks,
     trackStateById,
     activeTracks,
+    allPracticeTracks,
     effectiveRole,
     practiceTracks,
     metronomeTracks,
@@ -352,6 +380,141 @@ function getExportContext(project) {
     instrumentUnits,
     leadUnits,
     choirUnits,
+  };
+}
+
+function cloneSnapshot(value) {
+  if (value == null) return value;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function getSelectedPresetUnit(context, presetId, presetVariantKey) {
+  const meta = getPracticePresetMeta(presetId);
+  if (!meta) return null;
+  const units = getUnitsForPresetFromContext(context, meta.normalPresetId);
+  const normalizedKey = presetVariantKey == null ? null : String(presetVariantKey);
+  return units.find((unit) => String(unit.unitId) === normalizedKey) || null;
+}
+
+function getGroupDepthById(trackTree = []) {
+  const parentById = new Map((trackTree || [])
+    .filter((node) => node?.id)
+    .map((node) => [node.id, node.parentId || null]));
+  const depthById = new Map();
+  const getDepth = (groupId) => {
+    if (depthById.has(groupId)) return depthById.get(groupId);
+    const parentId = parentById.get(groupId);
+    const depth = parentId && parentById.has(parentId) ? getDepth(parentId) + 1 : 0;
+    depthById.set(groupId, depth);
+    return depth;
+  };
+  parentById.forEach((_, groupId) => getDepth(groupId));
+  return depthById;
+}
+
+function isDescendantGroup(trackTree = [], groupId, ancestorGroupIds) {
+  const parentById = new Map((trackTree || [])
+    .filter((node) => node?.id)
+    .map((node) => [node.id, node.parentId || null]));
+  let parentId = parentById.get(groupId);
+  while (parentId) {
+    if (ancestorGroupIds.has(parentId)) return true;
+    parentId = parentById.get(parentId);
+  }
+  return false;
+}
+
+function createHighlightedGroupMixSource(baseSnapshot, context, shouldHighlightTrack) {
+  const selectedTrackIds = new Set(context.allPracticeTracks
+    .filter((track) => shouldHighlightTrack(track))
+    .map((track) => track.id));
+  const descendantTrackIdsByGroup = getGroupDescendantTrackIdsByGroup(baseSnapshot);
+  const practiceTrackIds = new Set(context.allPracticeTracks.map((track) => track.id));
+  const depthByGroupId = getGroupDepthById(baseSnapshot.trackTree || []);
+  const selectedGroupIds = [];
+  const coveredTrackIds = new Set();
+
+  Array.from(descendantTrackIdsByGroup.entries())
+    .sort(([left], [right]) => (depthByGroupId.get(left) || 0) - (depthByGroupId.get(right) || 0))
+    .forEach(([groupId, descendantTrackIds]) => {
+      if (isDescendantGroup(baseSnapshot.trackTree || [], groupId, new Set(selectedGroupIds))) return;
+      const groupPracticeTrackIds = descendantTrackIds.filter((trackId) => practiceTrackIds.has(trackId));
+      if (!groupPracticeTrackIds.length) return;
+      if (!groupPracticeTrackIds.every((trackId) => selectedTrackIds.has(trackId))) return;
+      selectedGroupIds.push(groupId);
+      groupPracticeTrackIds.forEach((trackId) => coveredTrackIds.add(trackId));
+    });
+
+  return {
+    snapshot: baseSnapshot,
+    focus: normalizeAdvancedMixFocus({
+      highlightedGroupIds: selectedGroupIds,
+      highlightedTrackIds: context.allPracticeTracks
+        .filter((track) => selectedTrackIds.has(track.id) && !coveredTrackIds.has(track.id))
+        .map((track) => track.id),
+    }),
+    controls: { practiceFocusControl: ADVANCED_MIX_PRACTICE_FOCUS_MAX_INDEX },
+  };
+}
+
+export function createEditableMixSource(project, mix) {
+  const advancedState = normalizeAdvancedMixState(mix?.advancedMix || {});
+  if (advancedState.snapshot) {
+    return {
+      snapshot: cloneSnapshot(advancedState.snapshot),
+      focus: advancedState.focus,
+      controls: null,
+    };
+  }
+
+  const baseSnapshot = cloneSnapshot(project || {});
+  const presetId = mix?.presetId || EXPORT_PRESETS.TUTTI;
+  const context = getExportContext(baseSnapshot);
+  const roleIs = (track, role) => context.effectiveRole(track) === role;
+
+  if (presetId === EXPORT_PRESETS.ACAPELLA) {
+    return createHighlightedGroupMixSource(baseSnapshot, context, (track) => !roleIs(track, TRACK_ROLE_INSTRUMENT));
+  }
+
+  if (presetId === EXPORT_PRESETS.NO_LEAD) {
+    return createHighlightedGroupMixSource(baseSnapshot, context, (track) => !roleIs(track, TRACK_ROLE_LEAD));
+  }
+
+  if (presetId === EXPORT_PRESETS.NO_CHOIR) {
+    return createHighlightedGroupMixSource(baseSnapshot, context, (track) => !roleIs(track, TRACK_ROLE_CHOIR));
+  }
+
+  if (presetId === EXPORT_PRESETS.INSTRUMENTAL) {
+    return createHighlightedGroupMixSource(baseSnapshot, context, (track) => roleIs(track, TRACK_ROLE_INSTRUMENT));
+  }
+
+  if (presetId === EXPORT_PRESETS.LEAD_ONLY) {
+    return createHighlightedGroupMixSource(baseSnapshot, context, (track) => roleIs(track, TRACK_ROLE_LEAD));
+  }
+
+  if (presetId === EXPORT_PRESETS.CHOIR_ONLY) {
+    return createHighlightedGroupMixSource(baseSnapshot, context, (track) => roleIs(track, TRACK_ROLE_CHOIR));
+  }
+
+  if (isPracticePresetId(presetId)) {
+    const selectedUnit = getSelectedPresetUnit(context, presetId, mix?.presetVariantKey);
+    const focus = normalizeAdvancedMixFocus({
+      highlightedTrackIds: selectedUnit?.trackIds || [],
+    });
+    const controls = isPracticeOmittedPresetId(presetId)
+      ? { practiceFocusControl: ADVANCED_MIX_PRACTICE_FOCUS_MIN_INDEX }
+      : null;
+    return {
+      snapshot: baseSnapshot,
+      focus,
+      controls,
+    };
+  }
+
+  return {
+    snapshot: baseSnapshot,
+    focus: normalizeAdvancedMixFocus(),
+    controls: null,
   };
 }
 
@@ -468,7 +631,9 @@ export function resolvePracticeRealtimeTrackMix(
   const context = getExportContext(project);
   const {
     trackStateById,
+    allTracks,
     activeTracks,
+    allPracticeTracks,
     practiceTracks,
     choirTracks,
     effectiveRole,
@@ -576,6 +741,77 @@ export function resolvePracticeRealtimeTrackMix(
 
   return {
     mode: normalizedMode,
+    targetTrackIds,
+    trackMixByTrackId,
+  };
+}
+
+export function resolveAdvancedMixRealtimeTrackMix(project, focus, controls = null) {
+  const context = getExportContext(project);
+  const {
+    trackStateById,
+    activeTracks,
+    practiceTracks,
+    effectiveRole,
+  } = context;
+  const normalizedFocus = normalizeAdvancedMixFocus(focus);
+  const normalizedControls = normalizeAdvancedMixControls(controls);
+  const focusStep = getAdvancedMixPracticeFocusStep(normalizedControls.practiceFocusControl);
+  const targetTrackIds = expandAdvancedMixFocusTrackIds(project, normalizedFocus);
+  const omittedSet = new Set();
+  const soloedSet = new Set();
+
+  if (focusStep === 'omitted') {
+    targetTrackIds.forEach((trackId) => omittedSet.add(trackId));
+  } else if (focusStep === 'solo') {
+    targetTrackIds.forEach((trackId) => soloedSet.add(trackId));
+  }
+
+  const basePanByTrackId = {};
+  const baseGainByTrackId = {};
+  for (const track of activeTracks) {
+    const state = trackStateById.get(track.id);
+    basePanByTrackId[track.id] = clampPan(Number.isFinite(state?.effectivePan) ? state.effectivePan : track.pan);
+    baseGainByTrackId[track.id] = Number.isFinite(state?.effectiveGain)
+      ? state.effectiveGain
+      : volumeToGain(track.volume);
+  }
+
+  const numericFocus = typeof focusStep === 'number';
+  const panAdjustments = numericFocus && targetTrackIds.length
+    ? buildPracticePanMap({
+      tracks: practiceTracks,
+      targetTrackIds,
+      basePanByTrackId,
+      transformedPanRange: normalizedControls.practicePanRange,
+    })
+    : {};
+  const gainAdjustments = numericFocus && targetTrackIds.length
+    ? buildRealtimePracticeGainMap(practiceTracks, targetTrackIds, focusStep)
+    : {};
+  const hasSoloedFocus = soloedSet.size > 0;
+  const trackMixByTrackId = {};
+
+  for (const track of activeTracks) {
+    const passthrough = isMetronomeTrack(track, effectiveRole);
+    const omitted = !passthrough && omittedSet.has(track.id);
+    const excludedBySolo = !passthrough && hasSoloedFocus && !soloedSet.has(track.id);
+    const baseGain = baseGainByTrackId[track.id];
+    const adjustedGain = !passthrough && gainAdjustments[track.id] !== undefined
+      ? baseGain * gainAdjustments[track.id]
+      : baseGain;
+    const adjustedPan = !passthrough && panAdjustments[track.id] !== undefined
+      ? panAdjustments[track.id]
+      : basePanByTrackId[track.id];
+
+    trackMixByTrackId[track.id] = {
+      gain: omitted || excludedBySolo ? 0 : adjustedGain,
+      pan: adjustedPan,
+    };
+  }
+
+  return {
+    mode: hasSoloedFocus ? PRACTICE_REALTIME_MODES.SOLO : PRACTICE_REALTIME_MODES.NORMAL,
     targetTrackIds,
     trackMixByTrackId,
   };
@@ -714,6 +950,7 @@ export async function exportProject(
   const countPresetFiles = (presetId) => {
     if (
       presetId === EXPORT_PRESETS.TUTTI ||
+      presetId === EXPORT_PRESETS.ADVANCED_MIX ||
       presetId === EXPORT_PRESETS.ACAPELLA ||
       presetId === EXPORT_PRESETS.NO_LEAD ||
       presetId === EXPORT_PRESETS.NO_CHOIR ||
@@ -765,17 +1002,18 @@ export async function exportProject(
 
   for (const presetId of presetIds) {
     throwIfAborted();
-    if (presetId === EXPORT_PRESETS.TUTTI) {
-      emitProgress('Tutti');
+    if (presetId === EXPORT_PRESETS.TUTTI || presetId === EXPORT_PRESETS.ADVANCED_MIX) {
+      const label = presetId === EXPORT_PRESETS.ADVANCED_MIX ? 'Advanced Mix' : 'Tutti';
+      emitProgress(label);
       files.push({
         presetId,
         branch: null,
         subgroup: null,
         subgroupCount: 0,
-        filename: createFileName(projectBase, '', outputFormat),
-          blob: await renderTracks(project, activeTracks, audioBuffers, {}, {}, outputFormat, trackStateById, exportSettings),
+        filename: createFileName(projectBase, presetId === EXPORT_PRESETS.ADVANCED_MIX ? 'Advanced Mix' : '', outputFormat),
+        blob: await renderTracks(project, activeTracks, audioBuffers, {}, {}, outputFormat, trackStateById, exportSettings),
       });
-      advanceProgress('Tutti');
+      advanceProgress(label);
       continue;
     }
 

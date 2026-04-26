@@ -124,12 +124,23 @@ export function PlaybackDevicesSettingsPanel({
 
 export function ProjectSettingsPanel({
   project,
+  onSetPublished,
   onSetAutoPanStrategy,
   onToggleAutoPanInverted,
   onSetAutoPanManualChoirParts,
 }) {
   return (
     <div className="space-y-4">
+      <label className="flex items-center gap-2 text-sm text-gray-300 select-none">
+        <input
+          type="checkbox"
+          className="h-4 w-4 rounded border-gray-600 bg-gray-900"
+          checked={Boolean(project?.published)}
+          onChange={(e) => onSetPublished(e.target.checked)}
+        />
+        <span>Publish</span>
+      </label>
+
       <div>
         <label className="block text-xs text-gray-400 mb-1">
           Choir auto-pan

@@ -9,6 +9,7 @@ import { createId } from '../utils/id';
  * - media: Audio blob storage with metadata
  * - undo: Undo/redo history (last 100 actions per project)
  * - exportDirs: Last-used export directory handles
+ * - localProjectState: Per-device project UI/playback state
  * - remoteProjects: Remote sync metadata by project id
  * - syncQueue: Pending sync operations for offline replay
  */
@@ -48,12 +49,23 @@ class ApolloDB extends Dexie {
       syncQueue: 'id, projectId, status, updatedAt',
     });
 
+    this.version(4).stores({
+      projects: 'projectId, projectName, lastModified',
+      media: 'blobId, fileName, sampleRate, durationMs, channels, createdAt',
+      undo: '[projectId+actionIndex], projectId, actionIndex, timestamp',
+      exportDirs: 'id, updatedAt',
+      remoteProjects: 'projectId, serverProjectId, updatedAt',
+      syncQueue: 'id, projectId, status, updatedAt',
+      localProjectState: 'projectId, updatedAt',
+    });
+
     this.projects = this.table('projects');
     this.media = this.table('media');
     this.undo = this.table('undo');
     this.exportDirs = this.table('exportDirs');
     this.remoteProjects = this.table('remoteProjects');
     this.syncQueue = this.table('syncQueue');
+    this.localProjectState = this.table('localProjectState');
   }
 }
 
@@ -77,12 +89,13 @@ export async function saveProject(project) {
  * Delete a project and its undo history
  */
 export async function deleteProject(projectId) {
-  await db.transaction('rw', [db.projects, db.undo, db.remoteProjects, db.syncQueue], async () => {
+  await db.transaction('rw', [db.projects, db.undo, db.remoteProjects, db.syncQueue, db.localProjectState], async () => {
     await db.projects.delete(projectId);
     await db.undo.where('projectId').equals(projectId).delete();
     await db.remoteProjects.delete(projectId);
     await db.syncQueue.where('projectId').equals(projectId).delete();
     await db.syncQueue.delete(`${projectId}:pending`);
+    await db.localProjectState.delete(projectId);
   });
 }
 
@@ -215,4 +228,22 @@ export async function getPendingSyncOp(projectId) {
 export async function clearPendingSyncOp(projectId) {
   const id = `${projectId}:pending`;
   await db.syncQueue.delete(id);
+}
+
+export async function loadLocalProjectState(projectId) {
+  if (!projectId) return null;
+  return await db.localProjectState.get(projectId);
+}
+
+export async function saveLocalProjectState(projectId, updates = {}) {
+  if (!projectId) return null;
+  const existing = await db.localProjectState.get(projectId);
+  const next = {
+    ...(existing || {}),
+    ...updates,
+    projectId,
+    updatedAt: Date.now(),
+  };
+  await db.localProjectState.put(next);
+  return next;
 }

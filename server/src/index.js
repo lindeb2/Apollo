@@ -165,6 +165,10 @@ function normalizeSceneOrder(value) {
   return numeric;
 }
 
+function normalizeProjectPublished(value) {
+  return value === true || String(value ?? '').trim().toLowerCase() === 'true';
+}
+
 function parseMusicalNumberSegments(value) {
   return normalizeMusicalNumber(value)
     .split('.')
@@ -267,6 +271,7 @@ async function buildProjectPermissionMapForRows(userId, rows = []) {
       createdByUserId: row.createdByUserId,
       showId: row.showId,
       showName: row.showName,
+      published: row.published,
       musicalNumber: row.musicalNumber,
       sceneOrder: row.sceneOrder,
       name: row.name || row.projectName,
@@ -390,6 +395,31 @@ async function applyOpToSnapshot(currentSnapshot, op) {
   return currentSnapshot;
 }
 
+function preserveLocalOnlyProjectFields(nextSnapshot = {}, currentSnapshot = {}) {
+  const currentCollapsedById = new Map(
+    (Array.isArray(currentSnapshot?.trackTree) ? currentSnapshot.trackTree : [])
+      .filter((node) => node?.kind === 'group' && node?.id)
+      .map((node) => [String(node.id), Boolean(node.collapsed)])
+  );
+
+  const sharedSnapshot = {
+    ...nextSnapshot,
+    loop: currentSnapshot?.loop || nextSnapshot?.loop || { enabled: false, startMs: 0, endMs: 0 },
+  };
+  if (Array.isArray(nextSnapshot?.trackTree)) {
+    sharedSnapshot.trackTree = nextSnapshot.trackTree.map((node) => {
+      if (node?.kind !== 'group') return node;
+      return {
+        ...node,
+        collapsed: currentCollapsedById.has(String(node.id))
+          ? currentCollapsedById.get(String(node.id))
+          : false,
+      };
+    });
+  }
+  return sharedSnapshot;
+}
+
 function collectSnapshotMediaIds(snapshot) {
   const ids = new Set();
   const tracks = Array.isArray(snapshot?.tracks) ? snapshot.tracks : [];
@@ -425,6 +455,7 @@ async function appendProjectOp({ projectId, userId, clientOpId, op }) {
     const projectResult = await client.query(
       `SELECT id,
               name,
+              published,
               created_by AS "createdByUserId"
        FROM projects
        WHERE id = $1`,
@@ -448,13 +479,24 @@ async function appendProjectOp({ projectId, userId, clientOpId, op }) {
     const currentSnapshot = head.latest_snapshot_json || {};
     const provisionalNextSnapshot = await applyOpToSnapshot(currentSnapshot, op);
     const access = await getProjectAccess(userId, projectId, client);
-    const nextSnapshot = await validateAndTransformProjectWrite({
+    const validatedSnapshot = await validateAndTransformProjectWrite({
       userId,
       project,
       access,
       currentSnapshot,
       nextSnapshot: provisionalNextSnapshot,
     });
+    const sharedSnapshot = preserveLocalOnlyProjectFields(validatedSnapshot, currentSnapshot);
+    const nextSnapshot = {
+      ...sharedSnapshot,
+      published: normalizeProjectPublished(
+        sharedSnapshot?.published
+        ?? sharedSnapshot?.publish
+        ?? currentSnapshot?.published
+        ?? currentSnapshot?.publish
+        ?? project?.published
+      ),
+    };
     const storedOp = (
       op?.type === 'project.replace'
         ? { ...op, project: nextSnapshot }
@@ -481,6 +523,13 @@ async function appendProjectOp({ projectId, userId, clientOpId, op }) {
         projectMetadataUpdates.push(`musical_number = $${metadataIdx++}`);
         projectMetadataValues.push(nextMusicalNumber);
       }
+    }
+
+    const nextPublished = normalizeProjectPublished(nextSnapshot?.published ?? nextSnapshot?.publish);
+    const currentPublished = normalizeProjectPublished(currentSnapshot?.published ?? currentSnapshot?.publish ?? project?.published);
+    if (nextPublished !== currentPublished) {
+      projectMetadataUpdates.push(`published = $${metadataIdx++}`);
+      projectMetadataValues.push(nextPublished);
     }
 
     const nextCreditsJson = JSON.stringify(normalizeProjectCredits(nextSnapshot?.credits || {}));
@@ -570,6 +619,7 @@ async function fetchProjectBootstrap(projectId, knownSeq = 0) {
     pool.query(
       `SELECT p.id,
               p.name,
+              p.published,
               p.show_id AS "showId",
               s.name AS "showName"
        FROM projects p
@@ -610,6 +660,7 @@ async function fetchProjectBootstrap(projectId, knownSeq = 0) {
     project: {
       id: projectResult.rows[0].id,
       name: projectResult.rows[0].name,
+      published: Boolean(projectResult.rows[0].published),
       showId: projectResult.rows[0].showId,
       showName: projectResult.rows[0].showName,
     },
@@ -1320,6 +1371,7 @@ async function loadVirtualMixById(mixId) {
             name,
             preset_id AS "presetId",
             preset_variant_key AS "presetVariantKey",
+            advanced_mix_json AS "advancedMix",
             visibility,
             folder_id AS "folderId",
             created_at AS "createdAt",
@@ -2319,6 +2371,7 @@ app.delete('/api/admin/users/:userId/grants/:grantId', requireAuth, requireAdmin
 app.get('/api/projects', requireAuth, async (req, res) => {
   const result = await pool.query(
     `SELECT p.id, p.name,
+            p.published,
             p.musical_number AS "musicalNumber",
             p.scene_order AS "sceneOrder",
             p.show_id AS "showId",
@@ -2351,6 +2404,9 @@ app.post('/api/projects', requireAuth, async (req, res) => {
       req.body?.musicalNumber ?? initialSnapshot?.musicalNumber ?? '0.0'
     );
     const requestedSceneOrder = normalizeSceneOrder(req.body?.sceneOrder);
+    const requestedPublished = normalizeProjectPublished(
+      req.body?.published ?? initialSnapshot?.published ?? initialSnapshot?.publish
+    );
 
     if (!name) {
       res.status(400).json({ error: 'Project name is required' });
@@ -2387,13 +2443,14 @@ app.post('/api/projects', requireAuth, async (req, res) => {
 
     const projectId = String(req.body?.projectId || randomUUID());
     const snapshot = initialSnapshot && typeof initialSnapshot === 'object'
-      ? { ...initialSnapshot, projectId, projectName: name, musicalNumber: requestedMusicalNumber, showId: show.id, showName: show.name, credits: normalizeProjectCredits(initialSnapshot.credits || {}) }
+      ? { ...initialSnapshot, projectId, projectName: name, musicalNumber: requestedMusicalNumber, published: requestedPublished, showId: show.id, showName: show.name, credits: normalizeProjectCredits(initialSnapshot.credits || {}) }
       : {
         projectId,
         projectName: name,
         showId: show.id,
         showName: show.name,
         musicalNumber: requestedMusicalNumber,
+        published: requestedPublished,
         sampleRate: 44100,
         masterVolume: 100,
         credits: normalizeProjectCredits({}),
@@ -2406,9 +2463,9 @@ app.post('/api/projects', requireAuth, async (req, res) => {
     try {
       await client.query('BEGIN');
       await client.query(
-        `INSERT INTO projects(id, name, musical_number, scene_order, show_id, created_by, credits_json)
-         VALUES($1, $2, $3, $4, $5, $6, $7::jsonb)`,
-        [projectId, name, requestedMusicalNumber, requestedSceneOrder, show.id, req.user.id, JSON.stringify(normalizeProjectCredits(snapshot.credits || {}))]
+        `INSERT INTO projects(id, name, musical_number, scene_order, show_id, published, created_by, credits_json)
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+        [projectId, name, requestedMusicalNumber, requestedSceneOrder, show.id, requestedPublished, req.user.id, JSON.stringify(normalizeProjectCredits(snapshot.credits || {}))]
       );
 
       await client.query(
@@ -2454,6 +2511,7 @@ app.post('/api/projects', requireAuth, async (req, res) => {
         showOrderIndex: show.orderIndex,
         musicalNumber: requestedMusicalNumber,
         sceneOrder: requestedSceneOrder,
+        published: requestedPublished,
         latestSeq: 0,
       },
       snapshot,
@@ -2548,7 +2606,8 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
     const hasName = Object.prototype.hasOwnProperty.call(req.body || {}, 'name');
     const hasMusicalNumber = Object.prototype.hasOwnProperty.call(req.body || {}, 'musicalNumber');
     const hasSceneOrder = Object.prototype.hasOwnProperty.call(req.body || {}, 'sceneOrder');
-    if (!hasName && !hasMusicalNumber && !hasSceneOrder) {
+    const hasPublished = Object.prototype.hasOwnProperty.call(req.body || {}, 'published');
+    if (!hasName && !hasMusicalNumber && !hasSceneOrder && !hasPublished) {
       res.status(400).json({ error: 'At least one field is required' });
       return;
     }
@@ -2590,6 +2649,13 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
       values.push(sceneOrder);
     }
 
+    if (hasPublished) {
+      const published = normalizeProjectPublished(req.body?.published);
+      updates.push(`published = $${idx++}`);
+      values.push(published);
+      snapshotMetadataUpdates.published = published;
+    }
+
     const client = await pool.connect();
     let updated;
     let broadcastPayload = null;
@@ -2599,7 +2665,7 @@ app.patch('/api/projects/:id', requireAuth, async (req, res) => {
         `UPDATE projects
          SET ${updates.join(', ')}
          WHERE id = $1
-         RETURNING id, name, musical_number AS "musicalNumber", scene_order AS "sceneOrder"`,
+         RETURNING id, name, published, musical_number AS "musicalNumber", scene_order AS "sceneOrder"`,
         values
       );
 
@@ -2925,6 +2991,54 @@ app.post('/api/projects/:id/checkpoint', requireAuth, async (req, res) => {
   res.json({ ok: true, latestSeq: Number(head.latest_seq || 0) });
 });
 
+app.post('/api/projects/:id/local-session', requireAuth, async (req, res) => {
+  try {
+    const permission = await requireProjectPermission(req, res, 'write');
+    if (!permission) return;
+
+    const snapshot = req.body?.snapshot;
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+      res.status(400).json({ error: 'Local session snapshot is required' });
+      return;
+    }
+
+    const clientOpId = String(req.body?.clientOpId || randomUUID());
+    const result = await appendProjectOp({
+      projectId: permission.projectId,
+      userId: req.user.id,
+      clientOpId,
+      op: {
+        type: 'project.replace',
+        project: snapshot,
+      },
+    });
+
+    broadcastToProject(permission.projectId, 'op.broadcast', {
+      projectId: permission.projectId,
+      serverSeq: result.serverSeq,
+      clientOpId,
+      op: result.op,
+      actor: {
+        userId: req.user.id,
+        username: req.user.username,
+      },
+    });
+
+    res.json({
+      latestSeq: result.serverSeq,
+      snapshot: result.snapshot,
+    });
+  } catch (error) {
+    const message = String(error?.message || 'Failed to save local session');
+    if (/permission|scope|edit|create|manage/i.test(message)) {
+      res.status(403).json({ error: message });
+      return;
+    }
+    console.error(error);
+    res.status(500).json({ error: 'Failed to save local session' });
+  }
+});
+
 app.get('/api/projects/:projectId/permissions', requireAuth, requireAdmin, async (req, res) => {
   try {
     const projectId = String(req.params.projectId || '');
@@ -3202,6 +3316,7 @@ app.get('/api/player/my-device', requireAuth, async (req, res) => {
                 vm.name,
                 vm.preset_id AS "presetId",
                 vm.preset_variant_key AS "presetVariantKey",
+                vm.advanced_mix_json AS "advancedMix",
                 vm.visibility,
                 vm.folder_id AS "folderId",
                 vm.created_at AS "createdAt",
@@ -3245,6 +3360,7 @@ app.get('/api/player/my-device', requireAuth, async (req, res) => {
                 vm.name AS "mixName",
                 vm.preset_id AS "presetId",
                 vm.preset_variant_key AS "presetVariantKey",
+                vm.advanced_mix_json AS "advancedMix",
                 vm.visibility AS "mixVisibility",
                 vm.folder_id AS "mixFolderId",
                 vm.created_at AS "mixCreatedAt",
@@ -3302,6 +3418,7 @@ app.get('/api/player/my-device', requireAuth, async (req, res) => {
           name: row.mixName,
           presetId: row.presetId,
           presetVariantKey: row.presetVariantKey,
+          advancedMix: row.advancedMix || {},
           visibility: row.mixVisibility,
           folderId: row.mixFolderId,
           createdAt: row.mixCreatedAt,
@@ -3358,6 +3475,7 @@ app.get('/api/player/tutti', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT p.id, p.name,
+              p.published,
               p.musical_number AS "musicalNumber",
               p.scene_order AS "sceneOrder",
               p.show_id AS "showId",
@@ -3380,6 +3498,7 @@ app.get('/api/player/tutti', requireAuth, async (req, res) => {
         name: project.name,
         presetId: 'tutti',
         presetVariantKey: null,
+        published: Boolean(project.published),
         musicalNumber: project.musicalNumber,
         sceneOrder: project.sceneOrder,
         showId: project.showId,
@@ -3405,6 +3524,7 @@ app.get('/api/player/mixes/global', requireAuth, async (req, res) => {
               vm.name,
               vm.preset_id AS "presetId",
               vm.preset_variant_key AS "presetVariantKey",
+              vm.advanced_mix_json AS "advancedMix",
               vm.visibility,
               vm.folder_id AS "folderId",
               vm.created_at AS "createdAt",
@@ -3634,6 +3754,9 @@ app.post('/api/player/mixes', requireAuth, async (req, res) => {
     const presetId = normalizeText(req.body?.presetId);
     const presetVariantKey = normalizeOptionalText(req.body?.presetVariantKey);
     const folderId = normalizeOptionalText(req.body?.folderId);
+    const advancedMix = req.body?.advancedMix && typeof req.body.advancedMix === 'object'
+      ? req.body.advancedMix
+      : {};
     if (!projectId || !name || !presetId) {
       res.status(400).json({ error: 'projectId, name, and presetId are required' });
       return;
@@ -3666,21 +3789,22 @@ app.post('/api/player/mixes', requireAuth, async (req, res) => {
 
     const result = await pool.query(
       `INSERT INTO virtual_mixes(
-          id, owner_user_id, project_id, name, preset_id, preset_variant_key, visibility, folder_id
+          id, owner_user_id, project_id, name, preset_id, preset_variant_key, advanced_mix_json, visibility, folder_id
        )
-       VALUES($1, $2, $3, $4, $5, $6, 'private', $7)
+       VALUES($1, $2, $3, $4, $5, $6, $7::jsonb, 'private', $8)
        RETURNING id,
                  owner_user_id AS "ownerUserId",
                  project_id AS "projectId",
                  name,
                  preset_id AS "presetId",
                  preset_variant_key AS "presetVariantKey",
+                 advanced_mix_json AS "advancedMix",
                  visibility,
                  folder_id AS "folderId",
                  created_at AS "createdAt",
                  updated_at AS "updatedAt",
                  published_at AS "publishedAt"`,
-      [randomUUID(), req.user.id, projectId, name, presetId, presetVariantKey, folderId]
+      [randomUUID(), req.user.id, projectId, name, presetId, presetVariantKey, JSON.stringify(advancedMix), folderId]
     );
     res.status(201).json({ mix: result.rows[0] });
   } catch (error) {
@@ -3705,7 +3829,8 @@ app.patch('/api/player/mixes/:id', requireAuth, async (req, res) => {
     const hasPresetId = Object.prototype.hasOwnProperty.call(req.body || {}, 'presetId');
     const hasPresetVariantKey = Object.prototype.hasOwnProperty.call(req.body || {}, 'presetVariantKey');
     const hasFolderId = Object.prototype.hasOwnProperty.call(req.body || {}, 'folderId');
-    if (!hasName && !hasPresetId && !hasPresetVariantKey && !hasFolderId) {
+    const hasAdvancedMix = Object.prototype.hasOwnProperty.call(req.body || {}, 'advancedMix');
+    if (!hasName && !hasPresetId && !hasPresetVariantKey && !hasFolderId && !hasAdvancedMix) {
       res.status(400).json({ error: 'At least one field is required' });
       return;
     }
@@ -3753,6 +3878,14 @@ app.patch('/api/player/mixes/:id', requireAuth, async (req, res) => {
       values.push(nextFolderId);
     }
 
+    if (hasAdvancedMix) {
+      const nextAdvancedMix = req.body?.advancedMix && typeof req.body.advancedMix === 'object'
+        ? req.body.advancedMix
+        : {};
+      updates.push(`advanced_mix_json = $${idx++}::jsonb`);
+      values.push(JSON.stringify(nextAdvancedMix));
+    }
+
     const result = await pool.query(
       `UPDATE virtual_mixes
        SET ${updates.join(', ')}, updated_at = NOW()
@@ -3763,6 +3896,7 @@ app.patch('/api/player/mixes/:id', requireAuth, async (req, res) => {
                  name,
                  preset_id AS "presetId",
                  preset_variant_key AS "presetVariantKey",
+                 advanced_mix_json AS "advancedMix",
                  visibility,
                  folder_id AS "folderId",
                  created_at AS "createdAt",
@@ -3820,6 +3954,7 @@ app.post('/api/player/mixes/:id/publish', requireAuth, async (req, res) => {
                  name,
                  preset_id AS "presetId",
                  preset_variant_key AS "presetVariantKey",
+                 advanced_mix_json AS "advancedMix",
                  visibility,
                  folder_id AS "folderId",
                  created_at AS "createdAt",
@@ -3857,6 +3992,7 @@ app.post('/api/player/mixes/:id/unpublish', requireAuth, async (req, res) => {
                  name,
                  preset_id AS "presetId",
                  preset_variant_key AS "presetVariantKey",
+                 advanced_mix_json AS "advancedMix",
                  visibility,
                  folder_id AS "folderId",
                  created_at AS "createdAt",

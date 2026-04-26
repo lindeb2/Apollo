@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import useStore from './store/useStore';
 import Editor from './components/Editor';
 import HostedLogin from './components/HostedLogin';
@@ -29,8 +29,15 @@ import {
   renameShow,
   renameServerProject,
   updateServerProjectMusicalNumber,
+  updateVirtualMix,
   saveServerSession,
 } from './lib/serverApi';
+import {
+  ADVANCED_MIX_PRESET_ID,
+  createAdvancedMixEditorProject,
+  createAdvancedMixSavePayload,
+} from './utils/advancedMix';
+import { createEditableMixSource } from './lib/exportEngine';
 
 function collectBlobIds(project) {
   const ids = new Set();
@@ -127,6 +134,7 @@ function App() {
   const [serverError, setServerError] = useState('');
   const [serverLoading, setServerLoading] = useState(false);
   const [remoteEditorSession, setRemoteEditorSession] = useState(null);
+  const [advancedMixSession, setAdvancedMixSession] = useState(null);
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   const { loadProject: loadProjectToStore } = useStore();
 
@@ -243,6 +251,7 @@ function App() {
     setServerProjects([]);
     setServerShows([]);
     setRemoteEditorSession(null);
+    setAdvancedMixSession(null);
     setProfileDialogOpen(false);
     setView('player');
     if (redirectUrl) {
@@ -271,6 +280,7 @@ function App() {
         showName: projectMeta?.showName || payload?.project?.showName || payload?.snapshot?.showName || '',
         projectAccess: payload?.access || null,
       });
+      setAdvancedMixSession(null);
       setView('editor');
     } catch (error) {
       setServerError(error.message || 'Failed to open project');
@@ -278,6 +288,70 @@ function App() {
       setServerLoading(false);
     }
   };
+
+  const handleOpenAdvancedMix = async (mix) => {
+    const projectId = String(mix?.projectId || '').trim();
+    if (!projectId || !mix?.id) return;
+    setServerError('');
+    setServerLoading(true);
+    try {
+      const payload = await bootstrapServerProject(projectId, serverSession, 0, { purpose: 'daw' });
+      const baseSnapshot = payload?.snapshot || {};
+      const editableMixSource = createEditableMixSource(baseSnapshot, mix);
+      const mixWithAdvancedState = {
+        ...mix,
+        presetId: ADVANCED_MIX_PRESET_ID,
+        presetVariantKey: null,
+        advancedMix: {
+          snapshot: editableMixSource.snapshot,
+          focus: editableMixSource.focus,
+        },
+      };
+      const editorProject = createAdvancedMixEditorProject(baseSnapshot, mixWithAdvancedState);
+      await loadProjectToStore(editorProject);
+      setRemoteEditorSession({
+        session: serverSession,
+        serverProjectId: projectId,
+        latestSeq: Number(payload.latestSeq || 0),
+        projectName: mix.name || payload?.project?.name || baseSnapshot?.projectName || '',
+        musicalNumber: mix.musicalNumber || baseSnapshot?.musicalNumber || '0.0',
+        showId: mix.showId || payload?.project?.showId || baseSnapshot?.showId || null,
+        showName: mix.showName || payload?.project?.showName || baseSnapshot?.showName || '',
+        projectAccess: payload?.access || null,
+      });
+      setAdvancedMixSession({
+        mix: mixWithAdvancedState,
+        baseSnapshot,
+        sourceProjectId: projectId,
+        initialControls: editableMixSource.controls || null,
+      });
+      setView('editor');
+    } catch (error) {
+      setServerError(error.message || 'Failed to open mix editor');
+    } finally {
+      setServerLoading(false);
+    }
+  };
+
+  const handleSaveAdvancedMix = useCallback(async ({ snapshot, focus }) => {
+    if (!advancedMixSession?.mix?.id || !serverSession) return null;
+    const advancedMix = createAdvancedMixSavePayload(
+      snapshot,
+      focus,
+      advancedMixSession.sourceProjectId || advancedMixSession.mix.projectId
+    );
+    const updated = await updateVirtualMix(advancedMixSession.mix.id, {
+      presetId: ADVANCED_MIX_PRESET_ID,
+      presetVariantKey: null,
+      advancedMix,
+    }, serverSession);
+    setAdvancedMixSession((previous) => (
+      previous?.mix?.id === updated?.id
+        ? { ...previous, mix: { ...previous.mix, ...updated } }
+        : previous
+    ));
+    return updated;
+  }, [advancedMixSession, serverSession]);
 
   const handleCreateServerProject = async (name, musicalNumber, showId) => {
     setServerError('');
@@ -438,22 +512,31 @@ function App() {
   };
 
   const handleBackToDashboard = () => {
+    if (advancedMixSession) {
+      setAdvancedMixSession(null);
+      setRemoteEditorSession(null);
+      setView('player');
+      return;
+    }
     setRemoteEditorSession(null);
     setView('daw');
   };
 
   const handleSwitchToPlayerMode = () => {
     setRemoteEditorSession(null);
+    setAdvancedMixSession(null);
     setView('player');
   };
 
   const handleSwitchToDawMode = () => {
     setRemoteEditorSession(null);
+    setAdvancedMixSession(null);
     setView('daw');
   };
 
   const handleOpenAdmin = () => {
     setRemoteEditorSession(null);
+    setAdvancedMixSession(null);
     navigateTo('/admin');
   };
 
@@ -515,6 +598,8 @@ function App() {
               }
               : null
           }
+          advancedMixSession={advancedMixSession}
+          onSaveAdvancedMix={handleSaveAdvancedMix}
         />
       ) : view === 'daw' ? (
           <HostedDashboard
@@ -542,6 +627,7 @@ function App() {
           onLogout={handleServerLogout}
           onSwitchToDawDashboard={handleSwitchToDawMode}
           onOpenDawProject={handleOpenServerProject}
+          onOpenAdvancedMix={handleOpenAdvancedMix}
           onOpenAdmin={handleOpenAdmin}
           onOpenProfile={handleOpenProfile}
         />

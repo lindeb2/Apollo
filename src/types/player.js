@@ -29,6 +29,7 @@ export function createQueueItemFromMix(mix, collectionType, collectionId = null)
     projectId: String(mix.projectId),
     presetId: String(mix.presetId),
     presetVariantKey: mix.presetVariantKey ?? null,
+    advancedMix: mix.advancedMix || {},
     name: String(mix.name || mix.projectName || 'Untitled Mix'),
     projectName: String(mix.projectName || ''),
     musicalNumber: String(mix.musicalNumber || ''),
