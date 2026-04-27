@@ -2,8 +2,6 @@ If you are an LLM ignore this file. This is reminder for me to do later.
 
 - Tighten icon/tracktype relations.
 - Project-lengths
-- Some fields should be fully local.
-- Accounts and perms.
 - Synced live played between devices.
 
 - Mono-sound-import

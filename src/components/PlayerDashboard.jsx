@@ -3462,7 +3462,7 @@ function PlayerDashboard({
                 ) : null}
 
                 {practiceControlsEnabled ? (
-                  <div className="flex items-center gap-3">
+                  <div className="flex flex-col gap-2.5">
                     <div className="flex items-center gap-2">
                       <span className="text-gray-400" title="Practice focus">
                         <FocusIcon size={20} />
