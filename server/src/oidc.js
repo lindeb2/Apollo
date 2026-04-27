@@ -14,6 +14,47 @@ function stringClaim(value) {
   return value.trim();
 }
 
+function normalizeIssuer(value) {
+  return stringClaim(value).replace(/\/+$/, '');
+}
+
+function safeUrl(value) {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
+function refersToSameLocalMockIssuer(left, right) {
+  const leftUrl = safeUrl(left);
+  const rightUrl = safeUrl(right);
+  if (!leftUrl || !rightUrl) return false;
+  return (
+    leftUrl.protocol === rightUrl.protocol
+    && leftUrl.port === rightUrl.port
+    && leftUrl.pathname === rightUrl.pathname
+    && leftUrl.hostname === 'oidc-mock'
+    && ['localhost', '127.0.0.1', '::1', '[::1]'].includes(rightUrl.hostname)
+  );
+}
+
+export function resolveStoredIssuer(rawIssuer = '') {
+  const normalizedIssuer = normalizeIssuer(rawIssuer);
+  const normalizedConfiguredIssuer = normalizeIssuer(config.oidcIssuer);
+  const normalizedPublicIssuer = normalizeIssuer(config.oidcPublicIssuer);
+
+  if (normalizedPublicIssuer && normalizedIssuer === normalizedConfiguredIssuer) {
+    return normalizedPublicIssuer;
+  }
+  if (normalizedPublicIssuer && refersToSameLocalMockIssuer(normalizedIssuer, normalizedPublicIssuer)) {
+    return normalizedPublicIssuer;
+  }
+  if (normalizedIssuer) return normalizedIssuer;
+  if (normalizedPublicIssuer) return normalizedPublicIssuer;
+  return normalizedConfiguredIssuer;
+}
+
 function resolveAppOrigin(req) {
   return choosePreferredOrigin(config.publicBaseUrl, getRequestOrigin(req));
 }
@@ -192,7 +233,7 @@ export async function completeOidcAuthorization(req, transaction) {
         || stringClaim(mergedClaims.email)
         || stringClaim(mergedClaims.name)
         || stringClaim(idTokenClaims.sub),
-      issuer: config.oidcIssuer,
+      issuer: resolveStoredIssuer(mergedClaims.iss || idTokenClaims.iss || config.oidcIssuer),
       rawClaims: mergedClaims,
     },
   };
