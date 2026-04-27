@@ -15,7 +15,7 @@ import { audioBufferToLocalWavBlob } from './mediaEncoding';
  * Audio Manager
  * Handles Web Audio API playback, mixing, and rendering
  */
-class AudioManager {
+export class AudioManager {
   constructor() {
     this.audioContext = null;
     this.masterGainNode = null;
@@ -25,6 +25,8 @@ class AudioManager {
     this.startTime = 0;
     this.pauseTime = 0;
     this.isInitializingPlayback = false; // Flag to prevent concurrent play() calls
+    this.playbackRequestId = 0;
+    this.initializingPlaybackRequestId = null;
     this.currentMasterVolume = 100;
     this.currentPanLawDb = normalizePanLawDb();
     this.currentOutputDeviceId = '';
@@ -142,22 +144,19 @@ class AudioManager {
    * Play project from current time
    */
   async play(project, currentTimeMs, options = {}) {
-    // Prevent concurrent play() calls - if already initializing, stop first
-    if (this.isInitializingPlayback) {
-      console.log('Play called while already initializing - stopping first');
-      this.stop();
-      // Wait a bit for stop to complete
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
-
+    const playbackRequestId = ++this.playbackRequestId;
     this.isInitializingPlayback = true;
+    this.initializingPlaybackRequestId = playbackRequestId;
+    this.stopActiveSources('Failed to replace an active audio source.', 'audio:replace-source');
 
     try {
       if (!this.audioContext) {
         await this.init();
       }
+      if (!this.isPlaybackRequestCurrent(playbackRequestId)) return;
 
       await this.resume();
+      if (!this.isPlaybackRequestCurrent(playbackRequestId)) return;
 
       this.isPlaying = true;
       this.startTime = this.audioContext.currentTime - msToSeconds(currentTimeMs);
@@ -172,23 +171,28 @@ class AudioManager {
 
       // Start all tracks
       for (const track of project.tracks) {
-        await this.playTrack(track, currentTimeMs, mix.statesByTrackId.get(track.id));
+        if (!this.isPlaybackRequestCurrent(playbackRequestId)) return;
+        await this.playTrack(track, currentTimeMs, mix.statesByTrackId.get(track.id), playbackRequestId);
       }
     } finally {
-      this.isInitializingPlayback = false;
+      if (this.initializingPlaybackRequestId === playbackRequestId) {
+        this.isInitializingPlayback = false;
+        this.initializingPlaybackRequestId = null;
+      }
     }
   }
 
   /**
    * Play a single track
    */
-  async playTrack(track, currentTimeMs, effectiveState) {
+  async playTrack(track, currentTimeMs, effectiveState, playbackRequestId = this.playbackRequestId) {
     // Skip if track has no clips
     if (!track.clips || track.clips.length === 0) return;
     if (!effectiveState?.audible) return;
 
     // Play all clips that should be audible at current time or in the future
     for (const clip of track.clips) {
+      if (!this.isPlaybackRequestCurrent(playbackRequestId)) return;
       if (clip.muted) continue;
       const clipStartTimeMs = clip.timelineStartMs;
       const clipDurationMs = clip.cropEndMs - clip.cropStartMs;
@@ -246,6 +250,16 @@ class AudioManager {
 
       // Store active source (use unique key for multiple clips)
       const sourceKey = `${track.id}-${clip.id}`;
+      if (!this.isPlaybackRequestCurrent(playbackRequestId)) {
+        try {
+          source.stop(0);
+        } catch (e) {
+          if (e?.name !== 'InvalidStateError') {
+            reportUserError('Failed to stop a superseded audio source.', e, { onceKey: 'audio:superseded-source' });
+          }
+        }
+        return;
+      }
       this.activeSources.set(sourceKey, {
         source,
         gainNode,
@@ -271,52 +285,45 @@ class AudioManager {
    * Stop playback
    */
   stop() {
+    this.playbackRequestId += 1;
     this.isPlaying = false;
     this.pauseTime = 0;
     this.isInitializingPlayback = false;
+    this.initializingPlaybackRequestId = null;
+    this.stopActiveSources('Failed to stop an active audio source.', 'audio:stop-source');
+  }
 
-    // Stop all active sources
-    for (const [trackId, nodes] of this.activeSources.entries()) {
+  stopActiveSources(errorMessage, onceKey) {
+    for (const nodes of this.activeSources.values()) {
       try {
         // Use stop(0) to immediately stop even sources scheduled for future
         nodes.source.stop(0);
       } catch (e) {
         if (e?.name !== 'InvalidStateError') {
-          reportUserError('Failed to stop an active audio source.', e, { onceKey: 'audio:stop-source' });
+          reportUserError(errorMessage, e, { onceKey });
         }
       }
     }
 
     this.activeSources.clear();
+  }
+
+  isPlaybackRequestCurrent(playbackRequestId) {
+    return this.playbackRequestId === playbackRequestId;
   }
 
   /**
    * Pause playback
    */
   async pause(currentTimeMs) {
-    // Wait for any ongoing play() initialization to complete
-    while (this.isInitializingPlayback) {
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
-    
+    this.playbackRequestId += 1;
     this.isPlaying = false;
     this.pauseTime = currentTimeMs;
     this.isInitializingPlayback = false;
-
-    // Stop all active sources
-    const sourcesToStop = Array.from(this.activeSources.entries());
-    for (const [trackId, nodes] of sourcesToStop) {
-      try {
-        nodes.source.stop(0);
-      } catch (e) {
-        if (e?.name !== 'InvalidStateError') {
-          reportUserError('Failed to pause an active audio source.', e, { onceKey: 'audio:pause-source' });
-        }
-      }
-    }
-
-    this.activeSources.clear();
+    this.initializingPlaybackRequestId = null;
+    this.stopActiveSources('Failed to pause an active audio source.', 'audio:pause-source');
   }
+
 
   /**
    * Set master volume

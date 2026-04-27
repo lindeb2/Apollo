@@ -1085,7 +1085,9 @@ function Editor({
         audioManager.stop();
         if (!isCancelled) {
           await applyEditorPlaybackOutputConfig();
+          if (isCancelled) return;
           await audioManager.play(projectRef.current || project, currentTimeMs);
+          if (isCancelled) return;
           applyAdvancedMixRealtimeSettings(projectRef.current || project);
         }
       };
